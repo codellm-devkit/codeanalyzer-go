@@ -1,0 +1,19 @@
+# Binaries
+/codeanalyzer
+/codeanalyzer-go
+*.exe
+
+# Build output
+/dist/
+/bin/
+
+# Claude Code session data
+.claude/
+
+# macOS
+.DS_Store
+
+# Go test cache / coverage
+*.test
+*.out
+coverage.txt
