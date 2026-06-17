@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"example.com/fixture/pkg/greeter"
+	"example.com/greeter/pkg/greeter"
 )
 
 func main() {

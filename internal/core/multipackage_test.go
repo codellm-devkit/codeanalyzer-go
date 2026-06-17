@@ -5,47 +5,11 @@ package core_test
 //   is_variadic, is_embedded, multi-file package, cyclomatic_complexity, specific edges.
 
 import (
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
-	"github.com/codellm-devkit/codeanalyzer-go/internal/core"
-	"github.com/codellm-devkit/codeanalyzer-go/internal/options"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/schema"
 )
-
-func realisticDir(t *testing.T) string {
-	t.Helper()
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("cannot determine source file path")
-	}
-	root := filepath.Join(filepath.Dir(file), "..", "..")
-	abs, err := filepath.Abs(filepath.Join(root, "testdata", "realistic"))
-	if err != nil {
-		t.Fatalf("resolving realistic fixture dir: %v", err)
-	}
-	return abs
-}
-
-func runRealistic(t *testing.T, level options.AnalysisLevel) *schema.GoApplication {
-	t.Helper()
-	dir := realisticDir(t)
-	outDir := t.TempDir()
-	opts := options.AnalysisOptions{
-		InputPath: dir,
-		OutputDir: outDir,
-		Level:     level,
-		SkipTests: true,
-		CacheDir:  t.TempDir(),
-	}
-	app, err := core.New(opts).Analyze()
-	if err != nil {
-		t.Fatalf("Analyze() failed: %v", err)
-	}
-	return app
-}
 
 // findCallableByName searches all functions and methods in a GoFile by short name.
 func findCallableByName(f schema.GoFile, name string) *schema.GoCallable {
@@ -69,17 +33,15 @@ func findCallableByName(f schema.GoFile, name string) *schema.GoCallable {
 // ── Multi-file package ────────────────────────────────────────────────────────
 
 func TestRealistic_MultiFilePkg(t *testing.T) {
-	app := runRealistic(t, options.LevelSymbolTable)
-	_, hasServer := app.SymbolTable["server/server.go"]
-	_, hasMiddleware := app.SymbolTable["server/middleware.go"]
+	_, hasServer := sharedMultipackageL1.SymbolTable["server/server.go"]
+	_, hasMiddleware := sharedMultipackageL1.SymbolTable["server/middleware.go"]
 	if !hasServer {
 		t.Error("server/server.go missing from symbol table")
 	}
 	if !hasMiddleware {
 		t.Error("server/middleware.go missing from symbol table")
 	}
-	// Tags must live in middleware.go, not server.go.
-	mw := app.SymbolTable["server/middleware.go"]
+	mw := sharedMultipackageL1.SymbolTable["server/middleware.go"]
 	if findCallableByName(mw, "Tags") == nil {
 		t.Error("Tags function not found in server/middleware.go")
 	}
@@ -88,15 +50,14 @@ func TestRealistic_MultiFilePkg(t *testing.T) {
 // ── Embedded struct field ─────────────────────────────────────────────────────
 
 func TestRealistic_EmbeddedField(t *testing.T) {
-	app := runRealistic(t, options.LevelSymbolTable)
-	srv := app.SymbolTable["server/server.go"]
+	srv := sharedMultipackageL1.SymbolTable["server/server.go"]
 	server, ok := srv.Types["Server"]
 	if !ok {
 		t.Fatal("GoType 'Server' not found in server/server.go")
 	}
 	for _, f := range server.Fields {
 		if f.IsEmbedded {
-			return // pass
+			return
 		}
 	}
 	t.Errorf("Server has no embedded field; fields: %+v", server.Fields)
@@ -105,8 +66,7 @@ func TestRealistic_EmbeddedField(t *testing.T) {
 // ── Multiple return types — (T, error) pattern ────────────────────────────────
 
 func TestRealistic_MultipleReturnTypes(t *testing.T) {
-	app := runRealistic(t, options.LevelSymbolTable)
-	srv := app.SymbolTable["server/server.go"]
+	srv := sharedMultipackageL1.SymbolTable["server/server.go"]
 	newFn := findCallableByName(srv, "New")
 	if newFn == nil {
 		t.Fatal("function 'New' not found in server/server.go")
@@ -126,8 +86,7 @@ func TestRealistic_MultipleReturnTypes(t *testing.T) {
 }
 
 func TestRealistic_ValidateReturnTypes(t *testing.T) {
-	app := runRealistic(t, options.LevelSymbolTable)
-	srv := app.SymbolTable["server/server.go"]
+	srv := sharedMultipackageL1.SymbolTable["server/server.go"]
 	validate := findCallableByName(srv, "Validate")
 	if validate == nil {
 		t.Fatal("method 'Validate' not found in server/server.go")
@@ -140,8 +99,7 @@ func TestRealistic_ValidateReturnTypes(t *testing.T) {
 // ── Unexported callables ──────────────────────────────────────────────────────
 
 func TestRealistic_UnexportedMethod(t *testing.T) {
-	app := runRealistic(t, options.LevelSymbolTable)
-	srv := app.SymbolTable["server/server.go"]
+	srv := sharedMultipackageL1.SymbolTable["server/server.go"]
 	shutdown := findCallableByName(srv, "shutdown")
 	if shutdown == nil {
 		t.Fatal("method 'shutdown' not found in server/server.go")
@@ -152,8 +110,7 @@ func TestRealistic_UnexportedMethod(t *testing.T) {
 }
 
 func TestRealistic_UnexportedWorkerMethod(t *testing.T) {
-	app := runRealistic(t, options.LevelSymbolTable)
-	wkr := app.SymbolTable["worker/worker.go"]
+	wkr := sharedMultipackageL1.SymbolTable["worker/worker.go"]
 	execute := findCallableByName(wkr, "execute")
 	if execute == nil {
 		t.Fatal("method 'execute' not found in worker/worker.go")
@@ -166,8 +123,7 @@ func TestRealistic_UnexportedWorkerMethod(t *testing.T) {
 // ── Receiver type / name ──────────────────────────────────────────────────────
 
 func TestRealistic_ReceiverType(t *testing.T) {
-	app := runRealistic(t, options.LevelSymbolTable)
-	srv := app.SymbolTable["server/server.go"]
+	srv := sharedMultipackageL1.SymbolTable["server/server.go"]
 	addr := findCallableByName(srv, "Addr")
 	if addr == nil {
 		t.Fatal("method 'Addr' not found in server/server.go")
@@ -178,26 +134,20 @@ func TestRealistic_ReceiverType(t *testing.T) {
 	if addr.ReceiverName == "" {
 		t.Error("Addr().receiver_name should be non-empty")
 	}
-	// Pointer receiver — type should contain '*' or 'Server'.
 	if !strings.Contains(addr.ReceiverType, "Server") {
 		t.Errorf("Addr().receiver_type %q should reference Server", addr.ReceiverType)
 	}
 }
 
 func TestRealistic_ValueReceiver(t *testing.T) {
-	app := runRealistic(t, options.LevelSymbolTable)
-	// Describe is defined in middleware.go but its receiver type (Server) lives in
-	// server.go — the reconcileCrossFileMethods pass attaches it to server.go's type.
-	srv := app.SymbolTable["server/server.go"]
+	srv := sharedMultipackageL1.SymbolTable["server/server.go"]
 	describe := findCallableByName(srv, "Describe")
 	if describe == nil {
 		t.Fatal("method 'Describe' not found attached to Server in server/server.go")
 	}
-	// Value receiver — ReceiverType should not contain '*'.
 	if strings.Contains(describe.ReceiverType, "*") {
 		t.Errorf("Describe().receiver_type %q should be a value receiver (no '*')", describe.ReceiverType)
 	}
-	// Path should still record the physical definition file.
 	if !strings.Contains(describe.Path, "middleware.go") {
 		t.Errorf("Describe().path %q should point to middleware.go", describe.Path)
 	}
@@ -206,30 +156,28 @@ func TestRealistic_ValueReceiver(t *testing.T) {
 // ── Variadic parameters ───────────────────────────────────────────────────────
 
 func TestRealistic_VariadicParamTags(t *testing.T) {
-	app := runRealistic(t, options.LevelSymbolTable)
-	mw := app.SymbolTable["server/middleware.go"]
+	mw := sharedMultipackageL1.SymbolTable["server/middleware.go"]
 	tags := findCallableByName(mw, "Tags")
 	if tags == nil {
 		t.Fatal("function 'Tags' not found in server/middleware.go")
 	}
 	for _, p := range tags.Parameters {
 		if p.IsVariadic {
-			return // pass
+			return
 		}
 	}
 	t.Errorf("Tags() has no variadic parameter; params: %+v", tags.Parameters)
 }
 
 func TestRealistic_VariadicParamCombine(t *testing.T) {
-	app := runRealistic(t, options.LevelSymbolTable)
-	wkr := app.SymbolTable["worker/worker.go"]
+	wkr := sharedMultipackageL1.SymbolTable["worker/worker.go"]
 	combine := findCallableByName(wkr, "Combine")
 	if combine == nil {
 		t.Fatal("function 'Combine' not found in worker/worker.go")
 	}
 	for _, p := range combine.Parameters {
 		if p.IsVariadic {
-			return // pass
+			return
 		}
 	}
 	t.Errorf("Combine() has no variadic parameter; params: %+v", combine.Parameters)
@@ -238,15 +186,14 @@ func TestRealistic_VariadicParamCombine(t *testing.T) {
 // ── Goroutine call site ───────────────────────────────────────────────────────
 
 func TestRealistic_GoroutineCallsite(t *testing.T) {
-	app := runRealistic(t, options.LevelSymbolTable)
-	wkr := app.SymbolTable["worker/worker.go"]
+	wkr := sharedMultipackageL1.SymbolTable["worker/worker.go"]
 	run := findCallableByName(wkr, "Run")
 	if run == nil {
 		t.Fatal("method 'Run' not found in worker/worker.go")
 	}
 	for _, cs := range run.CallSites {
 		if cs.IsGoroutine {
-			return // pass
+			return
 		}
 	}
 	t.Errorf("Run() has no goroutine call site; sites: %+v", run.CallSites)
@@ -255,13 +202,11 @@ func TestRealistic_GoroutineCallsite(t *testing.T) {
 // ── Cyclomatic complexity ─────────────────────────────────────────────────────
 
 func TestRealistic_CyclomaticComplexity(t *testing.T) {
-	app := runRealistic(t, options.LevelSymbolTable)
-	wkr := app.SymbolTable["worker/worker.go"]
+	wkr := sharedMultipackageL1.SymbolTable["worker/worker.go"]
 	execute := findCallableByName(wkr, "execute")
 	if execute == nil {
 		t.Fatal("method 'execute' not found in worker/worker.go")
 	}
-	// execute() has an `if err != nil` branch → CC >= 2.
 	if execute.CyclomaticComplexity < 2 {
 		t.Errorf("execute().cyclomatic_complexity should be >= 2; got %d", execute.CyclomaticComplexity)
 	}
@@ -270,8 +215,7 @@ func TestRealistic_CyclomaticComplexity(t *testing.T) {
 // ── Interface detection ───────────────────────────────────────────────────────
 
 func TestRealistic_InterfaceType(t *testing.T) {
-	app := runRealistic(t, options.LevelSymbolTable)
-	wkr := app.SymbolTable["worker/worker.go"]
+	wkr := sharedMultipackageL1.SymbolTable["worker/worker.go"]
 	proc, ok := wkr.Types["Processor"]
 	if !ok {
 		t.Fatal("GoType 'Processor' not found in worker/worker.go")
@@ -281,29 +225,25 @@ func TestRealistic_InterfaceType(t *testing.T) {
 	}
 }
 
-// ── Specific call-graph edge ──────────────────────────────────────────────────
+// ── Specific call-graph edges ─────────────────────────────────────────────────
 
 func TestRealistic_SpecificCallEdge(t *testing.T) {
-	app := runRealistic(t, options.LevelCallGraph)
-	// main() calls server.New() — this is a cross-package project-internal edge.
-	const wantTarget = "example.com/realistic/server.New"
-	for _, e := range app.CallGraph {
+	const wantTarget = "example.com/multipackage/server.New"
+	for _, e := range sharedMultipackageL2.CallGraph {
 		if e.Target == wantTarget {
-			return // pass
+			return
 		}
 	}
-	t.Errorf("call graph missing expected edge to %s; edges: %v", wantTarget, edgeTargets(app))
+	t.Errorf("call graph missing expected edge to %s; edges: %v", wantTarget, edgeTargets(sharedMultipackageL2))
 }
 
 func TestRealistic_CrossPackageEdges(t *testing.T) {
-	app := runRealistic(t, options.LevelCallGraph)
-	// At least one edge must cross the main→server boundary and one main→worker boundary.
 	var serverEdge, workerEdge bool
-	for _, e := range app.CallGraph {
-		if strings.Contains(e.Target, "realistic/server.") {
+	for _, e := range sharedMultipackageL2.CallGraph {
+		if strings.Contains(e.Target, "multipackage/server.") {
 			serverEdge = true
 		}
-		if strings.Contains(e.Target, "realistic/worker.") {
+		if strings.Contains(e.Target, "multipackage/worker.") {
 			workerEdge = true
 		}
 	}
@@ -313,6 +253,41 @@ func TestRealistic_CrossPackageEdges(t *testing.T) {
 	if !workerEdge {
 		t.Error("no call-graph edge into the worker package")
 	}
+}
+
+// ── H6: LocalVariables assertions ────────────────────────────────────────────
+
+// worker.Combine has `out := Result{}` — a local variable with a known type.
+func TestRealistic_LocalVariablesPresent(t *testing.T) {
+	wkr := sharedMultipackageL1.SymbolTable["worker/worker.go"]
+	combine := findCallableByName(wkr, "Combine")
+	if combine == nil {
+		t.Fatal("function 'Combine' not found in worker/worker.go")
+	}
+	if len(combine.LocalVariables) == 0 {
+		t.Fatal("Combine() should have at least one local variable; got none")
+	}
+}
+
+// worker.execute has `r, err := p.Process(t)` — two local variables.
+func TestRealistic_LocalVariablesHaveType(t *testing.T) {
+	wkr := sharedMultipackageL1.SymbolTable["worker/worker.go"]
+	execute := findCallableByName(wkr, "execute")
+	if execute == nil {
+		t.Fatal("method 'execute' not found in worker/worker.go")
+	}
+	for _, v := range execute.LocalVariables {
+		if v.Name == "err" {
+			if v.Type == "" {
+				t.Error("local variable 'err' should have a non-empty type")
+			}
+			if v.Scope != "function" {
+				t.Errorf("local variable 'err' scope should be 'function'; got %q", v.Scope)
+			}
+			return
+		}
+	}
+	t.Errorf("local variable 'err' not found in execute(); vars: %+v", execute.LocalVariables)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

@@ -187,7 +187,11 @@ codeanalyzer-go/
 │   ├── analysis/             # Pluggable pass interface + registry (topo-ordered pipeline)
 │   ├── frameworks/           # BaseEntrypointFinder — extension seam for framework passes
 │   └── utils/                # DiscoverGoFiles, IsVendored, IsTestFile, logging
-└── testdata/fixture/         # Minimal Go fixture used by tests
+├── testdata/
+│   ├── fixture/              # Minimal two-package fixture (basic struct/interface/call sites)
+│   ├── realistic/            # Richer fixture covering embedded fields, variadic params, goroutines, …
+│   ├── generics/             # Go 1.18+ generics fixture (Set[T], union-constraint interfaces, Map[T,U])
+│   └── chi/                  # External-dep fixture (chi v5, vendored) for HTTP handler patterns
 ```
 
 The `core` package is a pure orchestrator: it calls `syntactic_analysis` → `semantic_analysis` → `analysis.RunPipeline` → optional CodeQL in sequence, with no inlined parsing logic. Framework-specific analysis extends through the `analysis/` + `frameworks/` layer without touching `core`.
@@ -200,7 +204,31 @@ The `core` package is a pure orchestrator: it calls `syntactic_analysis` → `se
 go test ./...
 ```
 
-Tests run against `testdata/fixture/` and `testdata/realistic/` — a minimal two-package and a richer multi-package Go module. All 33 tests cover symbol table correctness, call graph edges, JSON round-trip, output format validation, and caching/incremental behaviour.
+Tests run against four fixtures: `testdata/fixture/` (basic), `testdata/realistic/` (multi-file packages, goroutines, variadic params), `testdata/generics/` (Go 1.18+ generics — `Set[T]`, union constraints, multi-type-param functions), and `testdata/chi/` (external dependency via vendored chi v5, HTTP handler patterns). All 57 tests cover symbol table correctness, generic receiver attribution, call graph edges, JSON round-trip, output format validation, caching behaviour, and error paths.
+
+`go test` caches passing results by source hash. To force a full re-run:
+
+```bash
+go clean -testcache && go test ./...
+```
+
+The analyzer's own `CacheDir` (used inside tests for `analysis_cache.json` and `go_mod_hash`) is written to OS temp directories that are wiped automatically when the test binary exits — there is no persistent on-disk state between test runs. The chi fixture is fully vendored, so tests never require network access.
+
+### Clearing the production cache
+
+By default the CLI writes its cache to `~/.cldk/go-cache`. To bypass it for a single run:
+
+```bash
+codeanalyzer-go -i ./my-project --eager
+```
+
+To delete it entirely:
+
+```bash
+rm -rf ~/.cldk/go-cache
+```
+
+If you pass a custom `--cache-dir`, remove that directory instead.
 
 ### Running from source
 
