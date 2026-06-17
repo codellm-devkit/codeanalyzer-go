@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
@@ -13,52 +12,23 @@ import (
 	"github.com/codellm-devkit/codeanalyzer-go/internal/schema"
 )
 
-// fixtureDir returns the absolute path to testdata/fixture.
-func fixtureDir(t *testing.T) string {
+// greeterDir returns the absolute path to testdata/greeter.
+// Still used by the caching tests, which must run fresh analysis.
+func greeterDir(t *testing.T) string {
 	t.Helper()
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("cannot determine source file path")
-	}
-	// internal/core/analyzer_test.go → ../.. → codeanalyzer-go root → testdata/fixture
-	root := filepath.Join(filepath.Dir(file), "..", "..")
-	abs, err := filepath.Abs(filepath.Join(root, "testdata", "fixture"))
-	if err != nil {
-		t.Fatalf("resolving fixture dir: %v", err)
-	}
-	return abs
-}
-
-func runAnalysis(t *testing.T, level options.AnalysisLevel) *schema.GoApplication {
-	t.Helper()
-	dir := fixtureDir(t)
-	outDir := t.TempDir()
-	opts := options.AnalysisOptions{
-		InputPath: dir,
-		OutputDir: outDir,
-		Level:     level,
-		SkipTests: true,
-		CacheDir:  t.TempDir(),
-	}
-	app, err := core.New(opts).Analyze()
-	if err != nil {
-		t.Fatalf("Analyze() failed: %v", err)
-	}
-	return app
+	return filepath.Join(testdataDir(), "greeter")
 }
 
 // ── Symbol table tests ────────────────────────────────────────────────────────
 
 func TestSymbolTable_NonEmpty(t *testing.T) {
-	app := runAnalysis(t, options.LevelSymbolTable)
-	if len(app.SymbolTable) == 0 {
+	if len(sharedGreeterL1.SymbolTable) == 0 {
 		t.Fatal("symbol table is empty")
 	}
 }
 
 func TestSymbolTable_PathKeysAreRelative(t *testing.T) {
-	app := runAnalysis(t, options.LevelSymbolTable)
-	for key := range app.SymbolTable {
+	for key := range sharedGreeterL1.SymbolTable {
 		if filepath.IsAbs(key) {
 			t.Errorf("symbol_table key is absolute path: %s", key)
 		}
@@ -66,11 +36,10 @@ func TestSymbolTable_PathKeysAreRelative(t *testing.T) {
 }
 
 func TestSymbolTable_KnownType(t *testing.T) {
-	app := runAnalysis(t, options.LevelSymbolTable)
 	const wantFile = "pkg/greeter/greeter.go"
-	f, ok := app.SymbolTable[wantFile]
+	f, ok := sharedGreeterL1.SymbolTable[wantFile]
 	if !ok {
-		t.Fatalf("file %q not in symbol table; got keys: %v", wantFile, keys(app.SymbolTable))
+		t.Fatalf("file %q not in symbol table; got keys: %v", wantFile, keys(sharedGreeterL1.SymbolTable))
 	}
 	if _, ok := f.Types["Greeter"]; !ok {
 		t.Errorf("GoType 'Greeter' not found in %s", wantFile)
@@ -78,8 +47,7 @@ func TestSymbolTable_KnownType(t *testing.T) {
 }
 
 func TestSymbolTable_KnownInterface(t *testing.T) {
-	app := runAnalysis(t, options.LevelSymbolTable)
-	f := app.SymbolTable["pkg/greeter/greeter.go"]
+	f := sharedGreeterL1.SymbolTable["pkg/greeter/greeter.go"]
 	gt, ok := f.Types["Logger"]
 	if !ok {
 		t.Fatal("GoType 'Logger' not found")
@@ -90,8 +58,7 @@ func TestSymbolTable_KnownInterface(t *testing.T) {
 }
 
 func TestSymbolTable_StructFields(t *testing.T) {
-	app := runAnalysis(t, options.LevelSymbolTable)
-	f := app.SymbolTable["pkg/greeter/greeter.go"]
+	f := sharedGreeterL1.SymbolTable["pkg/greeter/greeter.go"]
 	gt := f.Types["Greeter"]
 	if len(gt.Fields) == 0 {
 		t.Fatal("Greeter has no fields")
@@ -105,8 +72,7 @@ func TestSymbolTable_StructFields(t *testing.T) {
 }
 
 func TestSymbolTable_CallSitesRecorded(t *testing.T) {
-	app := runAnalysis(t, options.LevelSymbolTable)
-	f := app.SymbolTable["main.go"]
+	f := sharedGreeterL1.SymbolTable["main.go"]
 	var mainFn *schema.GoCallable
 	for _, c := range f.Functions {
 		c := c
@@ -121,7 +87,6 @@ func TestSymbolTable_CallSitesRecorded(t *testing.T) {
 	if len(mainFn.CallSites) == 0 {
 		t.Error("main() has no recorded call sites")
 	}
-	// All call sites must start with callee_signature == nil (pre-resolution).
 	for _, cs := range mainFn.CallSites {
 		if cs.CalleeSignature != nil {
 			t.Errorf("call site %q has callee_signature pre-filled during symbol-table build", cs.MethodName)
@@ -132,16 +97,14 @@ func TestSymbolTable_CallSitesRecorded(t *testing.T) {
 // ── Call graph tests ──────────────────────────────────────────────────────────
 
 func TestCallGraph_NonEmpty(t *testing.T) {
-	app := runAnalysis(t, options.LevelCallGraph)
-	if len(app.CallGraph) == 0 {
+	if len(sharedGreeterL2.CallGraph) == 0 {
 		t.Fatal("call graph is empty")
 	}
 }
 
 func TestCallGraph_NoDanglingEdges(t *testing.T) {
-	app := runAnalysis(t, options.LevelCallGraph)
-	sigs := allSignatures(app)
-	for _, e := range app.CallGraph {
+	sigs := allSignatures(sharedGreeterL2)
+	for _, e := range sharedGreeterL2.CallGraph {
 		if !sigs[e.Source] {
 			t.Errorf("dangling edge source: %s", e.Source)
 		}
@@ -152,8 +115,7 @@ func TestCallGraph_NoDanglingEdges(t *testing.T) {
 }
 
 func TestCallGraph_Provenance(t *testing.T) {
-	app := runAnalysis(t, options.LevelCallGraph)
-	for _, e := range app.CallGraph {
+	for _, e := range sharedGreeterL2.CallGraph {
 		if len(e.Provenance) == 0 {
 			t.Errorf("edge %s→%s has empty provenance", e.Source, e.Target)
 		}
@@ -161,11 +123,9 @@ func TestCallGraph_Provenance(t *testing.T) {
 }
 
 func TestCallGraph_CallSitesBackfilled(t *testing.T) {
-	app := runAnalysis(t, options.LevelCallGraph)
-	f := app.SymbolTable["main.go"]
+	f := sharedGreeterL2.SymbolTable["main.go"]
 	for _, callable := range f.Functions {
 		for _, cs := range callable.CallSites {
-			// Sites that resolved to a project-internal callee must be backfilled.
 			if cs.CalleeSignature != nil && *cs.CalleeSignature == "" {
 				t.Errorf("callable %s: call site %q has empty string callee_signature", callable.Signature, cs.MethodName)
 			}
@@ -176,9 +136,8 @@ func TestCallGraph_CallSitesBackfilled(t *testing.T) {
 // ── JSON output tests ─────────────────────────────────────────────────────────
 
 func TestWriteOutput_ValidJSON(t *testing.T) {
-	app := runAnalysis(t, options.LevelCallGraph)
 	outDir := t.TempDir()
-	if err := core.WriteOutput(app, outDir, "json"); err != nil {
+	if err := core.WriteOutput(sharedGreeterL2, outDir, "json"); err != nil {
 		t.Fatalf("WriteOutput: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(outDir, "analysis.json"))
@@ -195,9 +154,8 @@ func TestWriteOutput_ValidJSON(t *testing.T) {
 }
 
 func TestWriteOutput_EmptyFormatDefaultsToJSON(t *testing.T) {
-	app := runAnalysis(t, options.LevelSymbolTable)
 	outDir := t.TempDir()
-	if err := core.WriteOutput(app, outDir, ""); err != nil {
+	if err := core.WriteOutput(sharedGreeterL1, outDir, ""); err != nil {
 		t.Fatalf("WriteOutput with empty format: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(outDir, "analysis.json")); err != nil {
@@ -206,42 +164,36 @@ func TestWriteOutput_EmptyFormatDefaultsToJSON(t *testing.T) {
 }
 
 func TestWriteOutput_MsgpackNotImplemented(t *testing.T) {
-	app := runAnalysis(t, options.LevelSymbolTable)
 	outDir := t.TempDir()
-	err := core.WriteOutput(app, outDir, "msgpack")
-	if err == nil {
+	if err := core.WriteOutput(sharedGreeterL1, outDir, "msgpack"); err == nil {
 		t.Fatal("expected error for --format msgpack, got nil")
 	}
 }
 
 func TestWriteOutput_UnknownFormatErrors(t *testing.T) {
-	app := runAnalysis(t, options.LevelSymbolTable)
 	outDir := t.TempDir()
-	err := core.WriteOutput(app, outDir, "csv")
-	if err == nil {
+	if err := core.WriteOutput(sharedGreeterL1, outDir, "csv"); err == nil {
 		t.Fatal("expected error for unknown format, got nil")
 	}
 }
 
 // ── Caching tests ─────────────────────────────────────────────────────────────
+// These tests must run their own analysis to exercise the caching machinery.
 
 func TestCaching_SecondRunReuses(t *testing.T) {
-	dir := fixtureDir(t)
+	dir := greeterDir(t)
 	cacheDir := t.TempDir()
-	outDir := t.TempDir()
 	opts := options.AnalysisOptions{
 		InputPath: dir,
-		OutputDir: outDir,
+		OutputDir: t.TempDir(),
 		Level:     options.LevelCallGraph,
 		SkipTests: true,
 		CacheDir:  cacheDir,
 	}
-	// First run — populates cache.
 	app1, err := core.New(opts).Analyze()
 	if err != nil {
 		t.Fatalf("first run: %v", err)
 	}
-	// Second run — must not error and must return identical key count.
 	app2, err := core.New(opts).Analyze()
 	if err != nil {
 		t.Fatalf("second run: %v", err)
@@ -256,10 +208,9 @@ func TestCaching_SecondRunReuses(t *testing.T) {
 }
 
 func TestCaching_CacheFileWritten(t *testing.T) {
-	dir := fixtureDir(t)
 	cacheDir := t.TempDir()
 	opts := options.AnalysisOptions{
-		InputPath: dir,
+		InputPath: greeterDir(t),
 		Level:     options.LevelSymbolTable,
 		SkipTests: true,
 		CacheDir:  cacheDir,
@@ -267,17 +218,15 @@ func TestCaching_CacheFileWritten(t *testing.T) {
 	if _, err := core.New(opts).Analyze(); err != nil {
 		t.Fatalf("Analyze: %v", err)
 	}
-	cachePath := filepath.Join(cacheDir, "analysis_cache.json")
-	if _, err := os.Stat(cachePath); err != nil {
+	if _, err := os.Stat(filepath.Join(cacheDir, "analysis_cache.json")); err != nil {
 		t.Fatalf("analysis_cache.json not written to CacheDir: %v", err)
 	}
 }
 
 func TestCaching_CacheContentsRoundTrip(t *testing.T) {
-	dir := fixtureDir(t)
 	cacheDir := t.TempDir()
 	opts := options.AnalysisOptions{
-		InputPath: dir,
+		InputPath: greeterDir(t),
 		Level:     options.LevelSymbolTable,
 		SkipTests: true,
 		CacheDir:  cacheDir,
@@ -301,15 +250,13 @@ func TestCaching_CacheContentsRoundTrip(t *testing.T) {
 }
 
 func TestCaching_EagerForcesRebuild(t *testing.T) {
-	dir := fixtureDir(t)
 	cacheDir := t.TempDir()
 	opts := options.AnalysisOptions{
-		InputPath: dir,
+		InputPath: greeterDir(t),
 		Level:     options.LevelSymbolTable,
 		SkipTests: true,
 		CacheDir:  cacheDir,
 	}
-	// First run (non-eager) — seeds go_mod_hash.
 	if _, err := core.New(opts).Analyze(); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
@@ -319,9 +266,12 @@ func TestCaching_EagerForcesRebuild(t *testing.T) {
 		t.Fatalf("cache not written after first run: %v", err)
 	}
 
-	time.Sleep(10 * time.Millisecond)
+	// Backdate the cache file so the mtime delta is unambiguous — no sleep needed.
+	past := info1.ModTime().Add(-time.Second)
+	if err := os.Chtimes(cachePath, past, past); err != nil {
+		t.Fatalf("backdating cache mtime: %v", err)
+	}
 
-	// Second run with Eager=true — must rewrite cache even when go_mod_hash matches.
 	opts.Eager = true
 	if _, err := core.New(opts).Analyze(); err != nil {
 		t.Fatalf("eager run: %v", err)
@@ -330,10 +280,9 @@ func TestCaching_EagerForcesRebuild(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cache not found after eager run: %v", err)
 	}
-	// saveCache always writes, so mtime must advance.
-	if !info2.ModTime().After(info1.ModTime()) {
+	if !info2.ModTime().After(past) {
 		t.Errorf("analysis_cache.json mtime did not advance on eager=true run: %v vs %v",
-			info1.ModTime(), info2.ModTime())
+			past, info2.ModTime())
 	}
 }
 

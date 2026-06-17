@@ -5,6 +5,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 
@@ -49,11 +50,19 @@ via CLDK(language="go").analysis(project_path=...).`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if showVersion {
-				fmt.Println("codeanalyzer-go " + version)
+				cmd.Println("codeanalyzer-go " + version)
 				return nil
 			}
 			if inputPath == "" {
 				return fmt.Errorf("--input / -i is required")
+			}
+			switch format {
+			case "", "json":
+				// valid
+			case "msgpack":
+				return fmt.Errorf("msgpack output is not yet implemented; use --format json")
+			default:
+				return fmt.Errorf("unsupported output format %q; supported: json", format)
 			}
 			utils.SetVerbosity(verbosity)
 
@@ -81,6 +90,16 @@ via CLDK(language="go").analysis(project_path=...).`,
 				return err
 			}
 
+			// When no --output dir is given, write JSON to cobra's output
+			// writer so tests can capture it via cmd.SetOut.
+			if outputDir == "" {
+				data, err := json.Marshal(app)
+				if err != nil {
+					return err
+				}
+				_, err = cmd.OutOrStdout().Write(data)
+				return err
+			}
 			return core.WriteOutput(app, outputDir, format)
 		},
 	}

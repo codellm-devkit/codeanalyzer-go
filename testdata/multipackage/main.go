@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"log"
 
-	"example.com/realistic/server"
-	"example.com/realistic/worker"
+	"example.com/multipackage/server"
+	"example.com/multipackage/worker"
 )
 
 func main() {

@@ -50,6 +50,9 @@ func (b *SymbolTableBuilder) Build(targetFiles []string, skipTests bool) (map[st
 			packages.NeedDeps,
 		Dir:  b.projectDir,
 		Fset: b.fset,
+		// Include test packages when the caller wants test files. Without this,
+		// go/packages never presents *_test.go files to the loader.
+		Tests: !skipTests,
 		// Silence go vet; we only need type info, not a full build.
 		BuildFlags: []string{},
 	}
@@ -90,6 +93,11 @@ func (b *SymbolTableBuilder) Build(targetFiles []string, skipTests bool) (map[st
 			}
 			filePath := pkg.GoFiles[i]
 			relPath := utils.RelativePath(b.projectDir, filePath)
+			// Paths that escape the project root (generated test runners in the
+			// Go build cache, stdlib, etc.) are never project files.
+			if strings.HasPrefix(relPath, "..") {
+				continue
+			}
 			if skipTests && utils.IsTestFile(relPath) {
 				continue
 			}
@@ -129,6 +137,9 @@ func (b *SymbolTableBuilder) reconcileCrossFileMethods(symbolTable map[string]sc
 			}
 			filePath := pkg.GoFiles[i]
 			relPath := utils.RelativePath(b.projectDir, filePath)
+			if strings.HasPrefix(relPath, "..") {
+				continue
+			}
 
 			for _, decl := range astFile.Decls {
 				fd, ok := decl.(*ast.FuncDecl)
@@ -542,6 +553,7 @@ func (b *SymbolTableBuilder) buildCallable(
 		callable.Code = b.nodeSource(decl)
 		callable.CallSites = b.buildCallSites(pkg, decl.Body)
 		callable.LocalVariables = b.buildLocalVars(pkg, decl.Body)
+		callable.InnerCallables = b.buildInnerCallables(pkg, sig, decl.Body)
 	}
 
 	return callable
@@ -633,6 +645,9 @@ func (b *SymbolTableBuilder) buildCallSites(pkg *packages.Package, body *ast.Blo
 			if site != nil {
 				sites = append(sites, *site)
 			}
+			return false
+		case *ast.FuncLit:
+			// Closure bodies are handled by buildInnerCallables; don't double-count.
 			return false
 		case *ast.CallExpr:
 			site := b.callExprToSite(pkg, node, false)
@@ -762,6 +777,49 @@ func (b *SymbolTableBuilder) buildLocalVars(pkg *packages.Package, body *ast.Blo
 	return vars
 }
 
+// buildInnerCallables walks body and collects each FuncLit as a named closure.
+// Only the top level is captured; nested closures appear in the closure's own
+// InnerCallables (populated when buildCallSites recurses into lit.Body).
+func (b *SymbolTableBuilder) buildInnerCallables(pkg *packages.Package, outerSig string, body *ast.BlockStmt) map[string]schema.GoCallable {
+	inner := map[string]schema.GoCallable{}
+	n := 0
+	ast.Inspect(body, func(node ast.Node) bool {
+		lit, ok := node.(*ast.FuncLit)
+		if !ok {
+			return true
+		}
+		n++
+		name := fmt.Sprintf("closure_%d", n)
+		sig := outerSig + "." + name
+		pos := b.fset.Position(lit.Pos())
+		endPos := b.fset.Position(lit.End())
+		_, retTypes := b.buildReturnTypes(pkg, lit.Type)
+		retType := b.joinReturnTypes(retTypes)
+
+		ic := schema.GoCallable{
+			Name:           name,
+			Signature:      sig,
+			Parameters:     b.buildParams(pkg, lit.Type),
+			ReturnType:     retType,
+			ReturnTypes:    retTypes,
+			CallSites:      []schema.GoCallsite{},
+			InnerCallables: map[string]schema.GoCallable{},
+			LocalVariables: []schema.GoVariableDeclaration{},
+			StartLine:      pos.Line,
+			EndLine:        endPos.Line,
+		}
+		if lit.Body != nil {
+			ic.Code = b.nodeSource(lit)
+			ic.CallSites = b.buildCallSites(pkg, lit.Body)
+			ic.LocalVariables = b.buildLocalVars(pkg, lit.Body)
+			ic.InnerCallables = b.buildInnerCallables(pkg, sig, lit.Body)
+		}
+		inner[name] = ic
+		return false // don't recurse; nested closures are handled above
+	})
+	return inner
+}
+
 // ─── Package-level variables ──────────────────────────────────────────────────
 
 func (b *SymbolTableBuilder) buildPackageVars(pkg *packages.Package, astFile *ast.File) []schema.GoVariableDeclaration {
@@ -826,6 +884,8 @@ func (b *SymbolTableBuilder) cyclomaticComplexity(decl *ast.FuncDecl) int {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 // receiverTypeName extracts the base type name from a receiver field list.
+// It handles pointer receivers (*T), generic single-param receivers (T[A]),
+// pointer-to-generic (*T[A]), and multi-param generic receivers (*T[A, B]).
 func (b *SymbolTableBuilder) receiverTypeName(recv *ast.FieldList) string {
 	if recv == nil || len(recv.List) == 0 {
 		return ""
@@ -834,6 +894,14 @@ func (b *SymbolTableBuilder) receiverTypeName(recv *ast.FieldList) string {
 	// Strip pointer.
 	if star, ok := expr.(*ast.StarExpr); ok {
 		expr = star.X
+	}
+	// Generic single type param: Set[T] → IndexExpr{X: Ident("Set")}
+	if idx, ok := expr.(*ast.IndexExpr); ok {
+		expr = idx.X
+	}
+	// Generic multi type param: Map[K, V] → IndexListExpr{X: Ident("Map")}
+	if idx, ok := expr.(*ast.IndexListExpr); ok {
+		expr = idx.X
 	}
 	if ident, ok := expr.(*ast.Ident); ok {
 		return ident.Name
