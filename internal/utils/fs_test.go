@@ -80,10 +80,10 @@ func TestFileHash_Deterministic(t *testing.T) {
 
 func TestFileHash_DifferentContent(t *testing.T) {
 	dir := t.TempDir()
+	writeFile(t, dir, "a.txt", "aaa")
+	writeFile(t, dir, "b.txt", "bbb")
 	a := filepath.Join(dir, "a.txt")
 	b := filepath.Join(dir, "b.txt")
-	os.WriteFile(a, []byte("aaa"), 0o644)
-	os.WriteFile(b, []byte("bbb"), 0o644)
 
 	ha, _ := utils.FileHash(a)
 	hb, _ := utils.FileHash(b)
@@ -168,7 +168,9 @@ func TestDiscoverGoFiles_SkipsVendorDir(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "main.go", "package main")
 	vendor := filepath.Join(dir, "vendor", "pkg")
-	os.MkdirAll(vendor, 0o755)
+	if err := os.MkdirAll(vendor, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	writeFile(t, vendor, "lib.go", "package pkg")
 
 	files, err := utils.DiscoverGoFiles(dir, true)

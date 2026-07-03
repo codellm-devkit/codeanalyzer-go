@@ -4,7 +4,6 @@ package syntactic_analysis
 import (
 	"fmt"
 	"go/types"
-	"strings"
 )
 
 // signatureOf is the single canonicalizer for all signature strings in the analyzer.
@@ -50,37 +49,3 @@ func signatureOf(obj types.Object) string {
 	}
 }
 
-// signatureOfNamed builds a type signature from a *types.Named directly.
-// Used when we have the named type but not a types.Object.
-func signatureOfNamed(named *types.Named) string {
-	if named == nil {
-		return ""
-	}
-	obj := named.Obj()
-	pkgPath := ""
-	if obj.Pkg() != nil {
-		pkgPath = obj.Pkg().Path()
-	}
-	return fmt.Sprintf("%s.%s", pkgPath, obj.Name())
-}
-
-// signatureForCall builds a callee signature from a *types.Func resolved at a call site.
-func signatureForCall(fn *types.Func) string {
-	return signatureOf(fn)
-}
-
-// normalizeReturnType joins multiple return types into a single parenthesized string.
-// Single non-error returns are returned as-is; multiple returns become "(t1, t2, ...)".
-func normalizeReturnType(results *types.Tuple) (joined string, parts []string) {
-	if results == nil || results.Len() == 0 {
-		return "", nil
-	}
-	parts = make([]string, results.Len())
-	for i := 0; i < results.Len(); i++ {
-		parts[i] = results.At(i).Type().String()
-	}
-	if len(parts) == 1 {
-		return parts[0], parts
-	}
-	return "(" + strings.Join(parts, ", ") + ")", parts
-}
