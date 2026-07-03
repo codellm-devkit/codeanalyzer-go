@@ -35,3 +35,6 @@ go.work.sum
 
 # macOS
 .DS_Store
+
+# Generated analysis output
+/output/

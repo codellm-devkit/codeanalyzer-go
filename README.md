@@ -188,8 +188,8 @@ codeanalyzer-go/
 │   ├── frameworks/           # BaseEntrypointFinder — extension seam for framework passes
 │   └── utils/                # DiscoverGoFiles, IsVendored, IsTestFile, logging
 ├── testdata/
-│   ├── fixture/              # Minimal two-package fixture (basic struct/interface/call sites)
-│   ├── realistic/            # Richer fixture covering embedded fields, variadic params, goroutines, …
+│   ├── greeter/              # Minimal two-package fixture (basic struct/interface/call sites)
+│   ├── multipackage/         # Richer fixture covering embedded fields, variadic params, goroutines, …
 │   ├── generics/             # Go 1.18+ generics fixture (Set[T], union-constraint interfaces, Map[T,U])
 │   └── chi/                  # External-dep fixture (chi v5, vendored) for HTTP handler patterns
 ```
@@ -204,7 +204,7 @@ The `core` package is a pure orchestrator: it calls `syntactic_analysis` → `se
 go test ./...
 ```
 
-Tests run against four fixtures: `testdata/fixture/` (basic), `testdata/realistic/` (multi-file packages, goroutines, variadic params), `testdata/generics/` (Go 1.18+ generics — `Set[T]`, union constraints, multi-type-param functions), and `testdata/chi/` (external dependency via vendored chi v5, HTTP handler patterns). All 57 tests cover symbol table correctness, generic receiver attribution, call graph edges, JSON round-trip, output format validation, caching behaviour, and error paths.
+Tests run against four fixtures: `testdata/greeter/` (basic), `testdata/multipackage/` (multi-file packages, goroutines, variadic params), `testdata/generics/` (Go 1.18+ generics — `Set[T]`, union constraints, multi-type-param functions), and `testdata/chi/` (external dependency via vendored chi v5, HTTP handler patterns). All 105 tests cover symbol table correctness, generic receiver attribution, call graph edges, JSON round-trip, output format validation, caching behaviour, and error paths.
 
 `go test` caches passing results by source hash. To force a full re-run:
 
