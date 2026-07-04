@@ -8,10 +8,19 @@
 # Project-specific binaries
 /codeanalyzer
 /codeanalyzer-go
+/cango
 
 # Build output
 /dist/
 /bin/
+
+# Release packaging artifacts (produced by packaging/python/build_wheels.sh and
+# the release workflow; the bundled per-platform binary is ignored via
+# packaging/python/src/codeanalyzer_go/_bin/.gitignore).
+/release-bins/
+/packaging/python/dist/
+/packaging/python/README.md
+codeanalyzer-go.rb
 
 # Test binary, built with `go test -c`
 *.test

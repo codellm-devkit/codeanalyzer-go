@@ -16,7 +16,10 @@ import (
 	"github.com/codellm-devkit/codeanalyzer-go/internal/utils"
 )
 
-const version = "0.1.0"
+// version is the analyzer version. It defaults to a dev value and is overridden
+// at release time via -ldflags "-X main.version=<tag>" (see packaging/python/build_wheels.sh),
+// keeping the binary, the PyPI wheel, and the git tag in lockstep.
+var version = "0.1.0"
 
 func main() {
 	if err := rootCmd().Execute(); err != nil {
@@ -41,8 +44,9 @@ func rootCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "codeanalyzer-go",
-		Short: "Static analysis for Go — symbol table and call graph via go/types",
+		Use:     "cango",
+		Aliases: []string{"codeanalyzer-go"},
+		Short:   "Static analysis for Go — symbol table and call graph via go/types",
 		Long: `codeanalyzer-go produces analysis.json (symbol table + call graph) for Go projects.
 
 The output conforms to the CLDK canonical schema so the Python SDK can load it
@@ -50,7 +54,7 @@ via CLDK(language="go").analysis(project_path=...).`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if showVersion {
-				cmd.Println("codeanalyzer-go " + version)
+				cmd.Println("cango " + version)
 				return nil
 			}
 			if inputPath == "" {

@@ -1,0 +1,58 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "codeanalyzer-go"
+dynamic = ["version"]
+description = "Prebuilt codeanalyzer-go (cango) backend binary for CLDK (codellm-devkit)."
+# The PyPI long description is the repo root README, copied in by build_wheels.sh at build time
+# (single source of truth; the copy is gitignored). See that script for the cp + cleanup.
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "codellm-devkit" },
+]
+keywords = ["cldk", "codellm-devkit", "go", "golang", "code analysis", "call-graph"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Go",
+    "Programming Language :: Python :: 3",
+]
+
+[project.urls]
+Homepage = "https://codellm-devkit.info"
+Repository = "https://github.com/codellm-devkit/codeanalyzer-go"
+
+# Installs launchers on PATH that exec() the bundled binary
+# (see src/codeanalyzer_go/__main__.py). `cango` is the canonical short command;
+# `codeanalyzer-go` is kept as a backwards-compatible alias so anything that
+# shells out to the old name (e.g. the CLDK Python SDK) keeps working.
+[project.scripts]
+cango = "codeanalyzer_go.__main__:main"
+codeanalyzer-go = "codeanalyzer_go.__main__:main"
+
+# Single source of truth for the package version: __init__.py's __version__.
+# build_wheels.sh overwrites it from $PKG_VERSION (set to the git tag in CI), so a
+# tag of vX.Y.Z always produces a codeanalyzer-go==X.Y.Z wheel.
+[tool.hatch.version]
+path = "src/codeanalyzer_go/__init__.py"
+
+# The compiled binary lives under _bin/ and is gitignored (it is produced per
+# platform at build time). `artifacts` re-includes it in the wheel anyway, so the
+# gitignored binary still ships inside the built wheel.
+[tool.hatch.build.targets.wheel]
+packages = ["src/codeanalyzer_go"]
+artifacts = ["src/codeanalyzer_go/_bin/*"]
+
+[tool.hatch.build.targets.sdist]
+# No meaningful sdist: the binary cannot be built without the Go toolchain, so we
+# ship platform wheels only. Keep the sdist minimal for metadata completeness.
+include = [
+    "src/codeanalyzer_go/__init__.py",
+    "README.md",
+    "build_wheels.sh",
+]

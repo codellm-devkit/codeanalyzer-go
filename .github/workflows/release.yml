@@ -1,0 +1,262 @@
+name: Release (binaries + Python wheels)
+
+# Cross-compiles the self-contained cango (codeanalyzer-go) binary for every
+# supported platform and publishes:
+#   1. the raw binaries as GitHub Release assets (for analysis_backend_path /
+#      shell-script / Homebrew install), and
+#   2. platform-tagged Python wheels to PyPI as `codeanalyzer-go`.
+#
+# Go cross-compiles all targets from one host (GOOS/GOARCH, CGO_ENABLED=0), so a
+# single Linux job suffices -- the same shape as codeanalyzer-typescript.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write          # create GitHub Release + delete tag on failure
+  id-token: write          # PyPI Trusted Publishing (OIDC) -- no API token needed
+  discussions: write       # attach the release-linked repo Discussion (Announcements)
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      # Derive the release version from the tag (vX.Y.Z -> X.Y.Z). On a manual
+      # workflow_dispatch run there is no tag, so fall back to a dev version.
+      - name: Determine version
+        id: ver
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            version="${GITHUB_REF#refs/tags/v}"
+          else
+            version="0.0.0-dev"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo ">>> Releasing version $version"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          check-latest: true
+
+      # ----- test gate: a broken build must not produce a release -----
+      - name: Run tests
+        id: test
+        continue-on-error: true
+        run: go test ./... -count=1
+
+      - name: Delete tag on failure
+        if: steps.test.conclusion == 'failure' && startsWith(github.ref, 'refs/tags/')
+        run: |
+          echo "Tests failed. Deleting tag ${GITHUB_REF#refs/tags/}..."
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git push --delete origin "${GITHUB_REF#refs/tags/}"
+          exit 1
+
+      - name: Fail if tests failed (non-tag runs)
+        if: steps.test.conclusion == 'failure'
+        run: exit 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python build tooling
+        # hatchling is the build backend; build_wheels.sh runs `python -m build
+        # --no-isolation`, so it must be present in this env (no auto-install).
+        run: python -m pip install --upgrade build wheel hatchling
+
+      - name: Build platform wheels (cross-compiles every target via go build)
+        working-directory: packaging/python
+        env:
+          PKG_VERSION: ${{ steps.ver.outputs.version }}
+        run: ./build_wheels.sh
+
+      - name: Extract raw binaries from wheels (for GitHub Release)
+        working-directory: packaging/python
+        run: |
+          mkdir -p ../../release-bins
+          for whl in dist/*.whl; do
+            plat="$(basename "$whl" .whl | sed 's/.*-py3-none-//')"
+            tmp="$(mktemp -d)"
+            python -m zipfile -e "$whl" "$tmp"
+            bin="$(find "$tmp/codeanalyzer_go/_bin" -type f -name 'cango*')"
+            ext=""; [[ "$bin" == *.exe ]] && ext=".exe"
+            cp "$bin" "../../release-bins/cango-${plat}${ext}"
+          done
+          ls -lh ../../release-bins
+
+      # Publish the install script so users can:
+      #   curl --proto '=https' --tlsv1.2 -LsSf .../releases/latest/download/cango-installer.sh | sh
+      - name: Stage the install script (release asset)
+        run: cp packaging/install/cango-installer.sh release-bins/cango-installer.sh
+
+      - name: Build changelog (auto-generated from commits/PRs)
+        id: changelog
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: mikepenz/release-changelog-builder-action@v5
+        with:
+          configuration: ".github/configuration.json"
+          failOnError: "false"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Install one-liners + a download table, then the auto-generated changelog
+      # from the step above. Indented code blocks avoid backticks in the heredoc.
+      - name: Compose release notes
+        id: notes
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          CHANGELOG: ${{ steps.changelog.outputs.changelog }}
+        run: |
+          REPO="codellm-devkit/codeanalyzer-go"
+          BASE="https://github.com/$REPO/releases/download/v$VERSION"
+          cat > "$RUNNER_TEMP/RELEASE_BODY.md" <<EOF
+          ## Install codeanalyzer-go v$VERSION
+
+          Shell script (prebuilt binary; macOS and Linux):
+
+              curl --proto '=https' --tlsv1.2 -LsSf https://github.com/$REPO/releases/latest/download/cango-installer.sh | sh
+
+          Homebrew:
+
+              brew install codellm-devkit/homebrew-tap/codeanalyzer-go
+
+          PyPI:
+
+              pip install codeanalyzer-go==$VERSION
+
+          ## Download
+
+          | File | Platform |
+          | --- | --- |
+          | [cango-macosx_11_0_arm64]($BASE/cango-macosx_11_0_arm64) | Apple Silicon macOS |
+          | [cango-macosx_10_12_x86_64]($BASE/cango-macosx_10_12_x86_64) | Intel macOS |
+          | [cango-manylinux2014_x86_64]($BASE/cango-manylinux2014_x86_64) | x86-64 Linux |
+          | [cango-manylinux2014_aarch64]($BASE/cango-manylinux2014_aarch64) | ARM64 Linux |
+          | [cango-win_amd64.exe]($BASE/cango-win_amd64.exe) | x64 Windows |
+          | [cango-installer.sh]($BASE/cango-installer.sh) | Shell installer |
+
+          ## Changelog
+
+          $CHANGELOG
+          EOF
+          echo "----- composed release body -----"; cat "$RUNNER_TEMP/RELEASE_BODY.md"
+
+      - name: Publish GitHub Release (raw binaries)
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: release-bins/*
+          body_path: ${{ runner.temp }}/RELEASE_BODY.md
+          # Auto-open a repo-level Discussion linked to this release, seeded with
+          # the same notes. Requires Discussions enabled and this category to exist.
+          discussion_category_name: Announcements
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Mirror the release announcement into the ORG-level discussions, which are
+      # backed by codellm-devkit/.github. GITHUB_TOKEN can't write cross-repo, so
+      # this uses a PAT/App token (ORG_DISCUSSIONS_TOKEN) with discussions:write
+      # on that repo, and posts via the createDiscussion GraphQL mutation. Reuses
+      # the already-composed RELEASE_BODY.md so org and repo posts stay identical.
+      - name: Announce in org-level discussions (codellm-devkit/.github)
+        if: startsWith(github.ref, 'refs/tags/')
+        continue-on-error: true   # a failed org post must not fail an otherwise-good release
+        env:
+          GH_TOKEN: ${{ secrets.ORG_DISCUSSIONS_TOKEN }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -uo pipefail
+          OWNER="codellm-devkit"; REPO=".github"; CATEGORY="Announcements"
+          # The mutation needs GraphQL node IDs, not names — resolve them first.
+          RESP=$(gh api graphql \
+            -f query='query($o:String!,$r:String!){repository(owner:$o,name:$r){id discussionCategories(first:25){nodes{id name}}}}' \
+            -f o="$OWNER" -f r="$REPO") \
+            || { echo "::warning::org discussion lookup failed — skipping org announcement."; exit 0; }
+          REPO_ID=$(echo "$RESP" | jq -r '.data.repository.id')
+          CAT_ID=$(echo "$RESP" | jq -r --arg c "$CATEGORY" '.data.repository.discussionCategories.nodes[]|select(.name==$c)|.id')
+          if [[ -z "$REPO_ID" || "$REPO_ID" == "null" || -z "$CAT_ID" ]]; then
+            echo "::warning::could not resolve $OWNER/$REPO discussion category '$CATEGORY' — skipping org announcement."
+            exit 0
+          fi
+          gh api graphql \
+            -f query='mutation($rid:ID!,$cid:ID!,$t:String!,$b:String!){createDiscussion(input:{repositoryId:$rid,categoryId:$cid,title:$t,body:$b}){discussion{url}}}' \
+            -f rid="$REPO_ID" -f cid="$CAT_ID" \
+            -f t="codeanalyzer-go v$VERSION" \
+            -f b="$(cat "$RUNNER_TEMP/RELEASE_BODY.md")"
+
+      - name: Publish wheels to PyPI (Trusted Publishing / OIDC)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: packaging/python/dist
+          # Make re-runs idempotent: a version already on PyPI is skipped rather
+          # than failing the whole job with a 400 (PyPI rejects duplicate uploads).
+          skip-existing: true
+
+      # Hand the raw binaries to the separate `homebrew` job below. Passing them
+      # as an artifact (rather than re-downloading the GitHub Release) keeps the
+      # formula checksums byte-identical to what was just published.
+      - name: Upload release binaries for the homebrew job
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-bins
+          path: release-bins/
+
+  # ----- Homebrew: regenerate the formula from the just-built binaries and push
+  # it to the shared tap. Split into its own job (needs: release) so a tap-push
+  # failure -- e.g. a missing HOMEBREW_TAP_TOKEN -- is isolated from the PyPI and
+  # GitHub Release steps above, and can be re-run on its own without re-uploading
+  # wheels.
+  homebrew:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Derive version from tag
+        id: ver
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download release binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: release-bins
+          path: release-bins
+
+      - name: Generate Homebrew formula
+        env:
+          REPO: ${{ github.repository }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          ./packaging/homebrew/generate_formula.sh release-bins > codeanalyzer-go.rb
+          cat codeanalyzer-go.rb
+
+      - name: Push formula to codellm-devkit/homebrew-tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}   # PAT with write access to homebrew-tap
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/codellm-devkit/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          cp codeanalyzer-go.rb tap/Formula/codeanalyzer-go.rb
+          cd tap
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/codeanalyzer-go.rb
+          git commit -m "codeanalyzer-go ${VERSION}" || { echo "no formula change"; exit 0; }
+          git push

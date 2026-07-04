@@ -1,34 +1,121 @@
-# codeanalyzer-go
+<div align="center">
 
-Static analysis for Go using `golang.org/x/tools/go/packages` (AST + type resolution).
+<img src="https://github.com/codellm-devkit/codeanalyzer-python/blob/main/docs/assets/logo.png?raw=true" alt="CodeLLM-DevKit" />
 
-Produces `analysis.json` (symbol table + call graph) in the [CLDK canonical schema](https://github.com/codellm-devkit/python-sdk), consumable by the Python SDK via `CLDK(language="go").analysis(project_path=...)`.
+# codeanalyzer-go (`cango`)
 
-## Prerequisites
+**A Go static-analysis toolkit — the CLDK backend that emits a canonical symbol table and call graph as `analysis.json`.**
 
-- **Go 1.25+** — the only required runtime. Install from [go.dev/dl](https://go.dev/dl/). Developed and tested on Go 1.26.4.
+[![PyPI](https://img.shields.io/pypi/v/codeanalyzer-go?style=for-the-badge&logo=pypi&logoColor=white)](https://pypi.org/project/codeanalyzer-go/)
+[![Go](https://img.shields.io/github/go-mod/go-version/codellm-devkit/codeanalyzer-go?style=for-the-badge&logo=go&logoColor=white)](https://go.dev/)
+[![Release](https://img.shields.io/github/actions/workflow/status/codellm-devkit/codeanalyzer-go/release.yml?style=for-the-badge&label=release&logo=github)](https://github.com/codellm-devkit/codeanalyzer-go/actions/workflows/release.yml)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue?style=for-the-badge)](./LICENSE)
 
-Verify:
-```bash
-go version
+</div>
+
+---
+
+`cango` is a static analyzer for Go built on [`golang.org/x/tools/go/packages`](https://pkg.go.dev/golang.org/x/tools/go/packages)
+(AST + full type resolution). It produces the canonical CodeLLM-DevKit (CLDK) `analysis.json` — a
+symbol table plus a resolver-based call graph — consumable by the Python SDK via
+`CLDK(language="go").analysis(project_path=...)`. It is the Go backend behind
+[CLDK](https://github.com/codellm-devkit/python-sdk), mirroring its
+[Python](https://github.com/codellm-devkit/codeanalyzer-python),
+[TypeScript](https://github.com/codellm-devkit/codeanalyzer-typescript), and
+[Java](https://github.com/codellm-devkit/codeanalyzer-java) siblings.
+
+The binary is fully self-contained: a single static executable with no runtime dependencies.
+
+## Table of Contents
+
+- [Features](#features)
+- [Installation](#installation)
+  - [Prerequisites](#prerequisites)
+  - [Install via shell script](#install-via-shell-script)
+  - [Install via Homebrew](#install-via-homebrew)
+  - [Install via pip (PyPI)](#install-via-pip-pypi)
+  - [Build from source](#build-from-source)
+- [Usage](#usage)
+  - [Command-line options](#command-line-options)
+  - [Examples](#examples)
+- [Analysis levels](#analysis-levels)
+- [Output schema](#output-schema)
+- [Python SDK (CLDK) integration](#python-sdk-cldk-integration)
+- [Architecture & Tooling](#architecture--tooling)
+- [Development](#development)
+- [License](#license)
+
+## Features
+
+- **Symbol table** — packages, structs, interfaces, fields, methods, package-level functions,
+  imports, struct tags, and generic type parameters, with precise source spans.
+- **Call graph** — a resolver-based call graph via `go/types`: each call site is resolved to its
+  full import-path signature, with project-internal edges emitted (Level 2).
+- **Generics-aware** — Go 1.18+ generics (`Set[T]`, union-constraint interfaces, multi-type-param
+  functions) are modeled in the unified type/callable schema.
+- **Self-contained binary** — a single static executable (`go build`, `CGO_ENABLED=0`); no runtime
+  dependencies for SDK users.
+- **CLDK canonical schema** — output is spine-compatible with the Java/Python/TypeScript analyzers,
+  loadable directly by the Python SDK.
+
+## Installation
+
+### Prerequisites
+
+Running a prebuilt `cango` binary requires **nothing** — it is fully self-contained. To *analyze* a
+project, that project should be a normal Go module (contain a `go.mod`) so the type checker can
+resolve imports. Building `cango` from source requires [Go 1.25+](https://go.dev/dl/).
+
+### Install via shell script
+
+Download and install the prebuilt binary for your platform from the latest release:
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/codellm-devkit/codeanalyzer-go/releases/latest/download/cango-installer.sh | sh
 ```
 
-The binary is self-contained. No other tools are required for Level 1 analysis.
+The installer drops `cango` into `~/.local/bin` (override with `CANGO_INSTALL_DIR`) and can pin a
+version with `CANGO_VERSION=vX.Y.Z`. It also creates a `codeanalyzer-go` alias symlink. Supports
+macOS (arm64/x86_64) and Linux (x86_64/aarch64).
 
-## Building
+### Install via Homebrew
 
-```bash
+```sh
+brew install codellm-devkit/homebrew-tap/codeanalyzer-go
+```
+
+### Install via pip (PyPI)
+
+The wheel bundles the prebuilt, self-contained binary for your platform (no Go toolchain required):
+
+```sh
+pip install codeanalyzer-go
+cango --help
+```
+
+The wheel installs both a `cango` launcher and a `codeanalyzer-go` alias on `PATH`. This is also the
+package CLDK's Python SDK depends on to locate the analyzer backend; it exposes
+`codeanalyzer_go.bin_path()`.
+
+### Build from source
+
+```sh
 git clone https://github.com/codellm-devkit/codeanalyzer-go
 cd codeanalyzer-go
-go build -o codeanalyzer-go ./cmd/codeanalyzer
+go build -o cango ./cmd/codeanalyzer
 ```
 
-This produces a single static binary `codeanalyzer-go` with no runtime dependencies.
+This produces a single static binary `cango` with no runtime dependencies. You can also run the
+analyzer directly from source without compiling:
+
+```sh
+go run ./cmd/codeanalyzer -i /path/to/project -a 2
+```
 
 ## Usage
 
 ```bash
-codeanalyzer-go -i /path/to/go/project
+cango -i /path/to/go/project
 ```
 
 ### Command-line options
@@ -37,15 +124,18 @@ codeanalyzer-go -i /path/to/go/project
 codeanalyzer-go produces analysis.json (symbol table + call graph) for Go projects.
 
 Usage:
-  codeanalyzer-go [flags]
+  cango [flags]
+
+Aliases:
+  cango, codeanalyzer-go
 
 Flags:
   -a, --analysis-level int     Analysis level: 1=symbol table only, 2=+resolver call graph (default 1)
   -c, --cache-dir string       Cache directory (default: ~/.cldk/go-cache)
       --codeql                 Enable CodeQL framework-based call graph (level 2, stub)
       --eager                  Force clean rebuild (ignore cache)
-  -f, --format string          Output format: json (default "json"); msgpack is not yet implemented
-  -h, --help                   help for codeanalyzer-go
+  -f, --format string          Output format: json|msgpack (default "json")
+  -h, --help                   help for cango
   -i, --input string           Project root to analyze (required)
   -o, --output string          Output directory for analysis.json (default: stdout)
       --skip-tests             Skip *_test.go files (default true)
@@ -58,34 +148,34 @@ Flags:
 
 **Symbol table only (Level 1, default):**
 ```bash
-codeanalyzer-go -i ./my-go-project
+cango -i ./my-go-project
 ```
 Prints `analysis.json` to stdout.
 
 **Symbol table + call graph (Level 2):**
 ```bash
-codeanalyzer-go -i ./my-go-project -a 2
+cango -i ./my-go-project -a 2
 ```
 
 **Write output to a directory:**
 ```bash
-codeanalyzer-go -i ./my-go-project -a 2 -o /path/to/output/
+cango -i ./my-go-project -a 2 -o /path/to/output/
 # Writes: /path/to/output/analysis.json
 ```
 
 **Incremental analysis (specific files only):**
 ```bash
-codeanalyzer-go -i ./my-go-project -t pkg/server/server.go -t pkg/server/handler.go
+cango -i ./my-go-project -t pkg/server/server.go -t pkg/server/handler.go
 ```
 
 **Force rebuild, ignore cache:**
 ```bash
-codeanalyzer-go -i ./my-go-project --eager
+cango -i ./my-go-project --eager
 ```
 
 **Verbose output:**
 ```bash
-codeanalyzer-go -i ./my-go-project -a 2 -vv
+cango -i ./my-go-project -a 2 -vv
 ```
 
 ## Analysis levels
@@ -157,7 +247,9 @@ for file_path, go_file in analysis.get_symbol_table().items():
     print(file_path, go_file.module_name)
 ```
 
-See [python-sdk](https://github.com/codellm-devkit/python-sdk) for full API documentation.
+The SDK locates the analyzer via the `codeanalyzer-go` command on `PATH` (installed by any of the
+methods above, including `pip install codeanalyzer-go`). See
+[python-sdk](https://github.com/codellm-devkit/python-sdk) for full API documentation.
 
 ## Architecture & Tooling
 
@@ -176,7 +268,7 @@ See [python-sdk](https://github.com/codellm-devkit/python-sdk) for full API docu
 
 ```
 codeanalyzer-go/
-├── cmd/codeanalyzer/         # CLI entry point (cobra)
+├── cmd/codeanalyzer/         # CLI entry point (cobra) — builds the `cango` binary
 ├── internal/
 │   ├── core/                 # Orchestrator — delegates only, no inlined analysis
 │   ├── schema/               # GoApplication, GoFile, GoType, GoCallable, … (schema.go)
@@ -187,6 +279,10 @@ codeanalyzer-go/
 │   ├── analysis/             # Pluggable pass interface + registry (topo-ordered pipeline)
 │   ├── frameworks/           # BaseEntrypointFinder — extension seam for framework passes
 │   └── utils/                # DiscoverGoFiles, IsVendored, IsTestFile, logging
+├── packaging/
+│   ├── python/               # PyPI wheel wrapper (bundles the prebuilt binary per platform)
+│   ├── homebrew/             # generate_formula.sh — Homebrew tap formula generator
+│   └── install/              # cango-installer.sh — curl | sh installer
 ├── testdata/
 │   ├── greeter/              # Minimal two-package fixture (basic struct/interface/call sites)
 │   ├── multipackage/         # Richer fixture covering embedded fields, variadic params, goroutines, …
@@ -219,7 +315,7 @@ The analyzer's own `CacheDir` (used inside tests for `analysis_cache.json` and `
 By default the CLI writes its cache to `~/.cldk/go-cache`. To bypass it for a single run:
 
 ```bash
-codeanalyzer-go -i ./my-project --eager
+cango -i ./my-project --eager
 ```
 
 To delete it entirely:
@@ -230,8 +326,19 @@ rm -rf ~/.cldk/go-cache
 
 If you pass a custom `--cache-dir`, remove that directory instead.
 
-### Running from source
+### Releasing
 
-```bash
-go run ./cmd/codeanalyzer -i /path/to/project -a 2
-```
+Releases are cut by pushing a `vX.Y.Z` tag. The [release workflow](.github/workflows/release.yml)
+cross-compiles the `cango` binary for all supported platforms and publishes:
+
+1. the raw binaries + `cango-installer.sh` as **GitHub Release** assets,
+2. platform-tagged wheels to **PyPI** as `codeanalyzer-go` (via Trusted Publishing/OIDC), and
+3. a **Homebrew** formula pushed to `codellm-devkit/homebrew-tap`.
+
+The version is injected into the binary at build time via `-ldflags "-X main.version=<tag>"`, so
+`cango --version`, the wheel version, and the git tag always stay in lockstep. See
+[packaging/](packaging/) for the build scripts.
+
+## License
+
+Apache 2.0 — see [LICENSE](./LICENSE).

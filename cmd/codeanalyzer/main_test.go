@@ -66,8 +66,8 @@ func TestRootCmd_VersionFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("--version returned unexpected error: %v", err)
 	}
-	if !strings.Contains(out, "codeanalyzer-go") {
-		t.Errorf("--version output should contain 'codeanalyzer-go'; got %q", out)
+	if !strings.Contains(out, "cango") {
+		t.Errorf("--version output should contain 'cango'; got %q", out)
 	}
 	if !strings.Contains(out, version) {
 		t.Errorf("--version output should contain version %q; got %q", version, out)
