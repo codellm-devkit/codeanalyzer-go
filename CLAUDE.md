@@ -12,8 +12,9 @@ v2 vocabulary (parity clause: add at the leaves, never rename shared names). The
 committed spec is the full transcript: `docs/design/specs/v2-l1-emission.md`.
 
 ### Identity & positioning (Group A — reused verbatim by L3/L4)
-- **`application.id`** = `can://go/<app>`, where `<app>` is a slug derived from the
-  **go.mod module path** (deterministic, no flag). L3/L4 build ids on this unchanged.
+- **`application.id`** = `can://go/<app>`, where `<app>` is the **`--app-name`** value,
+  defaulting to the input directory's base name (per the CLI contract; the SDK's Neo4j
+  backend must use the same anchor). L3/L4 build ids on this unchanged.
 - **Callable signature** = existing `signatureOf()` output as the last `can://` path
   segment; receiver folded in for methods. One canonicalizer, unchanged from v1.
 - **`span.bytes`** = **UTF-8 byte offsets** into `module.source` (Go strings are
@@ -35,6 +36,18 @@ committed spec is the full transcript: `docs/design/specs/v2-l1-emission.md`.
   those returns remain in `return_type` too. Maps Go onto the shared field.
 - **Closures / function literals** → nested `callables{}` on the enclosing callable
   (replaces v1 `InnerCallables`); each closure gets its own `can://` id.
+- **`source_file`** (optional; added in the 2026-09-29 design loop): Go allows a method
+  to be declared in a *different file* than its receiver type. The method node stays
+  nested under its receiver type (containment-by-receiver, above), but its `span.bytes`
+  then index the **declaring file's** `module.source`, not the nesting module's. When
+  the declaring file ≠ the nesting module, the callable carries `source_file` = that
+  file's path (a `symbol_table` key). **Text recovery:** a node's text =
+  `symbol_table[source_file].source[span.bytes]` if `source_file` present, else the
+  nesting module's `source`. Emitted only when it differs (absent = same file). This is
+  the leaf-level fix for the cross-file-method empty-span collision the real-app eval
+  surfaced. Cross-language parity (C# partial classes, Rust `impl`, Ruby reopened
+  classes, TS declaration merging) is **deferred** — promote `source_file` into the
+  shared keystone vocabulary when a second language needs it.
 
 ### `call` body node
 - Typed **`is_goroutine`** and **`is_deferred`** boolean fields (`defer` is net-new vs
