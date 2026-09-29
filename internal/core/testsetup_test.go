@@ -66,6 +66,7 @@ func runTestMain(m *testing.M) int {
 		opts := options.AnalysisOptions{
 			InputPath: f.path,
 			OutputDir: outDir,
+			Format:    "json",
 			Level:     f.level,
 			SkipTests: true,
 			CacheDir:  cacheDir,
@@ -75,7 +76,7 @@ func runTestMain(m *testing.M) int {
 			fmt.Fprintf(os.Stderr, "testsetup %s: Analyze: %v\n", f.name, err)
 			return 1
 		}
-		if err := core.WriteOutput(app, outDir, "json"); err != nil {
+		if err := core.WriteOutput(app, opts); err != nil {
 			fmt.Fprintf(os.Stderr, "testsetup %s: WriteOutput: %v\n", f.name, err)
 			return 1
 		}

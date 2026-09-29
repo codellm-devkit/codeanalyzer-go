@@ -12,18 +12,19 @@ import (
 // Emit transforms the v1 GoApplication into the v2 Analysis payload. appName is
 // the application anchor (--app-name); projectDir is the absolute input root,
 // used to read each module's source for span slicing. maxLevel records how
-// deeply the tree was populated (1 = symbol table, 2 = + call_graph).
+// deeply the tree was populated (1 = symbol table, 2 = + call_graph);
+// analyzerVersion is stamped into the manifest's analyzer{} tag.
 //
 // This is a pure re-serialization: every fact comes from the v1 model, except
 // span byte offsets, which are derived from source via lineIndex.
-func Emit(app *schema.GoApplication, appName, projectDir string, maxLevel int) *v2.Analysis {
+func Emit(app *schema.GoApplication, appName, projectDir string, maxLevel int, analyzerVersion string) *v2.Analysis {
 	appID := v2.AppID(appName)
 
 	out := &v2.Analysis{
 		SchemaVersion: v2.SchemaVersion,
 		Language:      v2.Language,
 		MaxLevel:      maxLevel,
-		Analyzer:      v2.AnalyzerTag{Name: "codeanalyzer-go"},
+		Analyzer:      v2.AnalyzerTag{Name: "codeanalyzer-go", Version: analyzerVersion},
 		Application: v2.Application{
 			ID:          appID,
 			Kind:        "application",

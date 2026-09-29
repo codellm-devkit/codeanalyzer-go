@@ -5,7 +5,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -32,24 +31,25 @@ func main() {
 
 func rootCmd() *cobra.Command {
 	var (
-		inputPath     string
-		outputDir     string
-		format        string
-		emit          string
-		appName       string
-		level         int
-		targetFiles   []string
-		skipTests     bool
-		eager         bool
-		cacheDir      string
-		jobs          int
-		useCodeQL     bool
-		verbosity     int
-		showVersion   bool
-		neo4jURI      string
-		neo4jUser     string
-		neo4jPassword string
-		neo4jDatabase string
+		inputPath      string
+		outputDir      string
+		format         string
+		emit           string
+		appName        string
+		level          int
+		analysisSchema int
+		targetFiles    []string
+		skipTests      bool
+		eager          bool
+		cacheDir       string
+		jobs           int
+		useCodeQL      bool
+		verbosity      int
+		showVersion    bool
+		neo4jURI       string
+		neo4jUser      string
+		neo4jPassword  string
+		neo4jDatabase  string
 	)
 
 	cmd := &cobra.Command{
@@ -107,23 +107,25 @@ via CLDK(language="go").analysis(project_path=...).`,
 			}
 
 			opts := options.AnalysisOptions{
-				InputPath:     inputPath,
-				OutputDir:     outputDir,
-				Format:        format,
-				Emit:          options.EmitTarget(emit),
-				AppName:       appName,
-				Level:         options.AnalysisLevel(level),
-				TargetFiles:   targetFiles,
-				SkipTests:     skipTests,
-				Eager:         eager,
-				CacheDir:      cacheDir,
-				Jobs:          jobs,
-				UseCodeQL:     useCodeQL,
-				Verbose:       verbosity > 0,
-				Neo4jURI:      firstNonEmpty(neo4jURI, os.Getenv("NEO4J_URI")),
-				Neo4jUser:     firstNonEmpty(neo4jUser, os.Getenv("NEO4J_USERNAME"), "neo4j"),
-				Neo4jPassword: firstNonEmpty(neo4jPassword, os.Getenv("NEO4J_PASSWORD"), "neo4j"),
-				Neo4jDatabase: firstNonEmpty(neo4jDatabase, os.Getenv("NEO4J_DATABASE")),
+				InputPath:       inputPath,
+				OutputDir:       outputDir,
+				Format:          format,
+				Emit:            options.EmitTarget(emit),
+				AppName:         appName,
+				Level:           options.AnalysisLevel(level),
+				SchemaVersion:   analysisSchema,
+				AnalyzerVersion: version,
+				TargetFiles:     targetFiles,
+				SkipTests:       skipTests,
+				Eager:           eager,
+				CacheDir:        cacheDir,
+				Jobs:            jobs,
+				UseCodeQL:       useCodeQL,
+				Verbose:         verbosity > 0,
+				Neo4jURI:        firstNonEmpty(neo4jURI, os.Getenv("NEO4J_URI")),
+				Neo4jUser:       firstNonEmpty(neo4jUser, os.Getenv("NEO4J_USERNAME"), "neo4j"),
+				Neo4jPassword:   firstNonEmpty(neo4jPassword, os.Getenv("NEO4J_PASSWORD"), "neo4j"),
+				Neo4jDatabase:   firstNonEmpty(neo4jDatabase, os.Getenv("NEO4J_DATABASE")),
 			}
 
 			analyzer := core.New(opts)
@@ -133,16 +135,17 @@ via CLDK(language="go").analysis(project_path=...).`,
 			}
 
 			// When no --output dir is given, write JSON to cobra's output
-			// writer so tests can capture it via cmd.SetOut.
+			// writer so tests can capture it via cmd.SetOut. Both paths render
+			// through core so the v1/v2 schema selection stays in one place.
 			if outputDir == "" {
-				data, err := json.Marshal(app)
+				data, err := core.RenderJSON(app, opts)
 				if err != nil {
 					return err
 				}
 				_, err = cmd.OutOrStdout().Write(data)
 				return err
 			}
-			return core.WriteOutput(app, outputDir, format)
+			return core.WriteOutput(app, opts)
 		},
 	}
 
@@ -155,6 +158,8 @@ via CLDK(language="go").analysis(project_path=...).`,
 		"Application anchor name for can:// ids and Neo4j :Application (default: input dir name)")
 	f.IntVarP(&level, "analysis-level", "a", 1,
 		"Analysis level: 1=symbol table only, 2=+resolver call graph")
+	f.IntVar(&analysisSchema, "analysis-schema", 1,
+		"Output schema major: 1=legacy v1 shape (default), 2=canonical v2 tree")
 	f.StringSliceVarP(&targetFiles, "target-files", "t", nil,
 		"Restrict analysis to specific files (incremental mode)")
 	f.BoolVar(&skipTests, "skip-tests", true, "Skip *_test.go files")

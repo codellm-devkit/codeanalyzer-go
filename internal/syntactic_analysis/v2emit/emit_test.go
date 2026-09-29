@@ -37,7 +37,7 @@ func buildGreeter(t *testing.T) (*schema.GoApplication, string) {
 
 func TestEmit_Envelope(t *testing.T) {
 	app, dir := buildGreeter(t)
-	out := Emit(app, "greeter", dir, 1)
+	out := Emit(app, "greeter", dir, 1, "test")
 
 	if out.SchemaVersion != "2.0.0" {
 		t.Errorf("schema_version = %q, want 2.0.0", out.SchemaVersion)
@@ -61,7 +61,7 @@ func TestEmit_Envelope(t *testing.T) {
 
 func TestEmit_ModuleSourceAndIDs(t *testing.T) {
 	app, dir := buildGreeter(t)
-	out := Emit(app, "greeter", dir, 1)
+	out := Emit(app, "greeter", dir, 1, "test")
 
 	mod, ok := out.Application.SymbolTable["main.go"]
 	if !ok {
@@ -84,7 +84,7 @@ func TestEmit_ModuleSourceAndIDs(t *testing.T) {
 
 func TestEmit_CallableBodyAndSpanSlice(t *testing.T) {
 	app, dir := buildGreeter(t)
-	out := Emit(app, "greeter", dir, 1)
+	out := Emit(app, "greeter", dir, 1, "test")
 
 	mod := out.Application.SymbolTable["main.go"]
 	var main v2.Callable
@@ -123,7 +123,7 @@ func TestEmit_CallableBodyAndSpanSlice(t *testing.T) {
 
 func TestEmit_CalleeSerializesAsNull(t *testing.T) {
 	app, dir := buildGreeter(t)
-	out := Emit(app, "greeter", dir, 1)
+	out := Emit(app, "greeter", dir, 1, "test")
 	data, err := json.Marshal(out)
 	if err != nil {
 		t.Fatalf("marshal failed: %v", err)
@@ -144,7 +144,7 @@ func TestEmit_CalleeSerializesAsNull(t *testing.T) {
 
 func TestEmit_TypeKindAndMethods(t *testing.T) {
 	app, dir := buildGreeter(t)
-	out := Emit(app, "greeter", dir, 1)
+	out := Emit(app, "greeter", dir, 1, "test")
 
 	// Find the Greeter type wherever it lives; assert struct kind + methods.
 	var found bool

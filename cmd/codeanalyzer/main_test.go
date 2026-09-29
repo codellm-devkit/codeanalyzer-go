@@ -196,6 +196,69 @@ func TestRootCmd_Level2ProducesCallGraph(t *testing.T) {
 	}
 }
 
+// ── --analysis-schema ──────────────────────────────────────────────────────────
+
+func TestRootCmd_DefaultSchemaIsV1(t *testing.T) {
+	td := cliTestdataDir()
+	out, _, err := runCmd("--input", filepath.Join(td, "greeter"), "--cache-dir", t.TempDir())
+	if err != nil {
+		t.Fatalf("command failed: %v", err)
+	}
+	var v map[string]interface{}
+	if jsonErr := json.Unmarshal([]byte(out), &v); jsonErr != nil {
+		t.Fatalf("stdout is not valid JSON: %v", jsonErr)
+	}
+	if _, ok := v["symbol_table"]; !ok {
+		t.Error("default output should be the v1 shape (top-level symbol_table)")
+	}
+	if _, ok := v["schema_version"]; ok {
+		t.Error("default output should not carry schema_version (that is v2)")
+	}
+}
+
+func TestRootCmd_AnalysisSchema2EmitsV2(t *testing.T) {
+	td := cliTestdataDir()
+	out, _, err := runCmd(
+		"--input", filepath.Join(td, "greeter"),
+		"--analysis-schema", "2",
+		"--cache-dir", t.TempDir(),
+	)
+	if err != nil {
+		t.Fatalf("command failed: %v", err)
+	}
+	var v struct {
+		SchemaVersion string `json:"schema_version"`
+		Language      string `json:"language"`
+		Application   struct {
+			ID string `json:"id"`
+		} `json:"application"`
+	}
+	if jsonErr := json.Unmarshal([]byte(out), &v); jsonErr != nil {
+		t.Fatalf("stdout is not valid JSON: %v", jsonErr)
+	}
+	if v.SchemaVersion != "2.0.0" {
+		t.Errorf("schema_version = %q, want 2.0.0", v.SchemaVersion)
+	}
+	if v.Language != "go" {
+		t.Errorf("language = %q, want go", v.Language)
+	}
+	if v.Application.ID != "can://go/greeter" {
+		t.Errorf("application.id = %q, want can://go/greeter", v.Application.ID)
+	}
+}
+
+func TestRootCmd_UnknownSchemaReturnsError(t *testing.T) {
+	td := cliTestdataDir()
+	_, _, err := runCmd(
+		"--input", filepath.Join(td, "greeter"),
+		"--analysis-schema", "9",
+		"--cache-dir", t.TempDir(),
+	)
+	if err == nil {
+		t.Fatal("expected error for unknown --analysis-schema value, got nil")
+	}
+}
+
 // ── --skip-tests ─────────────────────────────────────────────────────────────
 
 func TestRootCmd_SkipTestsFalseIncludesTestFiles(t *testing.T) {

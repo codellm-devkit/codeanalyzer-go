@@ -38,6 +38,12 @@ type AnalysisOptions struct {
 	AppName string
 	// AnalysisLevel controls symbol-table-only (1) vs + call graph (2).
 	Level AnalysisLevel
+	// SchemaVersion selects the output schema major: 1 = the legacy v1 shape
+	// (default, compat shim during the migration), 2 = the canonical v2 tree.
+	SchemaVersion int
+	// AnalyzerVersion is the analyzer's own version, recorded in the v2
+	// manifest's analyzer{} tag. Set by the CLI from its build-stamped value.
+	AnalyzerVersion string
 	// TargetFiles restricts analysis to specific files (incremental mode).
 	TargetFiles []string
 	// SkipTests skips test files (files ending in _test.go).

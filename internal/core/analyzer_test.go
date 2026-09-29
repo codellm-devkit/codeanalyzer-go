@@ -137,7 +137,7 @@ func TestCallGraph_CallSitesBackfilled(t *testing.T) {
 
 func TestWriteOutput_ValidJSON(t *testing.T) {
 	outDir := t.TempDir()
-	if err := core.WriteOutput(sharedGreeterL2, outDir, "json"); err != nil {
+	if err := core.WriteOutput(sharedGreeterL2, options.AnalysisOptions{OutputDir: outDir, Format: "json"}); err != nil {
 		t.Fatalf("WriteOutput: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(outDir, "analysis.json"))
@@ -155,7 +155,7 @@ func TestWriteOutput_ValidJSON(t *testing.T) {
 
 func TestWriteOutput_EmptyFormatDefaultsToJSON(t *testing.T) {
 	outDir := t.TempDir()
-	if err := core.WriteOutput(sharedGreeterL1, outDir, ""); err != nil {
+	if err := core.WriteOutput(sharedGreeterL1, options.AnalysisOptions{OutputDir: outDir, Format: ""}); err != nil {
 		t.Fatalf("WriteOutput with empty format: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(outDir, "analysis.json")); err != nil {
@@ -165,14 +165,14 @@ func TestWriteOutput_EmptyFormatDefaultsToJSON(t *testing.T) {
 
 func TestWriteOutput_MsgpackNotImplemented(t *testing.T) {
 	outDir := t.TempDir()
-	if err := core.WriteOutput(sharedGreeterL1, outDir, "msgpack"); err == nil {
+	if err := core.WriteOutput(sharedGreeterL1, options.AnalysisOptions{OutputDir: outDir, Format: "msgpack"}); err == nil {
 		t.Fatal("expected error for --format msgpack, got nil")
 	}
 }
 
 func TestWriteOutput_UnknownFormatErrors(t *testing.T) {
 	outDir := t.TempDir()
-	if err := core.WriteOutput(sharedGreeterL1, outDir, "csv"); err == nil {
+	if err := core.WriteOutput(sharedGreeterL1, options.AnalysisOptions{OutputDir: outDir, Format: "csv"}); err == nil {
 		t.Fatal("expected error for unknown format, got nil")
 	}
 }
