@@ -227,6 +227,65 @@ func TestGateL1_CrossPackageStructure(t *testing.T) {
 	}
 }
 
+// TestGateL1_CrossFileMethodSourceFile locks the source_file amendment
+// (CLAUDE.md § Schema decisions → callable.source_file): a method declared in a
+// different file than its receiver type stays nested under the type, but its
+// span.bytes index its OWN file's source and it carries source_file naming that
+// file. In the fixture, Server is declared in server/server.go while its method
+// (s Server) Describe() is declared in server/middleware.go.
+//
+// The text-recovery rule is the contract: a node's text =
+// symbol_table[source_file].source[span.bytes] when source_file is present. This
+// test slices the declaring module's source by the span and asserts it yields
+// the method text — the check that regressed to "" before the fix (empty span
+// against the wrong file's source).
+func TestGateL1_CrossFileMethodSourceFile(t *testing.T) {
+	out := buildMultipackageV2(t)
+
+	// Server's type node lives in server/server.go.
+	server := mustModule(t, out, "server/server.go")
+	stype, ok := server.Types["Server"]
+	if !ok {
+		t.Fatalf("Server type missing; types=%v", keys(server.Types))
+	}
+	const describeID = "example.com/multipackage/server.Server.Describe"
+	m, ok := stype.Callables[describeID]
+	if !ok {
+		t.Fatalf("Server.Describe missing; callables=%v", keys(stype.Callables))
+	}
+
+	// It is declared in a different file, so source_file must name that file.
+	const declFile = "server/middleware.go"
+	if m.SourceFile != declFile {
+		t.Errorf("Describe.source_file = %q, want %q (declared apart from its type)", m.SourceFile, declFile)
+	}
+
+	// The span must be non-empty (the pre-fix bug collapsed it to [n,n]).
+	if m.Span.Bytes[0] >= m.Span.Bytes[1] {
+		t.Errorf("Describe span is empty %v — cross-file method span not computed against its own file", m.Span.Bytes)
+	}
+
+	// Text-recovery rule: slice the DECLARING module's source by the span.
+	decl := mustModule(t, out, declFile)
+	text := m.Span.Slice(decl.Source)
+	if !strings.Contains(text, "func (s Server) Describe()") {
+		t.Errorf("Describe span over %s does not slice to the method text; got %q", declFile, text)
+	}
+
+	// Negative: an in-file method (Server.Addr, declared in server.go with its
+	// type) must NOT carry source_file — absence encodes "same file".
+	addr, ok := stype.Callables["example.com/multipackage/server.Server.Addr"]
+	if !ok {
+		t.Fatalf("Server.Addr missing; callables=%v", keys(stype.Callables))
+	}
+	if addr.SourceFile != "" {
+		t.Errorf("Addr.source_file = %q, want empty (declared in its type's own file)", addr.SourceFile)
+	}
+	if got := addr.Span.Slice(server.Source); !strings.Contains(got, "func (s *Server) Addr()") {
+		t.Errorf("Addr span over its own module does not slice to the method text; got %q", got)
+	}
+}
+
 // TestGateL1_Envelope locks the manifest envelope at L1.
 func TestGateL1_Envelope(t *testing.T) {
 	out := buildMultipackageV2(t)

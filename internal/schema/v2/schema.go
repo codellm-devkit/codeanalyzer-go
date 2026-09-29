@@ -140,6 +140,14 @@ type Callable struct {
 	Span Span   `json:"span"`
 	// Signature is the human-readable last path segment of ID (one signatureOf()).
 	Signature string `json:"signature"`
+	// SourceFile names the callable's declaring file (a symbol_table key) when it
+	// differs from the module this callable is nested under — the Go case where a
+	// method is declared in a different file than its receiver type. When set,
+	// Span.Bytes index symbol_table[SourceFile].source, NOT the nesting module's
+	// source; text = symbol_table[SourceFile].source[Span.Bytes]. Absent (the
+	// common case) means the declaring file is the nesting module. See CLAUDE.md
+	// § Schema decisions → callable.source_file and docs/design/specs/v2-l1-emission.md.
+	SourceFile string `json:"source_file,omitempty"`
 	// Parameters are the ordered formal parameters.
 	Parameters []Parameter `json:"parameters"`
 	// ReturnType is the joined return type, e.g. "(int, error)".

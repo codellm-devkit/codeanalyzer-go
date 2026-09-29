@@ -25,6 +25,13 @@ func Emit(app *schema.GoApplication, appName, projectDir string, maxLevel int, a
 	// callees and to map call_graph edge endpoints onto real callable ids.
 	idx := buildSigIndex(appID, app.SymbolTable)
 
+	// One lineIndex per source file, read once and shared. A method whose
+	// receiver type lives in a different file is nested under that type's module
+	// but must have its span computed against ITS OWN file (CLAUDE.md § Schema
+	// decisions → callable.source_file); the cache lets emitCallable reach any
+	// file's index without re-reading it per callable.
+	srcs := newSourceCache(projectDir)
+
 	out := &v2.Analysis{
 		SchemaVersion: v2.SchemaVersion,
 		Language:      v2.Language,
@@ -42,7 +49,7 @@ func Emit(app *schema.GoApplication, appName, projectDir string, maxLevel int, a
 	// sorted keeps any incidental ordering (and logs) stable across runs.
 	for _, relPath := range sortedFileKeys(app.SymbolTable) {
 		file := app.SymbolTable[relPath]
-		out.Application.SymbolTable[relPath] = emitModule(appID, projectDir, relPath, file, idx)
+		out.Application.SymbolTable[relPath] = emitModule(appID, relPath, file, idx, srcs)
 	}
 	return out
 }
@@ -50,10 +57,14 @@ func Emit(app *schema.GoApplication, appName, projectDir string, maxLevel int, a
 // emitModule builds a v2 module from a v1 GoFile, reading the file's source so
 // spans can slice off it. A file that cannot be read still emits its structure
 // (with empty source and zeroed byte spans) rather than dropping the module.
-func emitModule(appID, projectDir, relPath string, file schema.GoFile, idx sigIndex) v2.Module {
-	source := readSource(projectDir, relPath)
-	li := newLineIndex(source)
-	modID := v2.ModuleID(appID, relPath)
+//
+// modRel is this module's own file path (a symbol_table key). It is threaded to
+// callables so a method declared in another file can be detected and given a
+// span against its own source plus a source_file pointer.
+func emitModule(appID, modRel string, file schema.GoFile, idx sigIndex, srcs *sourceCache) v2.Module {
+	li := srcs.index(modRel)
+	source := li.source
+	modID := v2.ModuleID(appID, modRel)
 
 	mod := v2.Module{
 		ID:        modID,
@@ -70,18 +81,20 @@ func emitModule(appID, projectDir, relPath string, file schema.GoFile, idx sigIn
 	}
 
 	for name, t := range file.Types {
-		mod.Types[name] = emitType(modID, li, t, idx)
+		mod.Types[name] = emitType(modID, modRel, t, idx, srcs)
 	}
 	for sig, fn := range file.Functions {
-		mod.Functions[sig] = emitCallable(modID, li, fn, idx)
+		mod.Functions[sig] = emitCallable(modID, modRel, li, fn, idx, srcs)
 	}
 	return mod
 }
 
 // emitType maps a v1 GoType to a v2 type node, collapsing is_interface into the
 // kind and splitting embedding (base_types) from computed satisfaction. Methods
-// resolve into the type's callables{}.
-func emitType(modID string, li *lineIndex, t schema.GoType, idx sigIndex) v2.Type {
+// resolve into the type's callables{}. modRel is the module the type lives in;
+// its methods may be declared in other files (handled in emitCallable).
+func emitType(modID, modRel string, t schema.GoType, idx sigIndex, srcs *sourceCache) v2.Type {
+	li := srcs.index(modRel)
 	typeID := v2.TypeID(modID, t.Signature)
 	out := v2.Type{
 		ID:        typeID,
@@ -102,20 +115,37 @@ func emitType(modID string, li *lineIndex, t schema.GoType, idx sigIndex) v2.Typ
 		}
 	}
 	for sig, m := range t.Methods {
-		out.Callables[sig] = emitCallable(typeID, li, m, idx)
+		out.Callables[sig] = emitCallable(typeID, modRel, li, m, idx, srcs)
 	}
 	return out
 }
 
 // emitCallable maps a v1 GoCallable to a v2 callable node, including its body
 // (call nodes) and nested closures.
-func emitCallable(parentID string, li *lineIndex, c schema.GoCallable, idx sigIndex) v2.Callable {
+//
+// modRel and modLI are the nesting module's path and lineIndex. When the
+// callable's declaring file (c.Path) differs — a method whose receiver type is
+// in another file — its span is computed against its OWN file's lineIndex and
+// source_file records that file, per CLAUDE.md § Schema decisions. Nested
+// closures share their enclosing callable's file (Go has no cross-file
+// closures), so they carry the resolved file down unchanged.
+func emitCallable(parentID, modRel string, modLI *lineIndex, c schema.GoCallable, idx sigIndex, srcs *sourceCache) v2.Callable {
 	callID := v2.CallableID(parentID, c.Signature)
+
+	// Resolve the file this callable's positions are relative to.
+	li := modLI
+	sourceFile := ""
+	if c.Path != "" && c.Path != modRel {
+		li = srcs.index(c.Path)
+		sourceFile = c.Path
+	}
+
 	out := v2.Callable{
 		ID:         callID,
 		Kind:       callableKind(c),
 		Span:       lineSpan(li, c.StartLine, c.EndLine),
 		Signature:  c.Signature,
+		SourceFile: sourceFile,
 		Parameters: emitParams(li, c.Parameters),
 		ReturnType: c.ReturnType,
 		Body:       emitBody(callID, li, c.CallSites, idx),
@@ -128,8 +158,14 @@ func emitCallable(parentID string, li *lineIndex, c schema.GoCallable, idx sigIn
 	}
 	if len(c.InnerCallables) > 0 {
 		out.Callables = make(map[string]v2.Callable, len(c.InnerCallables))
+		// Closures live in the same file as their enclosing callable, so the
+		// resolved file (modRel-or-c.Path) becomes their nesting file.
+		enclRel := modRel
+		if sourceFile != "" {
+			enclRel = sourceFile
+		}
 		for sig, inner := range c.InnerCallables {
-			out.Callables[sig] = emitCallable(callID, li, inner, idx)
+			out.Callables[sig] = emitCallable(callID, enclRel, li, inner, idx, srcs)
 		}
 	}
 	return out
@@ -294,6 +330,32 @@ func readSource(projectDir, relPath string) string {
 		return ""
 	}
 	return string(data)
+}
+
+// sourceCache reads each source file once and memoizes its lineIndex, keyed by
+// path relative to projectDir. The emitter needs a file's index in two places —
+// when emitting the module itself, and when a method declared in that file is
+// nested under a type in a DIFFERENT module — so the cache avoids re-reading a
+// file per cross-file method. A file that cannot be read caches an empty index
+// (so spans degrade to zero rather than re-attempting the read).
+type sourceCache struct {
+	projectDir string
+	byPath     map[string]*lineIndex
+}
+
+func newSourceCache(projectDir string) *sourceCache {
+	return &sourceCache{projectDir: projectDir, byPath: make(map[string]*lineIndex)}
+}
+
+// index returns the lineIndex for relPath, reading and indexing the file on
+// first use. The returned index carries the file's source (li.source).
+func (c *sourceCache) index(relPath string) *lineIndex {
+	if li, ok := c.byPath[relPath]; ok {
+		return li
+	}
+	li := newLineIndex(readSource(c.projectDir, relPath))
+	c.byPath[relPath] = li
+	return li
 }
 
 func sortedFileKeys(m map[string]schema.GoFile) []string {
