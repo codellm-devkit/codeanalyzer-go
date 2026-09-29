@@ -20,6 +20,11 @@ import (
 func Emit(app *schema.GoApplication, appName, projectDir string, maxLevel int, analyzerVersion string) *v2.Analysis {
 	appID := v2.AppID(appName)
 
+	// The signature→can:// id index translates v1 identity (signature strings)
+	// into v2 node ids. It is what the L2 refinement uses to backfill body
+	// callees and to map call_graph edge endpoints onto real callable ids.
+	idx := buildSigIndex(appID, app.SymbolTable)
+
 	out := &v2.Analysis{
 		SchemaVersion: v2.SchemaVersion,
 		Language:      v2.Language,
@@ -29,7 +34,7 @@ func Emit(app *schema.GoApplication, appName, projectDir string, maxLevel int, a
 			ID:          appID,
 			Kind:        "application",
 			SymbolTable: make(map[string]v2.Module, len(app.SymbolTable)),
-			CallGraph:   emitCallGraph(app.CallGraph),
+			CallGraph:   emitCallGraph(app.CallGraph, idx),
 		},
 	}
 
@@ -37,7 +42,7 @@ func Emit(app *schema.GoApplication, appName, projectDir string, maxLevel int, a
 	// sorted keeps any incidental ordering (and logs) stable across runs.
 	for _, relPath := range sortedFileKeys(app.SymbolTable) {
 		file := app.SymbolTable[relPath]
-		out.Application.SymbolTable[relPath] = emitModule(appID, projectDir, relPath, file)
+		out.Application.SymbolTable[relPath] = emitModule(appID, projectDir, relPath, file, idx)
 	}
 	return out
 }
@@ -45,7 +50,7 @@ func Emit(app *schema.GoApplication, appName, projectDir string, maxLevel int, a
 // emitModule builds a v2 module from a v1 GoFile, reading the file's source so
 // spans can slice off it. A file that cannot be read still emits its structure
 // (with empty source and zeroed byte spans) rather than dropping the module.
-func emitModule(appID, projectDir, relPath string, file schema.GoFile) v2.Module {
+func emitModule(appID, projectDir, relPath string, file schema.GoFile, idx sigIndex) v2.Module {
 	source := readSource(projectDir, relPath)
 	li := newLineIndex(source)
 	modID := v2.ModuleID(appID, relPath)
@@ -65,10 +70,10 @@ func emitModule(appID, projectDir, relPath string, file schema.GoFile) v2.Module
 	}
 
 	for name, t := range file.Types {
-		mod.Types[name] = emitType(modID, li, t)
+		mod.Types[name] = emitType(modID, li, t, idx)
 	}
 	for sig, fn := range file.Functions {
-		mod.Functions[sig] = emitCallable(modID, li, fn)
+		mod.Functions[sig] = emitCallable(modID, li, fn, idx)
 	}
 	return mod
 }
@@ -76,7 +81,7 @@ func emitModule(appID, projectDir, relPath string, file schema.GoFile) v2.Module
 // emitType maps a v1 GoType to a v2 type node, collapsing is_interface into the
 // kind and splitting embedding (base_types) from computed satisfaction. Methods
 // resolve into the type's callables{}.
-func emitType(modID string, li *lineIndex, t schema.GoType) v2.Type {
+func emitType(modID string, li *lineIndex, t schema.GoType, idx sigIndex) v2.Type {
 	typeID := v2.TypeID(modID, t.Signature)
 	out := v2.Type{
 		ID:        typeID,
@@ -97,14 +102,14 @@ func emitType(modID string, li *lineIndex, t schema.GoType) v2.Type {
 		}
 	}
 	for sig, m := range t.Methods {
-		out.Callables[sig] = emitCallable(typeID, li, m)
+		out.Callables[sig] = emitCallable(typeID, li, m, idx)
 	}
 	return out
 }
 
 // emitCallable maps a v1 GoCallable to a v2 callable node, including its body
 // (call nodes) and nested closures.
-func emitCallable(parentID string, li *lineIndex, c schema.GoCallable) v2.Callable {
+func emitCallable(parentID string, li *lineIndex, c schema.GoCallable, idx sigIndex) v2.Callable {
 	callID := v2.CallableID(parentID, c.Signature)
 	out := v2.Callable{
 		ID:         callID,
@@ -113,7 +118,7 @@ func emitCallable(parentID string, li *lineIndex, c schema.GoCallable) v2.Callab
 		Signature:  c.Signature,
 		Parameters: emitParams(li, c.Parameters),
 		ReturnType: c.ReturnType,
-		Body:       emitBody(callID, li, c.CallSites),
+		Body:       emitBody(callID, li, c.CallSites, idx),
 	}
 	if ch := errorChannel(c.ReturnTypes); len(ch) > 0 {
 		out.ErrorChannel = ch
@@ -124,26 +129,48 @@ func emitCallable(parentID string, li *lineIndex, c schema.GoCallable) v2.Callab
 	if len(c.InnerCallables) > 0 {
 		out.Callables = make(map[string]v2.Callable, len(c.InnerCallables))
 		for sig, inner := range c.InnerCallables {
-			out.Callables[sig] = emitCallable(callID, li, inner)
+			out.Callables[sig] = emitCallable(callID, li, inner, idx)
 		}
 	}
 	return out
 }
 
-// emitBody builds the L1 body map: one `call` node per call site, keyed by its
-// line:col local id, with the sanctioned callee null->id refinement slot.
-func emitBody(callableID string, li *lineIndex, sites []schema.GoCallsite) map[string]v2.BodyNode {
+// emitBody builds the body map: one `call` node per call site, keyed by its
+// line:col local id, carrying the sanctioned callee null->id refinement slot.
+//
+// callee resolution:
+//   - L1: the v1 site has no backfilled signature, so callee stays null.
+//   - L2: the resolver backfilled the site's callee signature. When that
+//     signature names an in-tree callable, callee becomes its can:// id; when
+//     it names an external/stdlib callee (no in-tree node), callee stays null —
+//     the honest-unresolved fallback the L2 gate expects.
+func emitBody(callableID string, li *lineIndex, sites []schema.GoCallsite, idx sigIndex) map[string]v2.BodyNode {
 	body := make(map[string]v2.BodyNode, len(sites))
 	for _, cs := range sites {
 		local := v2.LocalID(cs.StartLine, cs.StartColumn)
 		body[local] = v2.BodyNode{
 			Kind:        "call",
 			Span:        colSpan(li, cs.StartLine, cs.StartColumn, cs.EndLine, cs.EndColumn),
-			Callee:      cs.CalleeSignature, // *string: null at L1, backfilled at L2
+			Callee:      calleeID(cs.CalleeSignature, idx),
 			IsGoroutine: cs.IsGoroutine,
 		}
 	}
 	return body
+}
+
+// calleeID translates a v1 backfilled callee signature into the v2 can:// id
+// refinement slot: nil (JSON null) when unresolved or external, a pointer to the
+// in-tree callable id when resolved. Never returns the raw v1 signature — a
+// call node's callee is always a node id or null.
+func calleeID(sig *string, idx sigIndex) *string {
+	if sig == nil {
+		return nil
+	}
+	id, ok := idx.idFor(*sig)
+	if !ok {
+		return nil
+	}
+	return &id
 }
 
 func emitParams(li *lineIndex, params []schema.GoParameter) []v2.Parameter {
@@ -173,13 +200,22 @@ func emitImports(li *lineIndex, imports []schema.GoImport) []v2.Import {
 }
 
 // emitCallGraph maps v1 identity-only edges to the v2 {src,dst,prov,weight}
-// shape (rename of source/target/provenance).
-func emitCallGraph(edges []schema.GoCallEdge) []v2.Edge {
+// shape: the source/target/provenance rename, PLUS the endpoint translation from
+// v1 signatures to can:// callable ids. An edge whose src or dst does not resolve
+// to an in-tree node is dropped rather than emitted with a dangling endpoint —
+// the L2 gate requires every endpoint to be a real callable id. (The v1 resolver
+// only emits edges to in-project targets, so this drop is defensive.)
+func emitCallGraph(edges []schema.GoCallEdge, idx sigIndex) []v2.Edge {
 	out := make([]v2.Edge, 0, len(edges))
 	for _, e := range edges {
+		src, srcOK := idx.idFor(e.Source)
+		dst, dstOK := idx.idFor(e.Target)
+		if !srcOK || !dstOK {
+			continue
+		}
 		out = append(out, v2.Edge{
-			Src:    e.Source,
-			Dst:    e.Target,
+			Src:    src,
+			Dst:    dst,
 			Prov:   nonEmpty(e.Provenance),
 			Weight: e.Weight,
 		})
