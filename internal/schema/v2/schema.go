@@ -173,9 +173,10 @@ type BodyNode struct {
 	Kind string `json:"kind"` // "call" at L1
 	Span Span   `json:"span"`
 	// Callee is the sanctioned null→id refinement slot on a call node: null at
-	// L1, backfilled to a callable id at L2. A pointer so it serializes as JSON
-	// null (the one place null is allowed) rather than being omitted.
-	Callee *string `json:"callee,omitempty"`
+	// L1, backfilled to a callable id at L2. A pointer with NO omitempty so it
+	// always serializes — as JSON null at L1 (the one place null is allowed),
+	// as an id once backfilled. The keystone requires the field to be present.
+	Callee *string `json:"callee"`
 	// IsGoroutine is true when the call is preceded by `go`.
 	IsGoroutine bool `json:"is_goroutine,omitempty"`
 	// IsDeferred is true when the call is preceded by `defer` (net-new vs v1).
