@@ -59,6 +59,40 @@ func TestRootCmd_UnknownFormatReturnsError(t *testing.T) {
 	}
 }
 
+func TestRootCmd_UnknownEmitReturnsError(t *testing.T) {
+	td := cliTestdataDir()
+	_, _, err := runCmd("--input", filepath.Join(td, "greeter"), "--emit", "bogus")
+	if err == nil {
+		t.Fatal("expected error for unknown --emit value, got nil")
+	}
+}
+
+func TestRootCmd_EmitNeo4jNotImplemented(t *testing.T) {
+	td := cliTestdataDir()
+	_, _, err := runCmd("--input", filepath.Join(td, "greeter"), "--emit", "neo4j")
+	if err == nil {
+		t.Fatal("expected non-zero exit for --emit neo4j, got nil")
+	}
+	if !strings.Contains(err.Error(), "not yet implemented") {
+		t.Errorf("error should say 'not yet implemented'; got %q", err.Error())
+	}
+}
+
+func TestRootCmd_EmitSchemaNotImplementedWithoutInput(t *testing.T) {
+	// --emit schema needs no --input; it must still fail (not yet implemented)
+	// rather than complain about a missing --input.
+	_, _, err := runCmd("--emit", "schema")
+	if err == nil {
+		t.Fatal("expected non-zero exit for --emit schema, got nil")
+	}
+	if strings.Contains(err.Error(), "required") {
+		t.Errorf("--emit schema should not require --input; got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "not yet implemented") {
+		t.Errorf("error should say 'not yet implemented'; got %q", err.Error())
+	}
+}
+
 // ── --version ────────────────────────────────────────────────────────────────
 
 func TestRootCmd_VersionFlag(t *testing.T) {
