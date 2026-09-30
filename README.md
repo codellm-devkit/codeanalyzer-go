@@ -131,6 +131,8 @@ Aliases:
 
 Flags:
   -a, --analysis-level int     Analysis level: 1=symbol table only, 2=+resolver call graph (default 1)
+      --analysis-schema int    Output schema major: 1=legacy v1 shape (default), 2=canonical v2 tree (default 1)
+      --app-name string        Application anchor name for can:// ids and Neo4j :Application (default: input dir name)
   -c, --cache-dir string       Cache directory (default: ~/.cldk/go-cache)
       --codeql                 Enable CodeQL framework-based call graph (level 2, stub)
       --eager                  Force clean rebuild (ignore cache)
@@ -178,6 +180,58 @@ cango -i ./my-go-project --eager
 cango -i ./my-go-project -a 2 -vv
 ```
 
+## Generating `analysis.json` for a Go app
+
+The end-to-end steps to produce an `analysis.json` file for any Go project.
+
+**1. Make sure you have `cango`.** Either install a released binary (see
+[Installation](#installation)) or build from source:
+
+```bash
+git clone https://github.com/codellm-devkit/codeanalyzer-go
+cd codeanalyzer-go
+go build -o cango ./cmd/codeanalyzer
+```
+
+**2. Point it at the project root** (the directory containing the app's `go.mod`).
+`cango` resolves imports with the Go type checker, so the target must be a normal Go
+module. Write the output to a directory with `-o`; `cango` names the file
+`analysis.json` inside it.
+
+```bash
+# Canonical v2 schema, Level 2 (symbol table + call graph):
+cango -i /path/to/go/app --analysis-schema 2 -a 2 -o /path/to/output/
+# → writes /path/to/output/analysis.json
+```
+
+> **Pick the schema explicitly.** `--analysis-schema` defaults to `1` (the legacy v1
+> shape). Pass `--analysis-schema 2` for the current **canonical v2** tree (the shape
+> the Python SDK's v2 loader and the sections below describe). Omit `-o` to stream the
+> JSON to stdout instead of writing a file.
+
+**3. (Optional) name the application anchor.** `--app-name` sets the `<app>` in every
+`can://go/<app>/…` id and defaults to the input directory's base name. Set it when the
+directory name isn't the identity you want:
+
+```bash
+cango -i /path/to/go/app --analysis-schema 2 -a 2 --app-name myapp -o ./out/
+```
+
+**4. Verify.** A successful run exits `0` and produces a JSON document whose envelope
+carries `"schema_version": "2.0.0"`, `"language": "go"`, `"max_level": 2`, and an
+`application` tree under `application.symbol_table`:
+
+```bash
+cango -i /path/to/go/app --analysis-schema 2 -a 2 -o ./out/ && echo "exit=$?"
+python3 -c "import json; d=json.load(open('out/analysis.json')); print(d['schema_version'], d['max_level'], len(d['application']['symbol_table']), 'modules')"
+```
+
+**Notes for larger apps.** Analysis parallelism defaults to your CPU count (tune with
+`-j`); a warm cache (`--cache-dir`, default `~/.cldk/go-cache`) makes re-runs fast, and
+`--eager` forces a clean rebuild. Projects that use **cgo** (`import "C"`) are supported:
+the toolchain-synthesized wrapper functions are correctly excluded from the output (they
+are build artifacts, not project source), so only your own declarations are emitted.
+
 ## Analysis levels
 
 | Level | Flag | What runs | Status |
@@ -192,7 +246,110 @@ cango -i ./my-go-project -a 2 -vv
 
 ## Output schema
 
-The root object is `GoApplication`:
+`cango` emits one of two schema shapes, selected by `--analysis-schema`:
+
+- **`--analysis-schema 2`** — the **canonical CLDK v2** shape (detailed below); the shape the
+  v2 Python SDK loader consumes and the [step-by-step section
+  above](#generating-analysisjson-for-a-go-app) produces.
+- **`--analysis-schema 1`** (default) — the **legacy v1** `GoApplication` shape, kept for
+  backward compatibility.
+
+### Canonical v2 shape (`--analysis-schema 2`)
+
+The document is a manifest envelope wrapping one `application` containment tree. Every
+node carries a `can://go/<app>/…` `id`, a `kind`, and a `span`:
+
+```json
+{
+  "schema_version": "2.0.0",
+  "language": "go",
+  "max_level": 2,
+  "analyzer": { "name": "codeanalyzer-go", "version": "0.1.0" },
+  "application": {
+    "id": "can://go/myapp",
+    "kind": "application",
+    "symbol_table": {
+      "pkg/greeter/greeter.go": {
+        "id": "can://go/myapp/pkg/greeter/greeter.go",
+        "kind": "module",
+        "package": "greeter",
+        "span": { "start": [1, 1], "end": [40, 2], "bytes": [0, 812] },
+        "source": "package greeter\n\n...",
+        "content_hash": "…",
+        "imports": [ { "name": "fmt", "path": "fmt", "span": {…} } ],
+        "types": {
+          "Greeter": {
+            "id": "can://go/myapp/pkg/greeter/greeter.go/example.com/pkg/greeter.Greeter",
+            "kind": "struct",
+            "span": { "start": [5, 1], "end": [7, 2], "bytes": [17, 63] },
+            "fields": {
+              "Prefix": { "id": "…/Prefix", "kind": "field", "type": "string", "span": {…} }
+            },
+            "callables": {
+              "example.com/pkg/greeter.Greeter.Greet": {
+                "id": "can://go/myapp/pkg/greeter/greeter.go/example.com/pkg/greeter.Greeter/example.com/pkg/greeter.Greeter.Greet",
+                "kind": "method",
+                "signature": "example.com/pkg/greeter.Greeter.Greet",
+                "span": { "start": [9, 1], "end": [11, 2], "bytes": [65, 140] },
+                "parameters": [ { "name": "name", "type": "string", "span": {…} } ],
+                "return_type": "string",
+                "error_channel": ["error"],
+                "metrics": { "cyclomatic": 1 },
+                "body": {
+                  "10:2": {
+                    "kind": "call",
+                    "span": { "start": [10, 2], "end": [10, 30], "bytes": [90, 118] },
+                    "callee": "can://go/myapp/pkg/greeter/greeter.go/…/example.com/pkg/greeter.format"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "functions": {
+          "example.com/main.main": { "id": "…", "kind": "function", "signature": "…", "body": {…} }
+        }
+      }
+    },
+    "call_graph": [
+      {
+        "src": "can://go/myapp/main.go/…/example.com/main.main",
+        "dst": "can://go/myapp/pkg/greeter/greeter.go/…/example.com/pkg/greeter.Greeter.Greet",
+        "prov": ["go/types"],
+        "weight": 1
+      }
+    ]
+  }
+}
+```
+
+Key v2 schema properties:
+- **Envelope** — `schema_version` (`"2.0.0"`), `language` (`"go"`), `max_level` (1 or 2),
+  and `analyzer{name,version}` wrap a single `application` node.
+- **One containment tree** — `application → module → type → callable → body`, keyed as
+  `symbol_table` (modules, by **project-relative file path**), `types`, `callables`, `body`.
+- **`id`** — every node carries a durable `can://go/<app>/<file>/<type>/<signature>` id;
+  `<app>` is the `--app-name` anchor. Body call nodes use `<callable-id>` keyed by `line:col`.
+- **`kind`** — `module` · `type` kinds `struct | interface | alias | defined` (collapses v1's
+  `is_interface`) · `callable` kinds `function | method | lambda` · body `call`.
+- **`base_types: []`** (type, optional) — embedded type ids (struct/interface embedding — the
+  explicit spine), as opposed to interfaces the type is *computed* to satisfy.
+- **`span`** — `{start:[line,col], end:[line,col], bytes:[from,to]}`; `bytes` are **UTF-8 byte
+  offsets** into the owning `module.source` (source is stored once per module, every node slices it).
+- **`source_file`** (callable, optional) — set when a method is declared in a *different file*
+  than its receiver type; the method stays nested under the type, and its `span.bytes` index
+  `symbol_table[source_file].source` instead of the nesting module's.
+- **`error_channel: []`** — populated from `error`-typed returns (the returns also stay in
+  `return_type`). **Closures** nest as `callables{}` on the enclosing callable.
+- **`body` call nodes** — `callee` is the sanctioned `null → id` slot: `null` at L1 (and for
+  external/stdlib callees), a `can://` node id once resolved at L2. `is_goroutine` / `is_deferred`
+  are boolean flags emitted **only when true** (a plain call omits them), for `go f()` / `defer f()`.
+- **`call_graph` edges** — `{src, dst, prov, weight}`; `src`/`dst` are `can://` node ids that
+  exist in the tree (not raw signatures), `prov` is resolver provenance, e.g. `["go/types"]`.
+
+### Legacy v1 shape (`--analysis-schema 1`, default)
+
+The v1 root object is `GoApplication`:
 
 ```json
 {
@@ -226,7 +383,7 @@ The root object is `GoApplication`:
 }
 ```
 
-Key schema properties:
+Key v1 schema properties:
 - `symbol_table` — keyed by **file path relative to the project root** (never absolute)
 - `classes` — JSON key for types (spine compatibility with Java/Python schemas); value is `GoType`
 - `module_name` — JSON key for the Go package name (spine compatibility)
