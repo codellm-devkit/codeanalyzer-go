@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/codellm-devkit/codeanalyzer-go/internal/schema"
 	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
@@ -256,6 +257,28 @@ func emitCallGraph(edges []schema.GoCallEdge, idx sigIndex) []v2.Edge {
 			Weight: e.Weight,
 		})
 	}
+
+	// Impose a total order on the edges so the output is byte-identical across
+	// runs and across -j values (release-gates.md determinism gate). The upstream
+	// edges slice is assembled by ranging a Go map (random iteration order), so
+	// without this sort two runs of the same input emit the call_graph in
+	// different orders. Sort on the full tuple — (src, dst) is the identity but
+	// prov/weight tie-break so merged edges from multiple backends also order
+	// stably.
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Src != b.Src {
+			return a.Src < b.Src
+		}
+		if a.Dst != b.Dst {
+			return a.Dst < b.Dst
+		}
+		ap, bp := strings.Join(a.Prov, ","), strings.Join(b.Prov, ",")
+		if ap != bp {
+			return ap < bp
+		}
+		return a.Weight < b.Weight
+	})
 	return out
 }
 
