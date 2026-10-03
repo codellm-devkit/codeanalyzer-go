@@ -18,7 +18,7 @@ the one-model SDK surface. This is a coordinated schema major across two repos:
 `codeanalyzer-go` (emission rewrite) and `python-sdk` (Go model remap), released in
 lockstep. Reach for this train: L1 + L2 to parity; L3/L4 deferred.
 
-**Describe the solution you'd like.**
+**Describe the solution you'd like**
 
 - [ ] `codeanalyzer-go`: L1 emission — additive tree, `source` per module, `can://` ids, `body{}` with `call` nodes
 - [ ] `codeanalyzer-go`: L2 emission — `call_graph: [{src,dst,prov,weight}]` at application scope
@@ -27,12 +27,12 @@ lockstep. Reach for this train: L1 + L2 to parity; L3/L4 deferred.
 - [ ] Release v2.0.0 and pin analyzer in SDK **only once both are cut**
 - [ ] Superset gate green: v2 output contains every v1 fact modulo sanctioned drops
 
-**Describe alternatives you've considered.**
+**Describe alternatives you've considered**
 
 Does NOT build L3 (CFG/CDG/DDG) or L4 (SDG). Those are a later train reusing this
 train's `can://` ids and edge shape unchanged. Does NOT add framework detection.
 
-**Additional context.**
+**Additional context**
 
 - Design transcript: `docs/design/specs/v2-l1-emission.md` (linked, not pasted).
 - Group A vocabulary (`can://` ids, `span.bytes` UTF-8) is reused verbatim by L3/L4 — coined once here per the parity clause.
