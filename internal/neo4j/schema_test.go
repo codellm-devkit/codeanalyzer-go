@@ -130,9 +130,81 @@ func TestSchemaDocument_RoundTrips(t *testing.T) {
 	}
 }
 
-// TestConformance_ProjectorEmitsOnlyDeclared is the M3 anti-drift scaffold.
-// When project() lands, replace the skip with: project a fixture at L2, collect
-// every (label, prop) and (relType) it emits, and assert each is declared here.
+// TestConformance_ProjectorEmitsOnlyDeclared is the anti-drift gate (filled by
+// M3). It projects the multipackage fixture at L2 and asserts the real emitter
+// never produces a label, relationship type, or property that schema.go does
+// not declare — so the contract cannot silently drift from the projector.
 func TestConformance_ProjectorEmitsOnlyDeclared(t *testing.T) {
-	t.Skip("scaffold: filled by M3 (project.go) — asserts the projector emits no undeclared label/relationship/property")
+	rows := Project(buildMultipackageL2(t))
+
+	// Declared label set + per-label allowed property set. A node's labels[0] is
+	// the MERGE label, which for the symbol family is the SHARED SymbolLabel; the
+	// specific kind (GoType/GoCallable/GoExternal) is then an extra label. So the
+	// NodeSpec is resolved by the specific kind label, and properties validate
+	// against it.
+	labelDecl := declaredLabels()
+	validMerge := map[string]bool{MarkerLabel: true, SymbolLabel: true}
+	for _, n := range Nodes {
+		validMerge[n.MergeLabel] = true
+	}
+
+	for _, n := range rows.Nodes {
+		// labels[0] must be a legitimate MERGE label (a node's own label, the
+		// shared SymbolLabel, or — never — the marker).
+		if !validMerge[n.Labels[0]] {
+			t.Errorf("node MERGE label %q is undeclared", n.Labels[0])
+			continue
+		}
+		// Resolve the spec by the specific kind label (labels[0] when it is the
+		// node's own merge label, else the first extra label that is a declared kind).
+		spec, ok := labelDecl[n.Labels[0]]
+		if !ok {
+			for _, l := range n.Labels[1:] {
+				if s, found := labelDecl[l]; found {
+					spec, ok = s, true
+					break
+				}
+			}
+		}
+		if !ok {
+			t.Errorf("node with labels %v matches no declared kind", n.Labels)
+			continue
+		}
+		// Every extra label must be a declared kind or the marker.
+		for _, l := range n.Labels[1:] {
+			if _, isKind := labelDecl[l]; !isKind && l != MarkerLabel {
+				t.Errorf("node carries undeclared extra label %q", l)
+			}
+		}
+		allowed := map[string]bool{spec.Key: true}
+		for _, pr := range spec.Props {
+			allowed[pr] = true
+		}
+		for pk := range n.Props {
+			if !allowed[pk] {
+				t.Errorf("node %s carries undeclared property %q", spec.Label, pk)
+			}
+		}
+	}
+
+	relDecl := make(map[string]RelSpec, len(Rels))
+	for _, r := range Rels {
+		relDecl[r.Type] = r
+	}
+	for _, e := range rows.Edges {
+		spec, ok := relDecl[e.Type]
+		if !ok {
+			t.Errorf("relationship type %q is undeclared", e.Type)
+			continue
+		}
+		allowed := map[string]bool{}
+		for _, pr := range spec.Props {
+			allowed[pr] = true
+		}
+		for pk := range e.Props {
+			if !allowed[pk] {
+				t.Errorf("relationship %s carries undeclared property %q", e.Type, pk)
+			}
+		}
+	}
 }
