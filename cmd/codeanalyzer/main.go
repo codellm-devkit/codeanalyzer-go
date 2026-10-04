@@ -15,6 +15,7 @@ import (
 	"github.com/codellm-devkit/codeanalyzer-go/internal/core"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/neo4j"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/options"
+	"github.com/codellm-devkit/codeanalyzer-go/internal/syntactic_analysis/v2emit"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/utils"
 )
 
@@ -69,14 +70,22 @@ via CLDK(language="go").analysis(project_path=...).`,
 			}
 
 			// --emit selects the output projection. schema is a static contract
-			// that needs no --input: handle it here and return. neo4j is still
-			// rejected until its writers land (M4–M6) — never a silent fallback
-			// to JSON.
-			switch options.EmitTarget(emit) {
+			// that needs no --input: handle it here and return. neo4j shares the
+			// analysis path below but is ALWAYS full-depth, so an explicit
+			// -a/--analysis-level alongside it is a flag error (the level gate
+			// applies to the JSON path only).
+			emitTarget := options.EmitTarget(emit)
+			switch emitTarget {
 			case options.EmitJSON:
 				// valid — falls through to the JSON path below.
 			case options.EmitNeo4j:
-				return fmt.Errorf("--emit neo4j is not yet implemented; use --emit json")
+				if cmd.Flags().Changed("analysis-level") {
+					return fmt.Errorf("--analysis-level does not apply to --emit neo4j; the graph is always projected at full depth")
+				}
+				// Force full depth + canonical v2: the graph carries every
+				// implemented level's facts in both projections.
+				level = int(options.LevelCallGraph)
+				analysisSchema = 2
 			case options.EmitSchema:
 				path, err := neo4j.EmitSchema(outputDir)
 				if err != nil {
@@ -139,6 +148,27 @@ via CLDK(language="go").analysis(project_path=...).`,
 			app, err := analyzer.Analyze()
 			if err != nil {
 				return err
+			}
+
+			// Neo4j projection: build the canonical v2 payload (the SAME tree the
+			// JSON path emits) and project it. --neo4j-uri set → live Bolt push;
+			// absent → a graph.cypher snapshot in the output dir.
+			if emitTarget == options.EmitNeo4j {
+				payload := v2emit.Emit(app, opts.AppName, opts.InputPath, int(opts.Level), opts.AnalyzerVersion)
+				boltCfg := neo4j.BoltConfig{
+					URI:      opts.Neo4jURI,
+					User:     opts.Neo4jUser,
+					Password: opts.Neo4jPassword,
+					Database: opts.Neo4jDatabase,
+					Eager:    opts.Eager,
+					FullRun:  len(opts.TargetFiles) == 0,
+				}
+				msg, err := neo4j.EmitNeo4j(cmd.Context(), payload, outputDir, boltCfg)
+				if err != nil {
+					return err
+				}
+				cmd.Println(msg)
+				return nil
 			}
 
 			// When no --output dir is given, write JSON to cobra's output

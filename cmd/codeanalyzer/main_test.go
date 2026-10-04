@@ -67,14 +67,39 @@ func TestRootCmd_UnknownEmitReturnsError(t *testing.T) {
 	}
 }
 
-func TestRootCmd_EmitNeo4jNotImplemented(t *testing.T) {
+func TestRootCmd_EmitNeo4jWritesGraphCypher(t *testing.T) {
+	// --emit neo4j with no --neo4j-uri writes a self-contained graph.cypher
+	// snapshot into the output dir (M6).
 	td := cliTestdataDir()
-	_, _, err := runCmd("--input", filepath.Join(td, "greeter"), "--emit", "neo4j")
-	if err == nil {
-		t.Fatal("expected non-zero exit for --emit neo4j, got nil")
+	out := t.TempDir()
+	stdout, _, err := runCmd("--input", filepath.Join(td, "multipackage"), "--emit", "neo4j", "--output", out)
+	if err != nil {
+		t.Fatalf("--emit neo4j should succeed; got %v", err)
 	}
-	if !strings.Contains(err.Error(), "not yet implemented") {
-		t.Errorf("error should say 'not yet implemented'; got %q", err.Error())
+	data, err := os.ReadFile(filepath.Join(out, "graph.cypher"))
+	if err != nil {
+		t.Fatalf("graph.cypher not written: %v", err)
+	}
+	script := string(data)
+	for _, want := range []string{"CREATE CONSTRAINT", "DETACH DELETE", "MERGE (n:", "GO_CALLS"} {
+		if !strings.Contains(script, want) {
+			t.Errorf("graph.cypher missing %q", want)
+		}
+	}
+	if !strings.Contains(stdout, "graph.cypher") {
+		t.Errorf("expected stdout to report the written path; got %q", stdout)
+	}
+}
+
+func TestRootCmd_EmitNeo4jRejectsExplicitAnalysisLevel(t *testing.T) {
+	// --emit neo4j is always full-depth; combining it with -a is a flag error.
+	td := cliTestdataDir()
+	_, _, err := runCmd("--input", filepath.Join(td, "greeter"), "--emit", "neo4j", "-a", "1")
+	if err == nil {
+		t.Fatal("expected a flag error for --emit neo4j -a 1, got nil")
+	}
+	if !strings.Contains(err.Error(), "does not apply to --emit neo4j") {
+		t.Errorf("error should explain the level gate; got %q", err.Error())
 	}
 }
 
