@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/codellm-devkit/codeanalyzer-go/internal/core"
+	"github.com/codellm-devkit/codeanalyzer-go/internal/neo4j"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/options"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/utils"
 )
@@ -67,16 +68,22 @@ via CLDK(language="go").analysis(project_path=...).`,
 				return nil
 			}
 
-			// --emit selects the output projection. neo4j/schema are validated
-			// here and rejected with a non-zero exit until the Neo4j child lands
-			// (never a silent fallback to JSON). schema needs no --input.
+			// --emit selects the output projection. schema is a static contract
+			// that needs no --input: handle it here and return. neo4j is still
+			// rejected until its writers land (M4–M6) — never a silent fallback
+			// to JSON.
 			switch options.EmitTarget(emit) {
 			case options.EmitJSON:
 				// valid — falls through to the JSON path below.
 			case options.EmitNeo4j:
 				return fmt.Errorf("--emit neo4j is not yet implemented; use --emit json")
 			case options.EmitSchema:
-				return fmt.Errorf("--emit schema is not yet implemented; use --emit json")
+				path, err := neo4j.EmitSchema(outputDir)
+				if err != nil {
+					return err
+				}
+				cmd.Println("wrote " + path)
+				return nil
 			default:
 				return fmt.Errorf("unsupported --emit target %q; supported: json, neo4j, schema", emit)
 			}

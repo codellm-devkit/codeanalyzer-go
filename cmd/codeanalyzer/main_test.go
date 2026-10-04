@@ -78,18 +78,43 @@ func TestRootCmd_EmitNeo4jNotImplemented(t *testing.T) {
 	}
 }
 
-func TestRootCmd_EmitSchemaNotImplementedWithoutInput(t *testing.T) {
-	// --emit schema needs no --input; it must still fail (not yet implemented)
-	// rather than complain about a missing --input.
-	_, _, err := runCmd("--emit", "schema")
-	if err == nil {
-		t.Fatal("expected non-zero exit for --emit schema, got nil")
+func TestRootCmd_EmitSchemaWritesContractWithoutInput(t *testing.T) {
+	// --emit schema is a static contract: it needs no --input and writes
+	// schema.neo4j.json to the output dir (M1).
+	out := t.TempDir()
+	stdout, _, err := runCmd("--emit", "schema", "--output", out)
+	if err != nil {
+		t.Fatalf("--emit schema should succeed without --input; got %v", err)
 	}
-	if strings.Contains(err.Error(), "required") {
-		t.Errorf("--emit schema should not require --input; got %q", err.Error())
+
+	path := filepath.Join(out, "schema.neo4j.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("schema.neo4j.json not written: %v", err)
 	}
-	if !strings.Contains(err.Error(), "not yet implemented") {
-		t.Errorf("error should say 'not yet implemented'; got %q", err.Error())
+	if !strings.Contains(stdout, "schema.neo4j.json") {
+		t.Errorf("expected stdout to report the written path; got %q", stdout)
+	}
+
+	// It must parse and carry the schema version + a GO_-prefixed vocabulary.
+	var doc struct {
+		SchemaVersion string `json:"schema_version"`
+		RelPrefix     string `json:"rel_prefix"`
+		Nodes         []struct {
+			Label string `json:"label"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("schema.neo4j.json does not parse: %v", err)
+	}
+	if doc.SchemaVersion != "2.0.0" {
+		t.Errorf("schema_version = %q, want 2.0.0", doc.SchemaVersion)
+	}
+	if doc.RelPrefix != "GO_" {
+		t.Errorf("rel_prefix = %q, want GO_", doc.RelPrefix)
+	}
+	if len(doc.Nodes) == 0 {
+		t.Error("schema document lists no node families")
 	}
 }
 
