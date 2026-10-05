@@ -195,8 +195,8 @@ via CLDK(language="go").analysis(project_path=...).`,
 		"Application anchor name for can:// ids and Neo4j :Application (default: input dir name)")
 	f.IntVarP(&level, "analysis-level", "a", 1,
 		"Analysis level: 1=symbol table only, 2=+resolver call graph")
-	f.IntVar(&analysisSchema, "analysis-schema", 1,
-		"Output schema major: 1=legacy v1 shape (default), 2=canonical v2 tree")
+	f.IntVar(&analysisSchema, "analysis-schema", 2,
+		"Output schema major: 2=canonical v2 tree (default), 1=legacy v1 shape")
 	f.StringSliceVarP(&targetFiles, "target-files", "t", nil,
 		"Restrict analysis to specific files (incremental mode)")
 	f.BoolVar(&skipTests, "skip-tests", true, "Skip *_test.go files")

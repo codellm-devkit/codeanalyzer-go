@@ -131,7 +131,7 @@ Aliases:
 
 Flags:
   -a, --analysis-level int     Analysis level: 1=symbol table only, 2=+resolver call graph (default 1)
-      --analysis-schema int    Output schema major: 1=legacy v1 shape (default), 2=canonical v2 tree (default 1)
+      --analysis-schema int    Output schema major: 2=canonical v2 tree (default), 1=legacy v1 shape (default 2)
       --app-name string        Application anchor name for can:// ids and Neo4j :Application (default: input dir name)
   -c, --cache-dir string       Cache directory (default: ~/.cldk/go-cache)
       --codeql                 Enable CodeQL framework-based call graph (level 2, stub)
@@ -204,10 +204,10 @@ cango -i /path/to/go/app --analysis-schema 2 -a 2 -o /path/to/output/
 # → writes /path/to/output/analysis.json
 ```
 
-> **Pick the schema explicitly.** `--analysis-schema` defaults to `1` (the legacy v1
-> shape). Pass `--analysis-schema 2` for the current **canonical v2** tree (the shape
-> the Python SDK's v2 loader and the sections below describe). Omit `-o` to stream the
-> JSON to stdout instead of writing a file.
+> **Schema.** `--analysis-schema` defaults to `2` — the current **canonical v2** tree (the
+> shape the Python SDK's v2 loader and the sections below describe). Pass
+> `--analysis-schema 1` only if you need the **legacy v1** shape for backward compatibility.
+> Omit `-o` to stream the JSON to stdout instead of writing a file.
 
 **3. (Optional) name the application anchor.** `--app-name` sets the `<app>` in every
 `can://go/<app>/…` id and defaults to the input directory's base name. Set it when the
@@ -251,10 +251,10 @@ are build artifacts, not project source), so only your own declarations are emit
 - **`--analysis-schema 2`** — the **canonical CLDK v2** shape (detailed below); the shape the
   v2 Python SDK loader consumes and the [step-by-step section
   above](#generating-analysisjson-for-a-go-app) produces.
-- **`--analysis-schema 1`** (default) — the **legacy v1** `GoApplication` shape, kept for
-  backward compatibility.
+- **`--analysis-schema 1`** — the **legacy v1** `GoApplication` shape, kept for backward
+  compatibility (v2 is the default).
 
-### Canonical v2 shape (`--analysis-schema 2`)
+### Canonical v2 shape (`--analysis-schema 2`, default)
 
 The document is a manifest envelope wrapping one `application` containment tree. Every
 node carries a `can://go/<app>/…` `id`, a `kind`, and a `span`:
@@ -347,7 +347,7 @@ Key v2 schema properties:
 - **`call_graph` edges** — `{src, dst, prov, weight}`; `src`/`dst` are `can://` node ids that
   exist in the tree (not raw signatures), `prov` is resolver provenance, e.g. `["go/types"]`.
 
-### Legacy v1 shape (`--analysis-schema 1`, default)
+### Legacy v1 shape (`--analysis-schema 1`)
 
 The v1 root object is `GoApplication`:
 

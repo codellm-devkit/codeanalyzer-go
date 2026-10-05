@@ -212,14 +212,17 @@ func TestRootCmd_Level1ProducesNoCallGraph(t *testing.T) {
 		t.Fatalf("command failed: %v", err)
 	}
 
+	// The default is now the v2 shape, where call_graph lives under application (not top-level).
 	var result struct {
-		CallGraph []interface{} `json:"call_graph"`
+		Application struct {
+			CallGraph []interface{} `json:"call_graph"`
+		} `json:"application"`
 	}
 	if jsonErr := json.Unmarshal([]byte(out), &result); jsonErr != nil {
 		t.Fatalf("stdout is not valid JSON: %v", jsonErr)
 	}
-	if len(result.CallGraph) != 0 {
-		t.Errorf("level 1 should produce no call graph edges; got %d", len(result.CallGraph))
+	if len(result.Application.CallGraph) != 0 {
+		t.Errorf("level 1 should produce no call graph edges; got %d", len(result.Application.CallGraph))
 	}
 }
 
@@ -235,20 +238,23 @@ func TestRootCmd_Level2ProducesCallGraph(t *testing.T) {
 		t.Fatalf("command failed: %v", err)
 	}
 
+	// The default is now the v2 shape, where call_graph lives under application (not top-level).
 	var result struct {
-		CallGraph []interface{} `json:"call_graph"`
+		Application struct {
+			CallGraph []interface{} `json:"call_graph"`
+		} `json:"application"`
 	}
 	if jsonErr := json.Unmarshal([]byte(out), &result); jsonErr != nil {
 		t.Fatalf("stdout is not valid JSON: %v", jsonErr)
 	}
-	if len(result.CallGraph) == 0 {
+	if len(result.Application.CallGraph) == 0 {
 		t.Error("level 2 should produce call graph edges; got none")
 	}
 }
 
 // ── --analysis-schema ──────────────────────────────────────────────────────────
 
-func TestRootCmd_DefaultSchemaIsV1(t *testing.T) {
+func TestRootCmd_DefaultSchemaIsV2(t *testing.T) {
 	td := cliTestdataDir()
 	out, _, err := runCmd("--input", filepath.Join(td, "greeter"), "--cache-dir", t.TempDir())
 	if err != nil {
@@ -258,11 +264,33 @@ func TestRootCmd_DefaultSchemaIsV1(t *testing.T) {
 	if jsonErr := json.Unmarshal([]byte(out), &v); jsonErr != nil {
 		t.Fatalf("stdout is not valid JSON: %v", jsonErr)
 	}
+	if _, ok := v["schema_version"]; !ok {
+		t.Error("default output should be the v2 shape (top-level schema_version)")
+	}
+	if _, ok := v["application"]; !ok {
+		t.Error("default output should carry an application root (that is v2)")
+	}
+}
+
+func TestRootCmd_AnalysisSchema1EmitsLegacyV1(t *testing.T) {
+	td := cliTestdataDir()
+	out, _, err := runCmd(
+		"--input", filepath.Join(td, "greeter"),
+		"--analysis-schema", "1",
+		"--cache-dir", t.TempDir(),
+	)
+	if err != nil {
+		t.Fatalf("command failed: %v", err)
+	}
+	var v map[string]interface{}
+	if jsonErr := json.Unmarshal([]byte(out), &v); jsonErr != nil {
+		t.Fatalf("stdout is not valid JSON: %v", jsonErr)
+	}
 	if _, ok := v["symbol_table"]; !ok {
-		t.Error("default output should be the v1 shape (top-level symbol_table)")
+		t.Error("--analysis-schema 1 should still emit the legacy v1 shape (top-level symbol_table)")
 	}
 	if _, ok := v["schema_version"]; ok {
-		t.Error("default output should not carry schema_version (that is v2)")
+		t.Error("the legacy v1 shape should not carry schema_version")
 	}
 }
 
