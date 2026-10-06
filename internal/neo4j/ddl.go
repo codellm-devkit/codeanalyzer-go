@@ -121,17 +121,11 @@ type RelDoc struct {
 func BuildSchemaDocument() SchemaDocument {
 	nodes := make([]NodeDoc, 0, len(Nodes))
 	for _, n := range Nodes {
-		nodes = append(nodes, NodeDoc{
-			Label: n.Label, MergeLabel: n.MergeLabel, Key: n.Key,
-			Props: n.Props, CanNode: n.CanNode,
-		})
+		nodes = append(nodes, NodeDoc(n))
 	}
 	rels := make([]RelDoc, 0, len(Rels))
 	for _, r := range Rels {
-		rels = append(rels, RelDoc{
-			Type: r.Type, From: r.From, To: r.To, Props: r.Props,
-			Discriminant: r.Discriminant, Deferred: r.Deferred, Reserved: r.Reserved,
-		})
+		rels = append(rels, RelDoc(r))
 	}
 	return SchemaDocument{
 		SchemaVersion: SchemaVersion,

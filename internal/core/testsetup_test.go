@@ -36,7 +36,7 @@ func runTestMain(m *testing.M) int {
 		fmt.Fprintf(os.Stderr, "testsetup: MkdirTemp: %v\n", err)
 		return 1
 	}
-	defer os.RemoveAll(tmpRoot)
+	defer func() { _ = os.RemoveAll(tmpRoot) }()
 
 	type fixture struct {
 		name  string

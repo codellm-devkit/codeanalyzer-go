@@ -54,13 +54,13 @@ func WriteBolt(ctx context.Context, rows GraphRows, appID string, cfg BoltConfig
 	if err != nil {
 		return fmt.Errorf("neo4j driver: %w", err)
 	}
-	defer driver.Close(ctx)
+	defer func() { _ = driver.Close(ctx) }()
 	if err := driver.VerifyConnectivity(ctx); err != nil {
 		return fmt.Errorf("neo4j connectivity: %w", err)
 	}
 
 	session := driver.NewSession(ctx, neo4j.SessionConfig{DatabaseName: cfg.Database})
-	defer session.Close(ctx)
+	defer func() { _ = session.Close(ctx) }()
 
 	w := &boltWriter{ctx: ctx, session: session, rows: rows, appID: appID, cfg: cfg}
 	return w.run()
