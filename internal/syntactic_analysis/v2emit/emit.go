@@ -245,7 +245,12 @@ func emitImports(li *lineIndex, imports []schema.GoImport) []v2.Import {
 func emitCallGraph(edges []schema.GoCallEdge, idx sigIndex) []v2.Edge {
 	out := make([]v2.Edge, 0, len(edges))
 	for _, e := range edges {
-		src, srcOK := idx.idFor(e.Source)
+		// Resolve the source by (signature, declaring file): a package-level
+		// init signature repeats once per file in a package, so the file is
+		// what pins the edge to the init that actually contains the call site.
+		// The target stays signature-only — a call target is never an init
+		// (Go forbids calling init), and every other signature is unique.
+		src, srcOK := idx.idForWithPath(e.Source, e.SourcePath)
 		dst, dstOK := idx.idFor(e.Target)
 		if !srcOK || !dstOK {
 			continue

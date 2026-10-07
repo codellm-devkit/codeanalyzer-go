@@ -136,6 +136,11 @@ func (cg *CallGraphBuilder) resolveCallable(
 			Weight:     1,
 			Provenance: []string{"go/types"},
 			Tags:       map[string]string{},
+			// Carry the source's declaring file so the v2 emitter can map a
+			// non-unique signature (notably "<pkg>.init", which repeats once per
+			// file in a package) back to the specific callable that owns this
+			// call site. See schema.GoCallEdge.SourcePath.
+			SourcePath: callable.Path,
 		})
 	}
 
