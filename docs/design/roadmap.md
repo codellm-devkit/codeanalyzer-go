@@ -73,5 +73,5 @@ A/B/C ─► D (Neo4j relabel) ─► SDK v2 model remap ─► pin SDK→analyz
 - **Points-to oracle** — L4 prerequisite; parked with L4.
 - **`--materialize-expressions` / `--materialize-basic-blocks`** — optional body node kinds;
   out of scope for the parity migration.
-- **New framework detection / CodeQL tier expansion** — orthogonal enrichment axis
+- **New framework detection** — orthogonal enrichment axis
   (provenance-merged evidence), not a schema level; does not belong on the migration train.

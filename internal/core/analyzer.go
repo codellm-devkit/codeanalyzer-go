@@ -9,7 +9,6 @@
 //  2. Symbol table construction  (syntactic_analysis)
 //  3. Resolver-based call graph  (semantic_analysis) — if level >= 2
 //  4. Pass pipeline              (analysis/registry)
-//  5. Optional CodeQL enrichment (semantic_analysis/codeql) — if --codeql
 package core
 
 import (
@@ -23,7 +22,6 @@ import (
 	"github.com/codellm-devkit/codeanalyzer-go/internal/options"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/schema"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/semantic_analysis"
-	"github.com/codellm-devkit/codeanalyzer-go/internal/semantic_analysis/codeql"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/syntactic_analysis"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/syntactic_analysis/v2emit"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/utils"
@@ -91,26 +89,6 @@ func (a *Analyzer) Analyze() (*schema.GoApplication, error) {
 		utils.Warn("pass pipeline error: %v", err)
 	}
 
-	// ── Phase 5: Optional CodeQL enrichment ──────────────────────────────────
-	if a.opts.UseCodeQL {
-		cq, err := codeql.New(a.opts.CacheDir, true)
-		if err != nil {
-			utils.Warn("CodeQL unavailable: %v", err)
-		} else {
-			if err := cq.Build(a.opts.InputPath); err != nil {
-				utils.Warn("CodeQL build failed: %v", err)
-			} else {
-				cqlEdges, err := cq.Edges()
-				if err != nil {
-					utils.Warn("CodeQL edge extraction failed: %v", err)
-				} else {
-					app.CallGraph = semantic_analysis.MergeEdges(app.CallGraph, cqlEdges)
-					utils.Info("merged %d CodeQL edges", len(cqlEdges))
-				}
-			}
-		}
-	}
-
 	return a.finalizeAndCache(app)
 }
 
@@ -171,12 +149,10 @@ func (a *Analyzer) saveCache(app *schema.GoApplication) error {
 	return os.WriteFile(cachePath, data, 0o644)
 }
 
-// RenderJSON serializes the analysis to JSON in the schema selected by
-// opts.SchemaVersion: 1 (default) emits the legacy v1 GoApplication shape; 2
-// emits the canonical v2 tree via the v2emit emitter. This is the single place
-// the v1/v2 decision is made, so both the stdout and file output paths agree.
-// Only "json" is supported; other formats return an explicit error rather than
-// silently falling back.
+// RenderJSON serializes the analysis to JSON as the canonical v2 containment
+// tree via the v2emit emitter. This is the single serialization point, so both
+// the stdout and file output paths agree. Only "json" is supported; other
+// formats return an explicit error rather than silently falling back.
 func RenderJSON(app *schema.GoApplication, opts options.AnalysisOptions) ([]byte, error) {
 	format := opts.Format
 	if format == "" {
@@ -191,15 +167,8 @@ func RenderJSON(app *schema.GoApplication, opts options.AnalysisOptions) ([]byte
 		return nil, fmt.Errorf("unsupported output format %q; supported: json", format)
 	}
 
-	switch opts.SchemaVersion {
-	case 0, 1:
-		return json.Marshal(app)
-	case 2:
-		payload := v2emit.Emit(app, opts.AppName, opts.InputPath, int(opts.Level), opts.AnalyzerVersion)
-		return json.Marshal(payload)
-	default:
-		return nil, fmt.Errorf("unsupported --analysis-schema %d; supported: 1, 2", opts.SchemaVersion)
-	}
+	payload := v2emit.Emit(app, opts.AppName, opts.InputPath, int(opts.Level), opts.AnalyzerVersion)
+	return json.Marshal(payload)
 }
 
 // WriteOutput serializes the analysis (in the selected schema) and writes it to

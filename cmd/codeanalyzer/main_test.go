@@ -252,55 +252,13 @@ func TestRootCmd_Level2ProducesCallGraph(t *testing.T) {
 	}
 }
 
-// ── --analysis-schema ──────────────────────────────────────────────────────────
+// ── schema output (always canonical v2) ─────────────────────────────────────────
 
-func TestRootCmd_DefaultSchemaIsV2(t *testing.T) {
+// The analyzer emits only the canonical v2 containment tree. This asserts the
+// envelope shape and identity anchor on the default (and only) output path.
+func TestRootCmd_EmitsCanonicalV2(t *testing.T) {
 	td := cliTestdataDir()
 	out, _, err := runCmd("--input", filepath.Join(td, "greeter"), "--cache-dir", t.TempDir())
-	if err != nil {
-		t.Fatalf("command failed: %v", err)
-	}
-	var v map[string]interface{}
-	if jsonErr := json.Unmarshal([]byte(out), &v); jsonErr != nil {
-		t.Fatalf("stdout is not valid JSON: %v", jsonErr)
-	}
-	if _, ok := v["schema_version"]; !ok {
-		t.Error("default output should be the v2 shape (top-level schema_version)")
-	}
-	if _, ok := v["application"]; !ok {
-		t.Error("default output should carry an application root (that is v2)")
-	}
-}
-
-func TestRootCmd_AnalysisSchema1EmitsLegacyV1(t *testing.T) {
-	td := cliTestdataDir()
-	out, _, err := runCmd(
-		"--input", filepath.Join(td, "greeter"),
-		"--analysis-schema", "1",
-		"--cache-dir", t.TempDir(),
-	)
-	if err != nil {
-		t.Fatalf("command failed: %v", err)
-	}
-	var v map[string]interface{}
-	if jsonErr := json.Unmarshal([]byte(out), &v); jsonErr != nil {
-		t.Fatalf("stdout is not valid JSON: %v", jsonErr)
-	}
-	if _, ok := v["symbol_table"]; !ok {
-		t.Error("--analysis-schema 1 should still emit the legacy v1 shape (top-level symbol_table)")
-	}
-	if _, ok := v["schema_version"]; ok {
-		t.Error("the legacy v1 shape should not carry schema_version")
-	}
-}
-
-func TestRootCmd_AnalysisSchema2EmitsV2(t *testing.T) {
-	td := cliTestdataDir()
-	out, _, err := runCmd(
-		"--input", filepath.Join(td, "greeter"),
-		"--analysis-schema", "2",
-		"--cache-dir", t.TempDir(),
-	)
 	if err != nil {
 		t.Fatalf("command failed: %v", err)
 	}
@@ -322,18 +280,6 @@ func TestRootCmd_AnalysisSchema2EmitsV2(t *testing.T) {
 	}
 	if v.Application.ID != "can://go/greeter" {
 		t.Errorf("application.id = %q, want can://go/greeter", v.Application.ID)
-	}
-}
-
-func TestRootCmd_UnknownSchemaReturnsError(t *testing.T) {
-	td := cliTestdataDir()
-	_, _, err := runCmd(
-		"--input", filepath.Join(td, "greeter"),
-		"--analysis-schema", "9",
-		"--cache-dir", t.TempDir(),
-	)
-	if err == nil {
-		t.Fatal("expected error for unknown --analysis-schema value, got nil")
 	}
 }
 

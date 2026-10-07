@@ -198,7 +198,7 @@ type BodyNode struct {
 type Edge struct {
 	Src string `json:"src"`
 	Dst string `json:"dst"`
-	// Prov is open-vocabulary provenance, e.g. ["go/types"], ["go/types","codeql"].
+	// Prov is open-vocabulary provenance, e.g. ["go/types"].
 	Prov []string `json:"prov,omitempty"`
 	// Weight accumulates when merging edges from multiple backends.
 	Weight int `json:"weight,omitempty"`

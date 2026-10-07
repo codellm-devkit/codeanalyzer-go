@@ -33,25 +33,23 @@ func main() {
 
 func rootCmd() *cobra.Command {
 	var (
-		inputPath      string
-		outputDir      string
-		format         string
-		emit           string
-		appName        string
-		level          int
-		analysisSchema int
-		targetFiles    []string
-		skipTests      bool
-		eager          bool
-		cacheDir       string
-		jobs           int
-		useCodeQL      bool
-		verbosity      int
-		showVersion    bool
-		neo4jURI       string
-		neo4jUser      string
-		neo4jPassword  string
-		neo4jDatabase  string
+		inputPath     string
+		outputDir     string
+		format        string
+		emit          string
+		appName       string
+		level         int
+		targetFiles   []string
+		skipTests     bool
+		eager         bool
+		cacheDir      string
+		jobs          int
+		verbosity     int
+		showVersion   bool
+		neo4jURI      string
+		neo4jUser     string
+		neo4jPassword string
+		neo4jDatabase string
 	)
 
 	cmd := &cobra.Command{
@@ -82,10 +80,10 @@ via CLDK(language="go").analysis(project_path=...).`,
 				if cmd.Flags().Changed("analysis-level") {
 					return fmt.Errorf("--analysis-level does not apply to --emit neo4j; the graph is always projected at full depth")
 				}
-				// Force full depth + canonical v2: the graph carries every
-				// implemented level's facts in both projections.
+				// Force full depth: the graph carries every implemented
+				// level's facts in both projections. (Output is always the
+				// canonical v2 tree.)
 				level = int(options.LevelCallGraph)
-				analysisSchema = 2
 			case options.EmitSchema:
 				path, err := neo4j.EmitSchema(outputDir)
 				if err != nil {
@@ -129,14 +127,12 @@ via CLDK(language="go").analysis(project_path=...).`,
 				Emit:            options.EmitTarget(emit),
 				AppName:         appName,
 				Level:           options.AnalysisLevel(level),
-				SchemaVersion:   analysisSchema,
 				AnalyzerVersion: version,
 				TargetFiles:     targetFiles,
 				SkipTests:       skipTests,
 				Eager:           eager,
 				CacheDir:        cacheDir,
 				Jobs:            jobs,
-				UseCodeQL:       useCodeQL,
 				Verbose:         verbosity > 0,
 				Neo4jURI:        firstNonEmpty(neo4jURI, os.Getenv("NEO4J_URI")),
 				Neo4jUser:       firstNonEmpty(neo4jUser, os.Getenv("NEO4J_USERNAME"), "neo4j"),
@@ -195,15 +191,12 @@ via CLDK(language="go").analysis(project_path=...).`,
 		"Application anchor name for can:// ids and Neo4j :Application (default: input dir name)")
 	f.IntVarP(&level, "analysis-level", "a", 1,
 		"Analysis level: 1=symbol table only, 2=+resolver call graph")
-	f.IntVar(&analysisSchema, "analysis-schema", 2,
-		"Output schema major: 2=canonical v2 tree (default), 1=legacy v1 shape")
 	f.StringSliceVarP(&targetFiles, "target-files", "t", nil,
 		"Restrict analysis to specific files (incremental mode)")
 	f.BoolVar(&skipTests, "skip-tests", true, "Skip *_test.go files")
 	f.BoolVar(&eager, "eager", false, "Force clean rebuild (ignore cache)")
 	f.StringVarP(&cacheDir, "cache-dir", "c", "", "Cache directory (default: ~/.cldk/go-cache)")
 	f.IntVarP(&jobs, "jobs", "j", 0, "Worker parallelism (default: CPU cores)")
-	f.BoolVar(&useCodeQL, "codeql", false, "Enable CodeQL framework-based call graph (level 2, stub)")
 	f.CountVarP(&verbosity, "verbose", "v", "Verbosity (repeat for more detail)")
 	f.BoolVar(&showVersion, "version", false, "Print version and exit")
 

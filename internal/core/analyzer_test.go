@@ -10,6 +10,7 @@ import (
 	"github.com/codellm-devkit/codeanalyzer-go/internal/core"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/options"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/schema"
+	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
 )
 
 // greeterDir returns the absolute path to testdata/greeter.
@@ -144,11 +145,15 @@ func TestWriteOutput_ValidJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading analysis.json: %v", err)
 	}
-	var round schema.GoApplication
+	// Output is the canonical v2 containment tree; round-trip into it.
+	var round v2.Analysis
 	if err := json.Unmarshal(data, &round); err != nil {
 		t.Fatalf("JSON round-trip failed: %v", err)
 	}
-	if len(round.SymbolTable) == 0 {
+	if round.SchemaVersion != v2.SchemaVersion {
+		t.Errorf("schema_version = %q, want %q", round.SchemaVersion, v2.SchemaVersion)
+	}
+	if len(round.Application.SymbolTable) == 0 {
 		t.Error("round-tripped symbol table is empty")
 	}
 }

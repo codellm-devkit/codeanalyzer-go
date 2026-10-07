@@ -139,10 +139,8 @@ Aliases:
 
 Flags:
   -a, --analysis-level int      Analysis level: 1=symbol table only, 2=+resolver call graph (default 1)
-      --analysis-schema int     Output schema major: 2=canonical v2 tree (default), 1=legacy v1 shape (default 2)
       --app-name string         Application anchor name for can:// ids and Neo4j :Application (default: input dir name)
   -c, --cache-dir string        Cache directory (default: ~/.cldk/go-cache)
-      --codeql                  Enable CodeQL framework-based call graph (level 2, stub)
       --eager                   Force clean rebuild (ignore cache)
       --emit string             Output projection: json|neo4j|schema (default "json")
   -f, --format string           Output format: json|msgpack (default "json")
@@ -213,22 +211,21 @@ module. Write the output to a directory with `-o`; `cango` names the file
 `analysis.json` inside it.
 
 ```bash
-# Canonical v2 schema, Level 2 (symbol table + call graph):
-cango -i /path/to/go/app --analysis-schema 2 -a 2 -o /path/to/output/
+# Level 2 (symbol table + call graph):
+cango -i /path/to/go/app -a 2 -o /path/to/output/
 # → writes /path/to/output/analysis.json
 ```
 
-> **Schema.** `--analysis-schema` defaults to `2` — the current **canonical v2** tree (the
-> shape the Python SDK's v2 loader and the sections below describe). Pass
-> `--analysis-schema 1` only if you need the **legacy v1** shape for backward compatibility.
-> Omit `-o` to stream the JSON to stdout instead of writing a file.
+> **Schema.** `cango` emits the **canonical CLDK v2** tree (the shape the Python SDK's v2
+> loader and the sections below describe). Omit `-o` to stream the JSON to stdout instead
+> of writing a file.
 
 **3. (Optional) name the application anchor.** `--app-name` sets the `<app>` in every
 `can://go/<app>/…` id and defaults to the input directory's base name. Set it when the
 directory name isn't the identity you want:
 
 ```bash
-cango -i /path/to/go/app --analysis-schema 2 -a 2 --app-name myapp -o ./out/
+cango -i /path/to/go/app -a 2 --app-name myapp -o ./out/
 ```
 
 **4. Verify.** A successful run exits `0` and produces a JSON document whose envelope
@@ -236,7 +233,7 @@ carries `"schema_version": "2.0.0"`, `"language": "go"`, `"max_level": 2`, and a
 `application` tree under `application.symbol_table`:
 
 ```bash
-cango -i /path/to/go/app --analysis-schema 2 -a 2 -o ./out/ && echo "exit=$?"
+cango -i /path/to/go/app -a 2 -o ./out/ && echo "exit=$?"
 python3 -c "import json; d=json.load(open('out/analysis.json')); print(d['schema_version'], d['max_level'], len(d['application']['symbol_table']), 'modules')"
 ```
 
@@ -252,7 +249,6 @@ are build artifacts, not project source), so only your own declarations are emit
 |-------|------|-----------|--------|
 | 1 | `-a 1` (default) | Symbol table only — types, functions, call sites | Implemented |
 | 2 | `-a 2` | Level 1 + resolver-based call graph via `go/types` | Implemented |
-| — | `--codeql` | CodeQL framework-based call graph (merged with Level 2 edges) | Stub (not yet implemented) |
 
 **Level 1** loads each package with `packages.NeedSyntax | NeedTypes | NeedTypesInfo` and walks the AST file by file. Call sites are recorded with `callee_signature = null` at this stage.
 
@@ -260,15 +256,10 @@ are build artifacts, not project source), so only your own declarations are emit
 
 ## Output schema
 
-`cango` emits one of two schema shapes, selected by `--analysis-schema`:
+`cango` emits the **canonical CLDK v2** shape — the shape the v2 Python SDK loader consumes
+and the [step-by-step section above](#generating-analysisjson-for-a-go-app) produces.
 
-- **`--analysis-schema 2`** — the **canonical CLDK v2** shape (detailed below); the shape the
-  v2 Python SDK loader consumes and the [step-by-step section
-  above](#generating-analysisjson-for-a-go-app) produces.
-- **`--analysis-schema 1`** — the **legacy v1** `GoApplication` shape, kept for backward
-  compatibility (v2 is the default).
-
-### Canonical v2 shape (`--analysis-schema 2`, default)
+### Canonical v2 shape
 
 The document is a manifest envelope wrapping one `application` containment tree. Every
 node carries a `can://go/<app>/…` `id`, a `kind`, and a `span`:
@@ -360,53 +351,6 @@ Key v2 schema properties:
   are boolean flags emitted **only when true** (a plain call omits them), for `go f()` / `defer f()`.
 - **`call_graph` edges** — `{src, dst, prov, weight}`; `src`/`dst` are `can://` node ids that
   exist in the tree (not raw signatures), `prov` is resolver provenance, e.g. `["go/types"]`.
-
-### Legacy v1 shape (`--analysis-schema 1`)
-
-The v1 root object is `GoApplication`:
-
-```json
-{
-  "symbol_table": {
-    "pkg/greeter/greeter.go": {
-      "file_path": "pkg/greeter/greeter.go",
-      "module_name": "greeter",
-      "imports": [...],
-      "classes": {
-        "Greeter": {
-          "name": "Greeter",
-          "signature": "example.com/pkg/greeter.Greeter",
-          "is_interface": false,
-          "fields": [{ "name": "Prefix", "type": "string", "tags": {"json": "prefix"} }],
-          "methods": { ... }
-        }
-      },
-      "functions": { ... }
-    }
-  },
-  "call_graph": [
-    {
-      "source": "example.com/main.main",
-      "target": "example.com/pkg/greeter.Greeter.Greet",
-      "type": "CALL_DEP",
-      "weight": 1,
-      "provenance": ["go/types"]
-    }
-  ],
-  "entrypoints": {}
-}
-```
-
-Key v1 schema properties:
-- `symbol_table` — keyed by **file path relative to the project root** (never absolute)
-- `classes` — JSON key for types (spine compatibility with Java/Python schemas); value is `GoType`
-- `module_name` — JSON key for the Go package name (spine compatibility)
-- `GoType.is_interface: bool` — unified type model; structs and interfaces are both `GoType`
-- `GoCallable.receiver_type / receiver_name` — non-empty for methods, empty for package-level functions
-- `GoCallable.return_types: List[str]` — individual return types (Go-specific extension)
-- `GoCallsite.is_goroutine: bool` — true when the call is preceded by the `go` keyword
-- `GoCallEdge.provenance: List[str]` — resolver identifiers, e.g. `["go/types"]` or `["go/types","codeql"]`
-- Call edges are **identity-only**: source and target are `GoCallable.signature` strings that exist in the symbol table
 
 ## Neo4j projection (`--emit neo4j`)
 
@@ -552,10 +496,9 @@ methods above, including `pip install codeanalyzer-go`). See
 | Runtime | Go binary | Self-contained; no runtime dep for SDK users |
 | Structural parser | `go/ast` (stdlib) | Part of the standard toolchain; no external dep |
 | Type resolver | `golang.org/x/tools/go/packages` | Single API for both AST + full type resolution; handles modules natively |
-| Optional enrichment | CodeQL (stubbed) | Same enrichment path as Python/Java analyzers; stubbed for Level 1 |
 | Build/dep materialization | `go mod download` | Required before `packages.Load` so the module cache is warm; result cached by `go.sum` hash |
 | Packaging | Native binary (`go build`) | Zero-runtime-dep distribution; matches Rust/C++ analyzers |
-| Analysis depth | Level 1 (rapid) | Symbol table + resolver call graph; CodeQL stub wired but not implemented |
+| Analysis depth | Level 1 (rapid) | Symbol table + resolver call graph |
 | Call-graph dispatch | Declared-type resolution via `go/types.Selections` | CHA-equivalent; sufficient for cross-package reachability at Level 1 |
 
 ### Package structure
@@ -569,7 +512,6 @@ codeanalyzer-go/
 │   ├── options/              # AnalysisOptions + AnalysisLevel constants
 │   ├── syntactic_analysis/   # SymbolTableBuilder (packages.Load → AST walk)
 │   ├── semantic_analysis/    # CallGraphBuilder (go/types resolver)
-│   │   └── codeql/           # CodeQL backend subpackage (stubbed)
 │   ├── analysis/             # Pluggable pass interface + registry (topo-ordered pipeline)
 │   ├── frameworks/           # BaseEntrypointFinder — extension seam for framework passes
 │   └── utils/                # DiscoverGoFiles, IsVendored, IsTestFile, logging
@@ -584,7 +526,7 @@ codeanalyzer-go/
 │   └── chi/                  # External-dep fixture (chi v5, vendored) for HTTP handler patterns
 ```
 
-The `core` package is a pure orchestrator: it calls `syntactic_analysis` → `semantic_analysis` → `analysis.RunPipeline` → optional CodeQL in sequence, with no inlined parsing logic. Framework-specific analysis extends through the `analysis/` + `frameworks/` layer without touching `core`.
+The `core` package is a pure orchestrator: it calls `syntactic_analysis` → `semantic_analysis` → `analysis.RunPipeline` in sequence, with no inlined parsing logic. Framework-specific analysis extends through the `analysis/` + `frameworks/` layer without touching `core`.
 
 ## Development
 

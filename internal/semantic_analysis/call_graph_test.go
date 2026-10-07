@@ -32,7 +32,7 @@ func TestMergeEdges_PrimaryOnly(t *testing.T) {
 }
 
 func TestMergeEdges_SecondaryOnly(t *testing.T) {
-	secondary := []schema.GoCallEdge{edge("x", "y", 2.0, "codeql")}
+	secondary := []schema.GoCallEdge{edge("x", "y", 2.0, "framework")}
 	result := semantic_analysis.MergeEdges(nil, secondary)
 	if len(result) != 1 {
 		t.Fatalf("got %d edges, want 1", len(result))
@@ -44,7 +44,7 @@ func TestMergeEdges_SecondaryOnly(t *testing.T) {
 
 func TestMergeEdges_DisjointEdges(t *testing.T) {
 	primary := []schema.GoCallEdge{edge("a", "b", 1.0, "resolver")}
-	secondary := []schema.GoCallEdge{edge("c", "d", 1.0, "codeql")}
+	secondary := []schema.GoCallEdge{edge("c", "d", 1.0, "framework")}
 	result := semantic_analysis.MergeEdges(primary, secondary)
 	if len(result) != 2 {
 		t.Errorf("got %d edges, want 2", len(result))
@@ -53,7 +53,7 @@ func TestMergeEdges_DisjointEdges(t *testing.T) {
 
 func TestMergeEdges_DuplicateAccumulatesWeight(t *testing.T) {
 	primary := []schema.GoCallEdge{edge("a", "b", 3, "resolver")}
-	secondary := []schema.GoCallEdge{edge("a", "b", 5, "codeql")}
+	secondary := []schema.GoCallEdge{edge("a", "b", 5, "framework")}
 	result := semantic_analysis.MergeEdges(primary, secondary)
 	if len(result) != 1 {
 		t.Fatalf("duplicate (a→b) should collapse to 1 edge; got %d", len(result))
@@ -65,7 +65,7 @@ func TestMergeEdges_DuplicateAccumulatesWeight(t *testing.T) {
 
 func TestMergeEdges_DuplicateUnionsProvenance(t *testing.T) {
 	primary := []schema.GoCallEdge{edge("a", "b", 1.0, "resolver")}
-	secondary := []schema.GoCallEdge{edge("a", "b", 1.0, "codeql")}
+	secondary := []schema.GoCallEdge{edge("a", "b", 1.0, "framework")}
 	result := semantic_analysis.MergeEdges(primary, secondary)
 	if len(result) != 1 {
 		t.Fatalf("got %d edges, want 1", len(result))
@@ -74,7 +74,7 @@ func TestMergeEdges_DuplicateUnionsProvenance(t *testing.T) {
 	for _, p := range result[0].Provenance {
 		provSet[p] = true
 	}
-	if !provSet["resolver"] || !provSet["codeql"] {
+	if !provSet["resolver"] || !provSet["framework"] {
 		t.Errorf("provenance union failed; got %v", result[0].Provenance)
 	}
 }

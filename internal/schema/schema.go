@@ -168,7 +168,7 @@ type GoCallEdge struct {
 	Target     string            `json:"target"`
 	Type       string            `json:"type"`   // always "CALL_DEP"
 	Weight     int               `json:"weight"` // accumulated when merging backends
-	Provenance []string          `json:"provenance"` // e.g. ["go/types"], ["go/types","codeql"]
+	Provenance []string          `json:"provenance"` // e.g. ["go/types"]
 	Tags       map[string]string `json:"tags"`
 
 	// SourcePath is the relative file in which the source callable is declared.
