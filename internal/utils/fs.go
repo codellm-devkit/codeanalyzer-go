@@ -35,13 +35,31 @@ func RelativePath(root, path string) string {
 	return rel
 }
 
+// IsWithin reports whether path lies inside root (or is root itself). It is the
+// test for "this declaration's file is part of the analyzed project": a path
+// whose relative form escapes root (starts with ".." or is absolute) is outside.
+// cgo synthesizes wrapper functions (_Cfunc_*, _Cgo_*) into files under
+// $GOCACHE, so their declaring file resolves outside the input root — IsWithin
+// is how the symbol-table builder tells those toolchain artifacts from project
+// source.
+func IsWithin(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return !filepath.IsAbs(rel)
+}
+
 // FileHash returns the SHA-256 hex digest of the file at path.
 func FileHash(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
 		return "", err

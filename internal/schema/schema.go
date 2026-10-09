@@ -168,8 +168,19 @@ type GoCallEdge struct {
 	Target     string            `json:"target"`
 	Type       string            `json:"type"`   // always "CALL_DEP"
 	Weight     int               `json:"weight"` // accumulated when merging backends
-	Provenance []string          `json:"provenance"` // e.g. ["go/types"], ["go/types","codeql"]
+	Provenance []string          `json:"provenance"` // e.g. ["go/types"]
 	Tags       map[string]string `json:"tags"`
+
+	// SourcePath is the relative file in which the source callable is declared.
+	// A signature is not globally unique for package-level init functions: Go
+	// permits many `func init()` per package (one per file), all sharing the
+	// signature "<pkgpath>.init". Those are distinct callables with distinct
+	// can:// ids (the id embeds the declaring file via its module), so the v2
+	// emitter needs this to resolve the edge's source to the SPECIFIC init that
+	// owns the call site rather than to an arbitrary one. Empty for callables
+	// whose signature is already unique (the common case). Internal-only; not
+	// part of the v2 output schema.
+	SourcePath string `json:"-"`
 }
 
 // ─── Root object ──────────────────────────────────────────────────────────────

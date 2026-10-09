@@ -492,6 +492,18 @@ func (b *SymbolTableBuilder) buildCallable(
 	decl *ast.FuncDecl,
 ) *schema.GoCallable {
 	name := decl.Name.Name
+
+	// Skip declarations whose file is outside the input root. cgo synthesizes
+	// wrapper functions (_Cfunc_*, _Cgo_*, _cgo_runtime_*) into a generated file
+	// under $GOCACHE; go/packages resolves their token.Pos to that cache path.
+	// They are toolchain artifacts, not project source — emitting them yields
+	// callables whose span cannot be sliced against any project module. Drop
+	// them here, at the point their (cache) file is first known.
+	if declFile := b.fset.File(decl.Pos()); declFile == nil ||
+		!utils.IsWithin(b.projectDir, declFile.Name()) {
+		return nil
+	}
+
 	isExported := unicode.IsUpper(rune(name[0]))
 	pos := b.fset.Position(decl.Pos())
 	end := b.fset.Position(decl.End())

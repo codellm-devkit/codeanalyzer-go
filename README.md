@@ -40,6 +40,11 @@ The binary is fully self-contained: a single static executable with no runtime d
   - [Examples](#examples)
 - [Analysis levels](#analysis-levels)
 - [Output schema](#output-schema)
+- [Neo4j projection (`--emit neo4j`)](#neo4j-projection---emit-neo4j)
+  - [Emit a snapshot (`graph.cypher`)](#emit-a-snapshot-graphcypher)
+  - [Push live to a running Neo4j](#push-live-to-a-running-neo4j)
+  - [Load and query](#load-and-query)
+  - [Query reference](#query-reference)
 - [Python SDK (CLDK) integration](#python-sdk-cldk-integration)
 - [Architecture & Tooling](#architecture--tooling)
 - [Development](#development)
@@ -57,6 +62,9 @@ The binary is fully self-contained: a single static executable with no runtime d
   dependencies for SDK users.
 - **CLDK canonical schema** — output is spine-compatible with the Java/Python/TypeScript analyzers,
   loadable directly by the Python SDK.
+- **Neo4j projection** — the same v2 envelope projected into a property graph (`--emit neo4j`),
+  either as a replayable `graph.cypher` snapshot or pushed live over Bolt, keyed on the identical
+  `can://` ids so JSON and graph join on one string.
 
 ## Installation
 
@@ -130,18 +138,24 @@ Aliases:
   cango, codeanalyzer-go
 
 Flags:
-  -a, --analysis-level int     Analysis level: 1=symbol table only, 2=+resolver call graph (default 1)
-  -c, --cache-dir string       Cache directory (default: ~/.cldk/go-cache)
-      --codeql                 Enable CodeQL framework-based call graph (level 2, stub)
-      --eager                  Force clean rebuild (ignore cache)
-  -f, --format string          Output format: json|msgpack (default "json")
-  -h, --help                   help for cango
-  -i, --input string           Project root to analyze (required)
-  -o, --output string          Output directory for analysis.json (default: stdout)
-      --skip-tests             Skip *_test.go files (default true)
-  -t, --target-files strings   Restrict analysis to specific files (incremental mode)
-  -v, --verbose count          Verbosity (repeat for more detail)
-      --version                Print version and exit
+  -a, --analysis-level int      Analysis level: 1=symbol table only, 2=+resolver call graph (default 1)
+      --app-name string         Application anchor name for can:// ids and Neo4j :Application (default: input dir name)
+  -c, --cache-dir string        Cache directory (default: ~/.cldk/go-cache)
+      --eager                   Force clean rebuild (ignore cache)
+      --emit string             Output projection: json|neo4j|schema (default "json")
+  -f, --format string           Output format: json|msgpack (default "json")
+  -h, --help                    help for cango
+  -i, --input string            Project root to analyze (required)
+  -j, --jobs int                Worker parallelism (default: CPU cores)
+      --neo4j-database string   Neo4j database (env NEO4J_DATABASE, optional)
+      --neo4j-password string   Neo4j password (env NEO4J_PASSWORD, default neo4j)
+      --neo4j-uri string        Live Bolt push target (env NEO4J_URI); omit to write graph.cypher
+      --neo4j-user string       Neo4j username (env NEO4J_USERNAME, default neo4j)
+  -o, --output string           Output directory for analysis.json (default: stdout)
+      --skip-tests              Skip *_test.go files (default true)
+  -t, --target-files strings    Restrict analysis to specific files (incremental mode)
+  -v, --verbose count           Verbosity (repeat for more detail)
+      --version                 Print version and exit
 ```
 
 ### Examples
@@ -178,13 +192,63 @@ cango -i ./my-go-project --eager
 cango -i ./my-go-project -a 2 -vv
 ```
 
+## Generating `analysis.json` for a Go app
+
+The end-to-end steps to produce an `analysis.json` file for any Go project.
+
+**1. Make sure you have `cango`.** Either install a released binary (see
+[Installation](#installation)) or build from source:
+
+```bash
+git clone https://github.com/codellm-devkit/codeanalyzer-go
+cd codeanalyzer-go
+go build -o cango ./cmd/codeanalyzer
+```
+
+**2. Point it at the project root** (the directory containing the app's `go.mod`).
+`cango` resolves imports with the Go type checker, so the target must be a normal Go
+module. Write the output to a directory with `-o`; `cango` names the file
+`analysis.json` inside it.
+
+```bash
+# Level 2 (symbol table + call graph):
+cango -i /path/to/go/app -a 2 -o /path/to/output/
+# → writes /path/to/output/analysis.json
+```
+
+> **Schema.** `cango` emits the **canonical CLDK v2** tree (the shape the Python SDK's v2
+> loader and the sections below describe). Omit `-o` to stream the JSON to stdout instead
+> of writing a file.
+
+**3. (Optional) name the application anchor.** `--app-name` sets the `<app>` in every
+`can://go/<app>/…` id and defaults to the input directory's base name. Set it when the
+directory name isn't the identity you want:
+
+```bash
+cango -i /path/to/go/app -a 2 --app-name myapp -o ./out/
+```
+
+**4. Verify.** A successful run exits `0` and produces a JSON document whose envelope
+carries `"schema_version": "2.0.0"`, `"language": "go"`, `"max_level": 2`, and an
+`application` tree under `application.symbol_table`:
+
+```bash
+cango -i /path/to/go/app -a 2 -o ./out/ && echo "exit=$?"
+python3 -c "import json; d=json.load(open('out/analysis.json')); print(d['schema_version'], d['max_level'], len(d['application']['symbol_table']), 'modules')"
+```
+
+**Notes for larger apps.** Analysis parallelism defaults to your CPU count (tune with
+`-j`); a warm cache (`--cache-dir`, default `~/.cldk/go-cache`) makes re-runs fast, and
+`--eager` forces a clean rebuild. Projects that use **cgo** (`import "C"`) are supported:
+the toolchain-synthesized wrapper functions are correctly excluded from the output (they
+are build artifacts, not project source), so only your own declarations are emitted.
+
 ## Analysis levels
 
 | Level | Flag | What runs | Status |
 |-------|------|-----------|--------|
 | 1 | `-a 1` (default) | Symbol table only — types, functions, call sites | Implemented |
 | 2 | `-a 2` | Level 1 + resolver-based call graph via `go/types` | Implemented |
-| — | `--codeql` | CodeQL framework-based call graph (merged with Level 2 edges) | Stub (not yet implemented) |
 
 **Level 1** loads each package with `packages.NeedSyntax | NeedTypes | NeedTypesInfo` and walks the AST file by file. Call sites are recorded with `callee_signature = null` at this stage.
 
@@ -192,50 +256,224 @@ cango -i ./my-go-project -a 2 -vv
 
 ## Output schema
 
-The root object is `GoApplication`:
+`cango` emits the **canonical CLDK v2** shape — the shape the v2 Python SDK loader consumes
+and the [step-by-step section above](#generating-analysisjson-for-a-go-app) produces.
+
+### Canonical v2 shape
+
+The document is a manifest envelope wrapping one `application` containment tree. Every
+node carries a `can://go/<app>/…` `id`, a `kind`, and a `span`:
 
 ```json
 {
-  "symbol_table": {
-    "pkg/greeter/greeter.go": {
-      "file_path": "pkg/greeter/greeter.go",
-      "module_name": "greeter",
-      "imports": [...],
-      "classes": {
-        "Greeter": {
-          "name": "Greeter",
-          "signature": "example.com/pkg/greeter.Greeter",
-          "is_interface": false,
-          "fields": [{ "name": "Prefix", "type": "string", "tags": {"json": "prefix"} }],
-          "methods": { ... }
+  "schema_version": "2.0.0",
+  "language": "go",
+  "max_level": 2,
+  "analyzer": { "name": "codeanalyzer-go", "version": "0.1.0" },
+  "application": {
+    "id": "can://go/myapp",
+    "kind": "application",
+    "symbol_table": {
+      "pkg/greeter/greeter.go": {
+        "id": "can://go/myapp/pkg/greeter/greeter.go",
+        "kind": "module",
+        "package": "greeter",
+        "span": { "start": [1, 1], "end": [40, 2], "bytes": [0, 812] },
+        "source": "package greeter\n\n...",
+        "content_hash": "…",
+        "imports": [ { "name": "fmt", "path": "fmt", "span": {…} } ],
+        "types": {
+          "Greeter": {
+            "id": "can://go/myapp/pkg/greeter/greeter.go/example.com/pkg/greeter.Greeter",
+            "kind": "struct",
+            "span": { "start": [5, 1], "end": [7, 2], "bytes": [17, 63] },
+            "fields": {
+              "Prefix": { "id": "…/Prefix", "kind": "field", "type": "string", "span": {…} }
+            },
+            "callables": {
+              "example.com/pkg/greeter.Greeter.Greet": {
+                "id": "can://go/myapp/pkg/greeter/greeter.go/example.com/pkg/greeter.Greeter/example.com/pkg/greeter.Greeter.Greet",
+                "kind": "method",
+                "signature": "example.com/pkg/greeter.Greeter.Greet",
+                "span": { "start": [9, 1], "end": [11, 2], "bytes": [65, 140] },
+                "parameters": [ { "name": "name", "type": "string", "span": {…} } ],
+                "return_type": "string",
+                "error_channel": ["error"],
+                "metrics": { "cyclomatic": 1 },
+                "body": {
+                  "10:2": {
+                    "kind": "call",
+                    "span": { "start": [10, 2], "end": [10, 30], "bytes": [90, 118] },
+                    "callee": "can://go/myapp/pkg/greeter/greeter.go/…/example.com/pkg/greeter.format"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "functions": {
+          "example.com/main.main": { "id": "…", "kind": "function", "signature": "…", "body": {…} }
         }
-      },
-      "functions": { ... }
-    }
-  },
-  "call_graph": [
-    {
-      "source": "example.com/main.main",
-      "target": "example.com/pkg/greeter.Greeter.Greet",
-      "type": "CALL_DEP",
-      "weight": 1,
-      "provenance": ["go/types"]
-    }
-  ],
-  "entrypoints": {}
+      }
+    },
+    "call_graph": [
+      {
+        "src": "can://go/myapp/main.go/…/example.com/main.main",
+        "dst": "can://go/myapp/pkg/greeter/greeter.go/…/example.com/pkg/greeter.Greeter.Greet",
+        "prov": ["go/types"],
+        "weight": 1
+      }
+    ]
+  }
 }
 ```
 
-Key schema properties:
-- `symbol_table` — keyed by **file path relative to the project root** (never absolute)
-- `classes` — JSON key for types (spine compatibility with Java/Python schemas); value is `GoType`
-- `module_name` — JSON key for the Go package name (spine compatibility)
-- `GoType.is_interface: bool` — unified type model; structs and interfaces are both `GoType`
-- `GoCallable.receiver_type / receiver_name` — non-empty for methods, empty for package-level functions
-- `GoCallable.return_types: List[str]` — individual return types (Go-specific extension)
-- `GoCallsite.is_goroutine: bool` — true when the call is preceded by the `go` keyword
-- `GoCallEdge.provenance: List[str]` — resolver identifiers, e.g. `["go/types"]` or `["go/types","codeql"]`
-- Call edges are **identity-only**: source and target are `GoCallable.signature` strings that exist in the symbol table
+Key v2 schema properties:
+- **Envelope** — `schema_version` (`"2.0.0"`), `language` (`"go"`), `max_level` (1 or 2),
+  and `analyzer{name,version}` wrap a single `application` node.
+- **One containment tree** — `application → module → type → callable → body`, keyed as
+  `symbol_table` (modules, by **project-relative file path**), `types`, `callables`, `body`.
+- **`id`** — every node carries a durable `can://go/<app>/<file>/<type>/<signature>` id;
+  `<app>` is the `--app-name` anchor. Body call nodes use `<callable-id>` keyed by `line:col`.
+- **`kind`** — `module` · `type` kinds `struct | interface | alias | defined` (collapses v1's
+  `is_interface`) · `callable` kinds `function | method | lambda` · body `call`.
+- **`base_types: []`** (type, optional) — embedded type ids (struct/interface embedding — the
+  explicit spine), as opposed to interfaces the type is *computed* to satisfy.
+- **`span`** — `{start:[line,col], end:[line,col], bytes:[from,to]}`; `bytes` are **UTF-8 byte
+  offsets** into the owning `module.source` (source is stored once per module, every node slices it).
+- **`source_file`** (callable, optional) — set when a method is declared in a *different file*
+  than its receiver type; the method stays nested under the type, and its `span.bytes` index
+  `symbol_table[source_file].source` instead of the nesting module's.
+- **`error_channel: []`** — populated from `error`-typed returns (the returns also stay in
+  `return_type`). **Closures** nest as `callables{}` on the enclosing callable.
+- **`body` call nodes** — `callee` is the sanctioned `null → id` slot: `null` at L1 (and for
+  external/stdlib callees), a `can://` node id once resolved at L2. `is_goroutine` / `is_deferred`
+  are boolean flags emitted **only when true** (a plain call omits them), for `go f()` / `defer f()`.
+- **`call_graph` edges** — `{src, dst, prov, weight}`; `src`/`dst` are `can://` node ids that
+  exist in the tree (not raw signatures), `prov` is resolver provenance, e.g. `["go/types"]`.
+
+## Neo4j projection (`--emit neo4j`)
+
+`--emit neo4j` projects the **same v2 envelope** into a Neo4j property graph. It is a *second
+projection of the identical analysis* — JSON nodes and graph nodes carry the same `can://go/<app>/…`
+ids, so the two join on one string and are never recomposed. The graph vocabulary is `Go`-prefixed
+labels (`:GoModule`, `:GoType`, `:GoCallable`, `:GoField`, `:GoBodyNode`, `:GoExternal`, plus the
+shared merge label `:GoSymbol` and marker `:GoCanNode`) and `GO_`-prefixed relationships
+(`GO_HAS_MODULE`, `GO_DECLARES`, `GO_HAS_METHOD`, `GO_HAS_FIELD`, `GO_CALLS`, `GO_RESOLVES_TO`,
+`GO_IMPORTS`, `GO_EMBEDS`, `GO_SATISFIES`, …).
+
+There are two output paths, chosen by whether `--neo4j-uri` is set:
+
+| | `--neo4j-uri` unset | `--neo4j-uri` set |
+|---|---|---|
+| **What happens** | Writes a replayable `graph.cypher` snapshot | Pushes the graph live over Bolt into a running Neo4j |
+| **Where** | `<-o dir>/graph.cypher` (or stdout) | The target database |
+| **Use for** | Review, diffing, loading on your own schedule, CI | A DB you already have running |
+
+Both paths are **scoped to one application**: every destructive statement is anchored on
+`:GoCanNode` and the `can://go/<app>/` id prefix, so re-emitting replaces exactly that app's subgraph
+and never touches another app (or a sibling-language graph) in the same database. The projection is
+**deterministic** — a second emit is byte-identical.
+
+> **`--emit neo4j` is always full depth.** The graph is projected at the max implemented level (L2
+> today — symbol table + call graph) and canonical schema v2. Do **not** pass `-a`/`--analysis-level`
+> with it — an explicit level is a flag error (`--analysis-level does not apply to --emit neo4j`),
+> because there is no shallower graph to ask for.
+
+### Emit a snapshot (`graph.cypher`)
+
+```bash
+cango -i /path/to/go/app --emit neo4j -o ./out/
+# → writes ./out/graph.cypher
+```
+
+The snapshot is a self-contained script: constraints + indexes, a scoped wipe of this app's subgraph,
+then `UNWIND … MERGE` batches for nodes and relationships. Replay it into any Neo4j with
+`cypher-shell` (see below). Omit `-o` to stream the Cypher to stdout.
+
+### Push live to a running Neo4j
+
+Set `--neo4j-uri` (or the `NEO4J_URI` env var) to push directly over Bolt instead of writing a file:
+
+```bash
+./cango -i /path/to/go/app  --emit neo4j \
+  --neo4j-uri bolt://127.0.0.1:7687 \
+  --neo4j-user neo4j --neo4j-password <pass>
+```
+
+Credentials and target also read from the environment (`NEO4J_URI`, `NEO4J_USERNAME`,
+`NEO4J_PASSWORD`, `NEO4J_DATABASE`), so you can keep them out of your shell history:
+
+```bash
+export NEO4J_URI=bolt://127.0.0.1:7687
+export NEO4J_PASSWORD=<pass>
+cango -i /path/to/go/app  --emit neo4j
+```
+
+> Use `127.0.0.1` rather than `localhost` if anything else (an SSH tunnel, another DB) might also be
+> listening on `7687` — `localhost` can resolve to the wrong listener.
+
+### Load and query
+
+If you emitted a `graph.cypher` snapshot, load it into a running Neo4j with `cypher-shell`:
+
+```bash
+cypher-shell -a bolt://127.0.0.1:7687 -u neo4j -p <pass> < ./out/graph.cypher
+```
+
+A convenience harness, [`scripts/load_and_query.sh`](scripts/load_and_query.sh), loads the snapshot
+and runs a set of sample queries — it auto-detects `cypher-shell` from a Neo4j Desktop or Homebrew
+install. It reads `graph.cypher` from its own directory, so emit the snapshot into `scripts/` first
+(`-o scripts`):
+
+```bash
+# brew install neo4j && neo4j start   # (or Neo4j Desktop) — then set a password
+cango -i /path/to/go/app --emit neo4j -o scripts         # writes scripts/graph.cypher
+
+NEO4J_PASSWORD=<pass> ./scripts/load_and_query.sh          # load + query
+NEO4J_PASSWORD=<pass> ./scripts/load_and_query.sh --query  # queries only
+NEO4J_PASSWORD=<pass> ./scripts/load_and_query.sh --check  # just test the connection
+```
+
+Or explore visually in Neo4j Browser at `http://127.0.0.1:7474` (connect to `bolt://127.0.0.1:7687`),
+paste a query, and swap `RETURN p` for `RETURN …` to draw the graph.
+
+### Query reference
+
+Always **scope by the `can://` id prefix** (an index-backed seek via the `gocannode_id` range index),
+never by a bare label scan — replace `<app>` with your `--app-name`:
+
+```cypher
+// Node counts by label.
+MATCH (n:GoCanNode) RETURN labels(n)[0] AS label, count(*) AS n ORDER BY n DESC;
+
+// Relationship counts by type.
+MATCH ()-[r]->() RETURN type(r) AS rel, count(*) AS n ORDER BY n DESC;
+
+// Everything owned by one application (prefix seek).
+MATCH (n:GoCanNode) WHERE n.id STARTS WITH 'can://go/<app>/' RETURN count(n) AS app_nodes;
+
+// Types ranked by method count (the "god struct" finder).
+MATCH (t:GoType) OPTIONAL MATCH (t)-[:GO_HAS_METHOD]->(m)
+RETURN t.kind AS kind, t.signature AS type, count(m) AS methods ORDER BY methods DESC;
+
+// Most-called callables (in-degree) — the hot utilities.
+MATCH (:GoCallable)-[:GO_CALLS]->(b:GoCallable)
+RETURN b.signature AS callee, count(*) AS called_by ORDER BY called_by DESC LIMIT 15;
+
+// Everything Command.Execute reaches, transitively (any depth).
+MATCH (:GoCallable {signature:'github.com/spf13/cobra.Command.Execute'})-[:GO_CALLS*]->(b)
+RETURN DISTINCT b.signature AS reachable ORDER BY reachable;
+
+// External / stdlib packages reached via imports.
+MATCH (:GoCanNode)-[:GO_IMPORTS]->(x:GoExternal) RETURN DISTINCT x.path AS import ORDER BY import;
+```
+
+The full, commented catalog — overview/sanity, containment tree, call graph (callers, callees,
+reachability, shortest path, entry points, leaves), call-site resolution, imports, inheritance,
+metrics, and scoped maintenance — lives in
+[`Eval/Neo4j_eval/queries.cypher`](Eval/Neo4j_eval/queries.cypher), validated against the
+`spf13/cobra` graph.
 
 ## Python SDK (CLDK) integration
 
@@ -258,10 +496,9 @@ methods above, including `pip install codeanalyzer-go`). See
 | Runtime | Go binary | Self-contained; no runtime dep for SDK users |
 | Structural parser | `go/ast` (stdlib) | Part of the standard toolchain; no external dep |
 | Type resolver | `golang.org/x/tools/go/packages` | Single API for both AST + full type resolution; handles modules natively |
-| Optional enrichment | CodeQL (stubbed) | Same enrichment path as Python/Java analyzers; stubbed for Level 1 |
 | Build/dep materialization | `go mod download` | Required before `packages.Load` so the module cache is warm; result cached by `go.sum` hash |
 | Packaging | Native binary (`go build`) | Zero-runtime-dep distribution; matches Rust/C++ analyzers |
-| Analysis depth | Level 1 (rapid) | Symbol table + resolver call graph; CodeQL stub wired but not implemented |
+| Analysis depth | Level 1 (rapid) | Symbol table + resolver call graph |
 | Call-graph dispatch | Declared-type resolution via `go/types.Selections` | CHA-equivalent; sufficient for cross-package reachability at Level 1 |
 
 ### Package structure
@@ -275,7 +512,6 @@ codeanalyzer-go/
 │   ├── options/              # AnalysisOptions + AnalysisLevel constants
 │   ├── syntactic_analysis/   # SymbolTableBuilder (packages.Load → AST walk)
 │   ├── semantic_analysis/    # CallGraphBuilder (go/types resolver)
-│   │   └── codeql/           # CodeQL backend subpackage (stubbed)
 │   ├── analysis/             # Pluggable pass interface + registry (topo-ordered pipeline)
 │   ├── frameworks/           # BaseEntrypointFinder — extension seam for framework passes
 │   └── utils/                # DiscoverGoFiles, IsVendored, IsTestFile, logging
@@ -290,7 +526,7 @@ codeanalyzer-go/
 │   └── chi/                  # External-dep fixture (chi v5, vendored) for HTTP handler patterns
 ```
 
-The `core` package is a pure orchestrator: it calls `syntactic_analysis` → `semantic_analysis` → `analysis.RunPipeline` → optional CodeQL in sequence, with no inlined parsing logic. Framework-specific analysis extends through the `analysis/` + `frameworks/` layer without touching `core`.
+The `core` package is a pure orchestrator: it calls `syntactic_analysis` → `semantic_analysis` → `analysis.RunPipeline` in sequence, with no inlined parsing logic. Framework-specific analysis extends through the `analysis/` + `frameworks/` layer without touching `core`.
 
 ## Development
 

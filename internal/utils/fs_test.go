@@ -53,6 +53,32 @@ func TestIsVendored(t *testing.T) {
 	}
 }
 
+// ── IsWithin ─────────────────────────────────────────────────────────────────
+
+func TestIsWithin(t *testing.T) {
+	root := filepath.Join(string(filepath.Separator), "home", "user", "proj")
+	tests := []struct {
+		path string
+		want bool
+	}{
+		// Inside the project root.
+		{filepath.Join(root, "main.go"), true},
+		{filepath.Join(root, "pkg", "geo", "geos", "geos.go"), true},
+		{root, true}, // root itself resolves to "."
+		// Outside: the go-build cache cgo synthesizes into — the ISSUE-2 shape.
+		{filepath.Join(string(filepath.Separator), "home", "user", "Library", "Caches", "go-build", "bb", "hash-d"), false},
+		// A sibling directory sharing a prefix but not nested under root.
+		{filepath.Join(string(filepath.Separator), "home", "user", "proj-other", "x.go"), false},
+		// A parent directory.
+		{filepath.Join(string(filepath.Separator), "home", "user"), false},
+	}
+	for _, tc := range tests {
+		if got := utils.IsWithin(root, tc.path); got != tc.want {
+			t.Errorf("IsWithin(%q, %q) = %v, want %v", root, tc.path, got, tc.want)
+		}
+	}
+}
+
 // ── FileHash ──────────────────────────────────────────────────────────────────
 
 func TestFileHash_Deterministic(t *testing.T) {

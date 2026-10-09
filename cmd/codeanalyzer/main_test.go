@@ -59,6 +59,90 @@ func TestRootCmd_UnknownFormatReturnsError(t *testing.T) {
 	}
 }
 
+func TestRootCmd_UnknownEmitReturnsError(t *testing.T) {
+	td := cliTestdataDir()
+	_, _, err := runCmd("--input", filepath.Join(td, "greeter"), "--emit", "bogus")
+	if err == nil {
+		t.Fatal("expected error for unknown --emit value, got nil")
+	}
+}
+
+func TestRootCmd_EmitNeo4jWritesGraphCypher(t *testing.T) {
+	// --emit neo4j with no --neo4j-uri writes a self-contained graph.cypher
+	// snapshot into the output dir (M6).
+	td := cliTestdataDir()
+	out := t.TempDir()
+	stdout, _, err := runCmd("--input", filepath.Join(td, "multipackage"), "--emit", "neo4j", "--output", out)
+	if err != nil {
+		t.Fatalf("--emit neo4j should succeed; got %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(out, "graph.cypher"))
+	if err != nil {
+		t.Fatalf("graph.cypher not written: %v", err)
+	}
+	script := string(data)
+	for _, want := range []string{"CREATE CONSTRAINT", "DETACH DELETE", "MERGE (n:", "GO_CALLS"} {
+		if !strings.Contains(script, want) {
+			t.Errorf("graph.cypher missing %q", want)
+		}
+	}
+	if !strings.Contains(stdout, "graph.cypher") {
+		t.Errorf("expected stdout to report the written path; got %q", stdout)
+	}
+}
+
+func TestRootCmd_EmitNeo4jRejectsExplicitAnalysisLevel(t *testing.T) {
+	// --emit neo4j is always full-depth; combining it with -a is a flag error.
+	td := cliTestdataDir()
+	_, _, err := runCmd("--input", filepath.Join(td, "greeter"), "--emit", "neo4j", "-a", "1")
+	if err == nil {
+		t.Fatal("expected a flag error for --emit neo4j -a 1, got nil")
+	}
+	if !strings.Contains(err.Error(), "does not apply to --emit neo4j") {
+		t.Errorf("error should explain the level gate; got %q", err.Error())
+	}
+}
+
+func TestRootCmd_EmitSchemaWritesContractWithoutInput(t *testing.T) {
+	// --emit schema is a static contract: it needs no --input and writes
+	// schema.neo4j.json to the output dir (M1).
+	out := t.TempDir()
+	stdout, _, err := runCmd("--emit", "schema", "--output", out)
+	if err != nil {
+		t.Fatalf("--emit schema should succeed without --input; got %v", err)
+	}
+
+	path := filepath.Join(out, "schema.neo4j.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("schema.neo4j.json not written: %v", err)
+	}
+	if !strings.Contains(stdout, "schema.neo4j.json") {
+		t.Errorf("expected stdout to report the written path; got %q", stdout)
+	}
+
+	// It must parse and carry the schema version + a GO_-prefixed vocabulary.
+	var doc struct {
+		SchemaVersion string `json:"schema_version"`
+		RelPrefix     string `json:"rel_prefix"`
+		Nodes         []struct {
+			Label string `json:"label"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("schema.neo4j.json does not parse: %v", err)
+	}
+	if doc.SchemaVersion != "2.0.0" {
+		t.Errorf("schema_version = %q, want 2.0.0", doc.SchemaVersion)
+	}
+	if doc.RelPrefix != "GO_" {
+		t.Errorf("rel_prefix = %q, want GO_", doc.RelPrefix)
+	}
+	if len(doc.Nodes) == 0 {
+		t.Error("schema document lists no node families")
+	}
+}
+
 // ── --version ────────────────────────────────────────────────────────────────
 
 func TestRootCmd_VersionFlag(t *testing.T) {
@@ -128,14 +212,17 @@ func TestRootCmd_Level1ProducesNoCallGraph(t *testing.T) {
 		t.Fatalf("command failed: %v", err)
 	}
 
+	// The default is now the v2 shape, where call_graph lives under application (not top-level).
 	var result struct {
-		CallGraph []interface{} `json:"call_graph"`
+		Application struct {
+			CallGraph []interface{} `json:"call_graph"`
+		} `json:"application"`
 	}
 	if jsonErr := json.Unmarshal([]byte(out), &result); jsonErr != nil {
 		t.Fatalf("stdout is not valid JSON: %v", jsonErr)
 	}
-	if len(result.CallGraph) != 0 {
-		t.Errorf("level 1 should produce no call graph edges; got %d", len(result.CallGraph))
+	if len(result.Application.CallGraph) != 0 {
+		t.Errorf("level 1 should produce no call graph edges; got %d", len(result.Application.CallGraph))
 	}
 }
 
@@ -151,14 +238,48 @@ func TestRootCmd_Level2ProducesCallGraph(t *testing.T) {
 		t.Fatalf("command failed: %v", err)
 	}
 
+	// The default is now the v2 shape, where call_graph lives under application (not top-level).
 	var result struct {
-		CallGraph []interface{} `json:"call_graph"`
+		Application struct {
+			CallGraph []interface{} `json:"call_graph"`
+		} `json:"application"`
 	}
 	if jsonErr := json.Unmarshal([]byte(out), &result); jsonErr != nil {
 		t.Fatalf("stdout is not valid JSON: %v", jsonErr)
 	}
-	if len(result.CallGraph) == 0 {
+	if len(result.Application.CallGraph) == 0 {
 		t.Error("level 2 should produce call graph edges; got none")
+	}
+}
+
+// ── schema output (always canonical v2) ─────────────────────────────────────────
+
+// The analyzer emits only the canonical v2 containment tree. This asserts the
+// envelope shape and identity anchor on the default (and only) output path.
+func TestRootCmd_EmitsCanonicalV2(t *testing.T) {
+	td := cliTestdataDir()
+	out, _, err := runCmd("--input", filepath.Join(td, "greeter"), "--cache-dir", t.TempDir())
+	if err != nil {
+		t.Fatalf("command failed: %v", err)
+	}
+	var v struct {
+		SchemaVersion string `json:"schema_version"`
+		Language      string `json:"language"`
+		Application   struct {
+			ID string `json:"id"`
+		} `json:"application"`
+	}
+	if jsonErr := json.Unmarshal([]byte(out), &v); jsonErr != nil {
+		t.Fatalf("stdout is not valid JSON: %v", jsonErr)
+	}
+	if v.SchemaVersion != "2.0.0" {
+		t.Errorf("schema_version = %q, want 2.0.0", v.SchemaVersion)
+	}
+	if v.Language != "go" {
+		t.Errorf("language = %q, want go", v.Language)
+	}
+	if v.Application.ID != "can://go/greeter" {
+		t.Errorf("application.id = %q, want can://go/greeter", v.Application.ID)
 	}
 }
 

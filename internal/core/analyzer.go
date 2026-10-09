@@ -5,11 +5,10 @@
 // discipline of codeanalyzer-python/codeanalyzer/core.py.
 //
 // Phase order:
-//   1. Project materialization (go mod download)
-//   2. Symbol table construction  (syntactic_analysis)
-//   3. Resolver-based call graph  (semantic_analysis) — if level >= 2
-//   4. Pass pipeline              (analysis/registry)
-//   5. Optional CodeQL enrichment (semantic_analysis/codeql) — if --codeql
+//  1. Project materialization (go mod download)
+//  2. Symbol table construction  (syntactic_analysis)
+//  3. Resolver-based call graph  (semantic_analysis) — if level >= 2
+//  4. Pass pipeline              (analysis/registry)
 package core
 
 import (
@@ -23,8 +22,8 @@ import (
 	"github.com/codellm-devkit/codeanalyzer-go/internal/options"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/schema"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/semantic_analysis"
-	"github.com/codellm-devkit/codeanalyzer-go/internal/semantic_analysis/codeql"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/syntactic_analysis"
+	"github.com/codellm-devkit/codeanalyzer-go/internal/syntactic_analysis/v2emit"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/utils"
 )
 
@@ -90,26 +89,6 @@ func (a *Analyzer) Analyze() (*schema.GoApplication, error) {
 		utils.Warn("pass pipeline error: %v", err)
 	}
 
-	// ── Phase 5: Optional CodeQL enrichment ──────────────────────────────────
-	if a.opts.UseCodeQL {
-		cq, err := codeql.New(a.opts.CacheDir, true)
-		if err != nil {
-			utils.Warn("CodeQL unavailable: %v", err)
-		} else {
-			if err := cq.Build(a.opts.InputPath); err != nil {
-				utils.Warn("CodeQL build failed: %v", err)
-			} else {
-				cqlEdges, err := cq.Edges()
-				if err != nil {
-					utils.Warn("CodeQL edge extraction failed: %v", err)
-				} else {
-					app.CallGraph = semantic_analysis.MergeEdges(app.CallGraph, cqlEdges)
-					utils.Info("merged %d CodeQL edges", len(cqlEdges))
-				}
-			}
-		}
-	}
-
 	return a.finalizeAndCache(app)
 }
 
@@ -170,10 +149,12 @@ func (a *Analyzer) saveCache(app *schema.GoApplication) error {
 	return os.WriteFile(cachePath, data, 0o644)
 }
 
-// WriteOutput writes the GoApplication to outputDir/analysis.json (or stdout
-// when outputDir is empty). Only "json" is supported; "msgpack" and other
-// values return an explicit error rather than silently falling back to JSON.
-func WriteOutput(app *schema.GoApplication, outputDir, format string) error {
+// RenderJSON serializes the analysis to JSON as the canonical v2 containment
+// tree via the v2emit emitter. This is the single serialization point, so both
+// the stdout and file output paths agree. Only "json" is supported; other
+// formats return an explicit error rather than silently falling back.
+func RenderJSON(app *schema.GoApplication, opts options.AnalysisOptions) ([]byte, error) {
+	format := opts.Format
 	if format == "" {
 		format = "json"
 	}
@@ -181,21 +162,28 @@ func WriteOutput(app *schema.GoApplication, outputDir, format string) error {
 	case "json":
 		// only supported format
 	case "msgpack":
-		return fmt.Errorf("msgpack output is not yet implemented; use --format json")
+		return nil, fmt.Errorf("msgpack output is not yet implemented; use --format json")
 	default:
-		return fmt.Errorf("unsupported output format %q; supported: json", format)
+		return nil, fmt.Errorf("unsupported output format %q; supported: json", format)
 	}
 
-	data, err := json.Marshal(app)
+	payload := v2emit.Emit(app, opts.AppName, opts.InputPath, int(opts.Level), opts.AnalyzerVersion)
+	return json.Marshal(payload)
+}
+
+// WriteOutput serializes the analysis (in the selected schema) and writes it to
+// outputDir/analysis.json, or to stdout when outputDir is empty.
+func WriteOutput(app *schema.GoApplication, opts options.AnalysisOptions) error {
+	data, err := RenderJSON(app, opts)
 	if err != nil {
 		return err
 	}
-	if outputDir == "" {
+	if opts.OutputDir == "" {
 		_, err = os.Stdout.Write(data)
 		return err
 	}
-	if err := utils.EnsureDir(outputDir); err != nil {
+	if err := utils.EnsureDir(opts.OutputDir); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(outputDir, "analysis.json"), data, 0o644)
+	return os.WriteFile(filepath.Join(opts.OutputDir, "analysis.json"), data, 0o644)
 }
