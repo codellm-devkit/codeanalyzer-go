@@ -29,6 +29,8 @@ jobs:
 
       # Derive the release version from the tag (vX.Y.Z -> X.Y.Z). On a manual
       # workflow_dispatch run there is no tag, so fall back to a dev version.
+      # A SemVer pre-release suffix (vX.Y.Z-rc.N, -alpha.N, -beta.N) marks the
+      # release as a pre-release: not "latest" on GitHub, no Homebrew update.
       - name: Determine version
         id: ver
         run: |
@@ -37,8 +39,11 @@ jobs:
           else
             version="0.0.0-dev"
           fi
+          prerelease=false
+          [[ "$version" == *-* ]] && prerelease=true
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo ">>> Releasing version $version"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo ">>> Releasing version $version (prerelease=$prerelease)"
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -117,20 +122,28 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         env:
           VERSION: ${{ steps.ver.outputs.version }}
+          PRERELEASE: ${{ steps.ver.outputs.prerelease }}
           CHANGELOG: ${{ steps.changelog.outputs.changelog }}
         run: |
           REPO="codellm-devkit/codeanalyzer-go"
           BASE="https://github.com/$REPO/releases/download/v$VERSION"
+          # A pre-release is never "latest" and is not pushed to the Homebrew tap,
+          # so pin the installer to this tag and leave out the brew one-liner.
+          if [[ "$PRERELEASE" == "true" ]]; then
+            INSTALL_CMD="curl --proto '=https' --tlsv1.2 -LsSf $BASE/cango-installer.sh | CANGO_VERSION=v$VERSION sh"
+            BREW_SECTION="Homebrew: not published for pre-releases."
+          else
+            INSTALL_CMD="curl --proto '=https' --tlsv1.2 -LsSf https://github.com/$REPO/releases/latest/download/cango-installer.sh | sh"
+            BREW_SECTION="$(printf 'Homebrew:\n\n    brew install codellm-devkit/homebrew-tap/codeanalyzer-go')"
+          fi
           cat > "$RUNNER_TEMP/RELEASE_BODY.md" <<EOF
           ## Install codeanalyzer-go v$VERSION
 
           Shell script (prebuilt binary; macOS and Linux):
 
-              curl --proto '=https' --tlsv1.2 -LsSf https://github.com/$REPO/releases/latest/download/cango-installer.sh | sh
+              $INSTALL_CMD
 
-          Homebrew:
-
-              brew install codellm-devkit/homebrew-tap/codeanalyzer-go
+          $BREW_SECTION
 
           PyPI:
 
@@ -159,6 +172,9 @@ jobs:
         with:
           files: release-bins/*
           body_path: ${{ runner.temp }}/RELEASE_BODY.md
+          # Keep releases/latest (and so the curl installer) on the newest stable.
+          prerelease: ${{ steps.ver.outputs.prerelease == 'true' }}
+          make_latest: ${{ steps.ver.outputs.prerelease == 'true' && 'false' || 'true' }}
           # Auto-open a repo-level Discussion linked to this release, seeded with
           # the same notes. Requires Discussions enabled and this category to exist.
           discussion_category_name: Announcements
@@ -220,9 +236,11 @@ jobs:
   # failure -- e.g. a missing HOMEBREW_TAP_TOKEN -- is isolated from the PyPI and
   # GitHub Release steps above, and can be re-run on its own without re-uploading
   # wheels.
+  # Skipped for pre-release tags (vX.Y.Z-rc.N etc.): the tap carries a single
+  # formula, and an RC must not replace the stable one users `brew install`.
   homebrew:
     needs: release
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-')
     runs-on: ubuntu-latest
     steps:
       - name: Check out code

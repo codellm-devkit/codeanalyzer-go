@@ -29,7 +29,12 @@ REPO_ROOT="$(cd "$HERE/../.." && pwd)"          # codeanalyzer-go repo root (has
 # (hatch's single source of truth for the wheel version) and injected into the
 # binary via -ldflags so `cango --version` matches the wheel version.
 PKG_VERSION="${PKG_VERSION:-0.1.0}"
-WHEEL_STEM="codeanalyzer_go-${PKG_VERSION}-py3-none-any.whl"
+# The wheel filename carries the PEP 440-normalized version, not the raw tag
+# version: a SemVer pre-release like 0.1.0-rc.1 is built as 0.1.0rc1, and
+# 0.0.0-dev as 0.0.0.dev0. Normalize the same way so the retag step below finds
+# the file. (`packaging` is a dependency of `build`, so it is always present.)
+WHEEL_VERSION="$(python -c 'import sys; from packaging.version import Version; print(Version(sys.argv[1]))' "$PKG_VERSION")"
+WHEEL_STEM="codeanalyzer_go-${WHEEL_VERSION}-py3-none-any.whl"
 BIN_DIR="$HERE/src/codeanalyzer_go/_bin"
 INIT_PY="$HERE/src/codeanalyzer_go/__init__.py"
 
