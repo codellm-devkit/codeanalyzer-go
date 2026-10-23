@@ -1,0 +1,3 @@
+# example.com/vlib v0.0.0
+## explicit
+example.com/vlib

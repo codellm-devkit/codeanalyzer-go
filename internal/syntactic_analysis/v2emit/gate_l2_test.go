@@ -458,3 +458,34 @@ func TestGateL2_IncrementalModeKeepsProjectCalleesInternal(t *testing.T) {
 		t.Error("fmt.Println should still be external in incremental mode")
 	}
 }
+
+// TestGateL2_VendoredCalleeIsExternal locks that a callee declared under
+// <projectDir>/vendor (inside the project dir, but skipped by the symbol table)
+// is a library: dataflow/vend calls vlib.F from the vendored example.com/vlib.
+func TestGateL2_VendoredCalleeIsExternal(t *testing.T) {
+	_, thisFile, _, _ := runtime.Caller(0)
+	dir := filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "testdata", "dataflow")
+	b := syntactic_analysis.NewSymbolTableBuilder(dir)
+	st, err := b.Build(nil, true)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
+	edges := cg.Build(st)
+	out := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}, "dataflow", dir, 2, "gate-test")
+
+	ext := v2.ExternalID(out.Application.ID, "example.com/vlib", "F")
+	sym, ok := out.Application.ExternalSymbols[ext]
+	if !ok {
+		t.Fatalf("external_symbols missing %s; have %v", ext, out.Application.ExternalSymbols)
+	}
+	if sym.Module != "example.com/vlib" || sym.Signature != "F" {
+		t.Errorf("unexpected symbol %+v", sym)
+	}
+	if !anyCallNodeHasCallee(out, ext) {
+		t.Errorf("no call node has callee %s", ext)
+	}
+	if !anyEdgeTo(out.Application.CallGraph, ext) {
+		t.Errorf("no call_graph edge targets %s", ext)
+	}
+}

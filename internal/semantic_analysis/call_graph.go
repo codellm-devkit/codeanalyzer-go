@@ -166,7 +166,7 @@ func (cg *CallGraphBuilder) resolveCallable(
 }
 
 // isLibrary reports whether fn lives outside the project: its declaring file is
-// outside projectDir. This does not depend on which packages were loaded as
+// outside projectDir, or under a vendored directory within it. This does not depend on which packages were loaded as
 // roots, so it also holds in incremental (-t) mode, where sibling project
 // packages load only as dependencies. When the position is unavailable it falls
 // back to comparing the import path against the project's module path.
@@ -175,7 +175,14 @@ func (cg *CallGraphBuilder) isLibrary(fn *types.Func) bool {
 		return false
 	}
 	if tf := cg.fset.File(fn.Pos()); tf != nil {
-		return !utils.IsWithin(cg.absProjectDir(), absPath(tf.Name()))
+		file := absPath(tf.Name())
+		root := cg.absProjectDir()
+		if !utils.IsWithin(root, file) {
+			return true
+		}
+		// A vendored dependency sits inside projectDir but is not project code
+		// (the symbol table skips it), so it is a library too.
+		return utils.IsVendored(utils.RelativePath(root, file))
 	}
 	if mod := cg.modulePath(); mod != "" {
 		p := fn.Pkg().Path()
