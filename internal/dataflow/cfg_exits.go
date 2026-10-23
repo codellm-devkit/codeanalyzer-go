@@ -306,7 +306,10 @@ func isPanicStmt(s ast.Node, info *types.Info) bool {
 // (builtins included, close among them); an index or slice expression (a
 // generic instantiation is not one); a type assertion other than x.(type)
 // and the comma-ok form; a pointer dereference; a selector through a
-// pointer; a channel send; a / or % (or /=, %=) with a non-constant divisor.
+// pointer, or an interface method value; a channel send; a / or % (or /=,
+// %=) with a non-constant divisor; a shift (or <<=, >>=) by a non-constant
+// signed count; a slice → array or array-pointer conversion. A range over a
+// function calls the iterator, so its header can panic.
 // With info nil, every call, selector and star expression counts.
 func canPanic(n ast.Node, info *types.Info) bool {
 	var parts []ast.Node
@@ -316,6 +319,9 @@ func canPanic(n ast.Node, info *types.Info) bool {
 	case *ast.ForStmt:
 		parts = []ast.Node{s.Init, s.Cond, s.Post}
 	case *ast.RangeStmt:
+		if rangesOverFunc(s.X, info) {
+			return true // each iteration calls the iterator
+		}
 		parts = []ast.Node{s.Key, s.Value, s.X}
 	case *ast.SwitchStmt:
 		parts = []ast.Node{s.Init, s.Tag}
@@ -370,15 +376,18 @@ func exprPanics(n ast.Node, info *types.Info) bool {
 			if len(x.Lhs) == 2 && len(x.Rhs) == 1 {
 				commaOK[ast.Unparen(x.Rhs[0])] = true
 			}
-			if (x.Tok == token.QUO_ASSIGN || x.Tok == token.REM_ASSIGN) && !isConst(x.Rhs[0], info) {
-				found = true
+			switch x.Tok {
+			case token.QUO_ASSIGN, token.REM_ASSIGN:
+				found = !isConst(x.Rhs[0], info)
+			case token.SHL_ASSIGN, token.SHR_ASSIGN:
+				found = signedCount(x.Rhs[0], info)
 			}
 		case *ast.ValueSpec:
 			if len(x.Names) == 2 && len(x.Values) == 1 {
 				commaOK[ast.Unparen(x.Values[0])] = true
 			}
 		case *ast.CallExpr:
-			found = !isType(x.Fun, info)
+			found = !isType(x.Fun, info) || sliceToArray(x, info)
 		case *ast.IndexExpr:
 			found = !isType(x.Index, info)
 		case *ast.SliceExpr, *ast.SendStmt:
@@ -390,7 +399,12 @@ func exprPanics(n ast.Node, info *types.Info) bool {
 		case *ast.SelectorExpr:
 			found = viaPointer(x, info)
 		case *ast.BinaryExpr:
-			found = (x.Op == token.QUO || x.Op == token.REM) && !isConst(x.Y, info)
+			switch x.Op {
+			case token.QUO, token.REM:
+				found = !isConst(x.Y, info)
+			case token.SHL, token.SHR:
+				found = signedCount(x.Y, info)
+			}
 		}
 		return !found
 	})
@@ -417,10 +431,11 @@ func isConst(e ast.Expr, info *types.Info) bool {
 	return ok && tv.Value != nil
 }
 
-// viaPointer reports whether selector x reads through a pointer: its
-// receiver is pointer-typed, or the selection walks an embedded pointer. A
-// qualified identifier (pkg.Name) and a method expression do not. Without
-// info every selector does.
+// viaPointer reports whether selector x can panic on a nil receiver: its
+// receiver is pointer-typed, the selection walks an embedded pointer, or it
+// is a method value on an interface (nil interface). A qualified identifier
+// (pkg.Name) and a method expression do not. Without info every selector
+// does.
 func viaPointer(x *ast.SelectorExpr, info *types.Info) bool {
 	if info == nil {
 		return true
@@ -429,6 +444,66 @@ func viaPointer(x *ast.SelectorExpr, info *types.Info) bool {
 	if !ok || sel.Kind() == types.MethodExpr {
 		return false
 	}
+	if sel.Kind() == types.MethodVal && types.IsInterface(sel.Recv()) {
+		return true
+	}
 	_, ptr := sel.Recv().Underlying().(*types.Pointer)
 	return ptr || sel.Indirect()
+}
+
+// signedCount reports whether shift count e can be negative: non-constant
+// and of a signed integer type. Without info any non-literal count can.
+func signedCount(e ast.Expr, info *types.Info) bool {
+	if isConst(e, info) {
+		return false
+	}
+	if info == nil {
+		return true
+	}
+	t := info.Types[e].Type
+	if t == nil {
+		return true
+	}
+	b, ok := t.Underlying().(*types.Basic)
+	return !ok || b.Info()&types.IsUnsigned == 0
+}
+
+// sliceToArray reports whether conversion call converts a slice to an array
+// or an array pointer, which panics when the slice is too short.
+func sliceToArray(call *ast.CallExpr, info *types.Info) bool {
+	if info == nil || len(call.Args) != 1 {
+		return false
+	}
+	to := info.Types[call.Fun].Type
+	if to == nil {
+		return false
+	}
+	to = to.Underlying()
+	if p, ok := to.(*types.Pointer); ok {
+		to = p.Elem().Underlying()
+	}
+	if _, ok := to.(*types.Array); !ok {
+		return false
+	}
+	from := info.Types[call.Args[0]].Type
+	if from == nil {
+		return false
+	}
+	_, ok := from.Underlying().(*types.Slice)
+	return ok
+}
+
+// rangesOverFunc reports whether a range statement over x iterates a
+// function (range-over-func). Without info it cannot tell and says no; the
+// header's own expressions are still inspected.
+func rangesOverFunc(x ast.Expr, info *types.Info) bool {
+	if info == nil || x == nil {
+		return false
+	}
+	t := info.Types[x].Type
+	if t == nil {
+		return false
+	}
+	_, ok := t.Underlying().(*types.Signature)
+	return ok
 }

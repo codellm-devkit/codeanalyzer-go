@@ -425,3 +425,41 @@ func DeadDefer() {
 	return
 	defer cleanup()
 }
+
+// CondDefer registers a defer on one branch only.
+func CondDefer(a int) int {
+	if a > 0 {
+		defer cleanup()
+	}
+	return a
+}
+
+// LoopDefer registers a defer on every iteration.
+func LoopDefer(n int) {
+	for i := 0; i < n; i++ {
+		defer work(i)
+	}
+}
+
+// LoopPanic panics in a nested block inside a loop.
+func LoopPanic(xs []int) int {
+	s := 0
+	for _, x := range xs {
+		if x < 0 {
+			{
+				panic(x)
+			}
+		}
+		s += x
+	}
+	return s
+}
+
+// AfterPanic has statements, and a defer, after a panic.
+func AfterPanic(a int) int {
+	defer cleanup()
+	panic(a)
+	a++
+	defer work(a)
+	return a
+}

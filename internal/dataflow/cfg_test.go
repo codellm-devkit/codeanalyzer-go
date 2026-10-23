@@ -501,6 +501,64 @@ func TestCFG_GotoBackwardAndEmptySelect(t *testing.T) {
 	)
 }
 
+// TestCFG_ConditionalAndLoopDefers: a conditional or in-loop defer is one
+// chain member, assumed registered on every path (spec §4.3.1).
+func TestCFG_ConditionalAndLoopDefers(t *testing.T) {
+	wantEdges(t, "CondDefer",
+		e(entry, "431:2", "fallthrough"),
+		e("431:2", "432:3", "true"),
+		e("431:2", "434:2", "false"),
+		e("432:3", "434:2", "fallthrough"),
+		e("434:2", "432:9", "return"),
+		e("432:9", exit, "defer_resume"),
+		e("432:9", exit, "exception"),
+	)
+	// The loop's false edge into @exit (normalized to return) enters the chain.
+	wantEdges(t, "LoopDefer",
+		e(entry, "439:2", "fallthrough"),
+		e("439:2", "440:3", "true"),
+		e("439:2", "440:9", "return"),
+		e("440:3", "439:2", "loop_back"),
+		e("440:9", exit, "defer_resume"),
+		e("440:9", exit, "exception"),
+	)
+}
+
+// TestCFG_PanicInNestedBlock: a panic in a block nested in an if in a loop
+// leaves only by its exception edge, never back to the loop.
+func TestCFG_PanicInNestedBlock(t *testing.T) {
+	got := wantEdges(t, "LoopPanic",
+		e(entry, "446:2", "fallthrough"),
+		e("446:2", "447:2", "fallthrough"),
+		e("447:2", "448:3", "true"),
+		e("447:2", "455:2", "false"),
+		e("448:3", "450:5", "true"),
+		e("448:3", "453:3", "false"),
+		e("450:5", exit, "exception"),
+		e("453:3", "447:2", "loop_back"),
+		e("455:2", exit, "return"),
+	)
+	if out := outEdges(got, "450:5"); len(out) != 1 {
+		t.Errorf("LoopPanic: panic out-edges = %v, want one exception", out)
+	}
+}
+
+// TestCFG_AfterPanicPruned: everything after a panic is pruned, and a defer
+// registered after it stays out of the chain.
+func TestCFG_AfterPanicPruned(t *testing.T) {
+	wantEdges(t, "AfterPanic",
+		e(entry, "460:2", "fallthrough"),
+		e("460:2", "461:2", "fallthrough"),
+		e("461:2", "460:8", "exception"),
+		e("460:8", exit, "defer_resume"),
+		e("460:8", exit, "exception"),
+	)
+	nodes, _ := cfgOf(t, "AfterPanic")
+	if keys := nodeKeys(nodes); strings.Join(keys, " ") != entry+" 460:2 460:8 461:2 "+exit {
+		t.Errorf("AfterPanic: nodes = %v, want [@entry 460:2 460:8 461:2 @exit]", keys)
+	}
+}
+
 // ---- R9: regression locks for Task 6 constructs ----
 
 func TestCFG_LabeledSwitchBreak(t *testing.T) {
@@ -754,7 +812,10 @@ func f() int { return 0 }
 
 type Celsius float64
 
-func _(s []int, p *T, t T, i any, ch chan int, a, b int, fl float64) {
+type Seq func(func(int) bool)
+
+func _(s []int, p *T, t T, i any, ch chan int, a, b int, fl float64,
+	r interface{ Close() error }, sh uint, seq func(func(int) bool), ns Seq, m map[int]int) {
 	_ = Celsius(fl)
 	_ = f()
 	_ = s[a]
@@ -793,6 +854,28 @@ func _(s []int, p *T, t T, i any, ch chan int, a, b int, fl float64) {
 	go f()
 	go g(f())
 	_, _, _ = v, ok, q
+	_ = r.Close
+	defer r.Close()
+	go r.Close()
+	_ = a << b
+	_ = a >> sh
+	_ = a << 2
+	a <<= b
+	a >>= sh
+	_ = [2]int(s)
+	_ = (*[2]int)(s)
+	_ = []int(s)
+	for x := range seq {
+		_ = x
+	}
+	for x := range ns {
+		_ = x
+	}
+	for range s {
+	}
+	_ = m[a]
+	_ = recover()
+	close(ch)
 }
 
 func g(int) {}
@@ -845,6 +928,23 @@ func TestCanPanic(t *testing.T) {
 		false, // go f()
 		true,  // go g(f()): argument evaluated here
 		false, // _, _, _ = …
+		true,  // interface method value (nil receiver)
+		true,  // defer r.Close(): interface method value evaluated at registration
+		true,  // go r.Close(): likewise
+		true,  // shift by a signed non-constant count
+		false, // shift by an unsigned count
+		false, // shift by a constant
+		true,  // <<= by a signed count
+		false, // >>= by an unsigned count
+		true,  // slice → array conversion
+		true,  // slice → array-pointer conversion
+		false, // slice → slice conversion
+		true,  // range over a func (calls the iterator)
+		true,  // range over a named func type
+		false, // range over a slice
+		true,  // map index (nil map write / index of a map key type that panics)
+		true,  // recover()
+		true,  // close(ch)
 	}
 	if len(body) != len(want) {
 		t.Fatalf("snippet has %d statements, table %d", len(body), len(want))
@@ -864,6 +964,10 @@ func TestCanPanic(t *testing.T) {
 	// A deferred call node itself (the CallExpr) can panic.
 	if !dataflow.CanPanic(body[25].(*ast.DeferStmt).Call, info) {
 		t.Errorf("deferred close(ch) call: canPanic = false, want true")
+	}
+	// The receive row stays false: `_ = <-ch` (stmt 16).
+	if dataflow.CanPanic(body[16], info) {
+		t.Errorf("receive: canPanic = true, want false")
 	}
 	// Without type info, every call and selector is conservatively true.
 	if !dataflow.CanPanic(body[0], nil) || !dataflow.CanPanic(body[8], nil) {
@@ -977,27 +1081,39 @@ func loadDiffCases(t *testing.T, dir string) (*token.FileSet, []diffCase) {
 //     unlinked: its label resolves to the continuation per ruling R6). An
 //     explicit labeled `L: ;` keeps its node and is compared.
 //
-// Calls are passed as nil to BuildNodes: L1 call keys only rename call nodes,
-// and the CFG reads statement keys from keyOf, so the shape is unaffected.
+// Defers: BuildNodes runs with real call keys (gateCallKeys, the L1
+// recording order), so deferred call nodes exist and every exit edge runs
+// through the defer chain. go/cfg does not model defers: its DeferStmt is a
+// plain statement (mapped to our registration node) and it has no node for
+// the deferred call, so a deferred call node is never a compared endpoint
+// (diffOne rejects one as a mapped key). Every go/cfg pair ending at its
+// fall-off return (→ @exit) is still checked, so @exit must stay reachable
+// through the chain from every live statement.
+//
 // Pairs whose two go/cfg nodes map to the same key are skipped.
 func TestCFG_Differential(t *testing.T) {
 	_, thisFile, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(thisFile), "..", "..", "testdata")
-	total, pairs := 0, 0
+	total, pairs, chained := 0, 0, 0
 	for _, dir := range []string{"dataflow", "chi"} {
 		fset, cases := loadDiffCases(t, filepath.Join(root, dir))
 		for _, c := range cases {
 			total++
-			nodes, keyOf := dataflow.BuildNodes(fset, c.body, nil)
+			nodes, keyOf := dataflow.BuildNodes(fset, c.body, gateCallKeys(fset, c.body))
 			kept, ours := dataflow.BuildCFG(nodes, keyOf, c.body, c.info)
 			checkContract(t, c.name, kept, ours)
 			pairs += diffOne(t.Errorf, c.name, c.body, c.info, keyOf, ours)
+			for _, n := range kept {
+				if n.Deferred {
+					chained++
+				}
+			}
 		}
 	}
-	if total < 100 || pairs < 1000 {
-		t.Errorf("differential covered only %d bodies / %d pairs", total, pairs)
+	if total < 100 || pairs < 1000 || chained == 0 {
+		t.Errorf("differential covered only %d bodies / %d pairs / %d deferred calls", total, pairs, chained)
 	}
-	t.Logf("differential: %d bodies, %d reachable pairs checked", total, pairs)
+	t.Logf("differential: %d bodies, %d reachable pairs checked, %d deferred calls chained", total, pairs, chained)
 }
 
 // diffOne reports every go/cfg-reachable pair that ours does not reach and
@@ -1005,6 +1121,16 @@ func TestCFG_Differential(t *testing.T) {
 func diffOne(errorf func(string, ...any), name string, body *ast.BlockStmt, info *types.Info, keyOf map[ast.Node]string, ours []dataflow.CfgEdge) int {
 	g := cfg.New(body, func(call *ast.CallExpr) bool { return !isBuiltinPanic(call, info) })
 	km := diffKeyOf(body, keyOf)
+	deferred := map[string]bool{}
+	ast.Inspect(body, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.FuncLit:
+			return false
+		case *ast.DeferStmt:
+			deferred[keyOf[n.Call]] = true
+		}
+		return true
+	})
 
 	// Map each live block's nodes to our keys, in block order. Dead blocks
 	// (code after a return / panic / goto) are pruned from ours.
@@ -1023,6 +1149,10 @@ func diffOne(errorf func(string, ...any), name string, body *ast.BlockStmt, info
 				continue
 			}
 			if k == "" { // excluded by the mapping rule
+				continue
+			}
+			if deferred[k] {
+				errorf("%s: go/cfg node %T maps to deferred call %s", name, n, k)
 				continue
 			}
 			blockKeys[b.Index] = append(blockKeys[b.Index], k)
