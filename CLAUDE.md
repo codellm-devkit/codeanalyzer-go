@@ -56,6 +56,7 @@ committed spec is the full transcript: `docs/design/specs/v2-l1-emission.md`.
 
 ### Deferred (not this train)
 - L3 (CFG/CDG/DDG) and L4 (SDG param edges) — reuse Group A ids/spans unchanged.
+  **Now designed** (2026-10-23): spec `docs/design/specs/v2-l3-l4-dataflow.md`.
 - Go-specific `cfg` edge kinds (e.g. `defer_resume`, `select`) are recorded when L3
   is designed, not now.
 

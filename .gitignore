@@ -47,3 +47,7 @@ go.work.sum
 
 # Generated analysis output
 /output/
+
+# Local planning artifacts (agent plans/specs scratch); not part of the repo
+docs/superpowers/
+.superpowers/
