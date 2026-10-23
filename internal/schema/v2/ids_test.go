@@ -107,3 +107,19 @@ func TestIDs_AppOutermost(t *testing.T) {
 		}
 	}
 }
+
+func TestCallBodyKeys(t *testing.T) {
+	got := CallBodyKeys([][2]int{{5, 2}, {5, 2}, {6, 1}, {5, 2}, {6, 1}})
+	want := []string{"5:2", "5:2/2", "6:1", "5:2/3", "6:1/2"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+	if len(CallBodyKeys(nil)) != 0 {
+		t.Fatal("nil input must yield no keys")
+	}
+}

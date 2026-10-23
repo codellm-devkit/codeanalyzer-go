@@ -372,6 +372,20 @@ func (b *SymbolTableBuilder) buildType(
 		EndLine:     end.Line,
 	}
 
+	switch {
+	case spec.Assign.IsValid():
+		gt.TypeKind = "alias"
+	default:
+		switch spec.Type.(type) {
+		case *ast.StructType:
+			gt.TypeKind = "struct"
+		case *ast.InterfaceType:
+			gt.TypeKind = "interface"
+		default:
+			gt.TypeKind = "defined"
+		}
+	}
+
 	switch t := spec.Type.(type) {
 	case *ast.StructType:
 		gt.IsInterface = false
@@ -646,24 +660,29 @@ func (b *SymbolTableBuilder) joinReturnTypes(parts []string) string {
 // callee_signature is left nil here — the resolver backfills it in the call-graph stage.
 func (b *SymbolTableBuilder) buildCallSites(pkg *packages.Package, body *ast.BlockStmt) []schema.GoCallsite {
 	var sites []schema.GoCallsite
+	// deferred holds the call of each `defer` statement seen so far. Pre-order
+	// traversal visits the DeferStmt before its call, so the CallExpr case can
+	// tag it; unlike `go`, the traversal continues into the call so calls in its
+	// arguments are still recorded.
+	deferred := map[*ast.CallExpr]bool{}
 	ast.Inspect(body, func(n ast.Node) bool {
 		switch node := n.(type) {
 		case *ast.GoStmt:
 			// Goroutine launch — record with is_goroutine=true.
-			if call, ok := node.Call.Fun.(*ast.CallExpr); ok {
-				_ = call
-			}
 			site := b.callExprToSite(pkg, node.Call, true)
 			if site != nil {
 				sites = append(sites, *site)
 			}
 			return false
+		case *ast.DeferStmt:
+			deferred[node.Call] = true
 		case *ast.FuncLit:
 			// Closure bodies are handled by buildInnerCallables; don't double-count.
 			return false
 		case *ast.CallExpr:
 			site := b.callExprToSite(pkg, node, false)
 			if site != nil {
+				site.IsDeferred = deferred[node]
 				sites = append(sites, *site)
 			}
 		}

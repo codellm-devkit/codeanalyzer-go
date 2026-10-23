@@ -98,6 +98,26 @@ func LocalID(line, col int) string {
 	return itoa(line) + ":" + itoa(col)
 }
 
+// CallBodyKeys returns the body-map key of each call site, given every site's
+// [line, col] in recording order (ast.Inspect pre-order, so a call precedes the
+// calls nested in it). The first site at a position gets the bare LocalID
+// "l:c"; later sites at the same position (a chained call such as s.A().B()
+// starts where s.A() does) get "l:c/2", "l:c/3", … This is the single source of
+// call-node keys, shared by the L1 emitter and the L3 body builder so both
+// produce byte-identical keys.
+func CallBodyKeys(positions [][2]int) []string {
+	keys := make([]string, len(positions))
+	seen := make(map[[2]int]int, len(positions))
+	for i, p := range positions {
+		seen[p]++
+		keys[i] = LocalID(p[0], p[1])
+		if n := seen[p]; n > 1 {
+			keys[i] += "/" + itoa(n)
+		}
+	}
+	return keys
+}
+
 // NewSpan builds a Span from 1-based line/col positions and the [from, to) UTF-8
 // byte offsets into module.source. Byte offsets are what make source slicing
 // O(1); line:col is what addresses and displays.

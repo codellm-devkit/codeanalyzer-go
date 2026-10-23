@@ -26,11 +26,12 @@ type CallGraphBuilder struct {
 	projectDir string
 	fset       *token.FileSet
 	pkgs       map[string]*packages.Package
+	indexes    map[*packages.Package]callSiteIndex
 }
 
 // NewCallGraphBuilder creates a builder using the same pkgs/fset loaded for the symbol table.
 func NewCallGraphBuilder(projectDir string, fset *token.FileSet, pkgs map[string]*packages.Package) *CallGraphBuilder {
-	return &CallGraphBuilder{projectDir: projectDir, fset: fset, pkgs: pkgs}
+	return &CallGraphBuilder{projectDir: projectDir, fset: fset, pkgs: pkgs, indexes: map[*packages.Package]callSiteIndex{}}
 }
 
 // Build resolves all call sites in symbolTable, backfills callee_signature, and
@@ -108,7 +109,7 @@ func (cg *CallGraphBuilder) resolveCallable(
 			continue // already resolved
 		}
 
-		calleeSig := cg.resolveCallSite(pkg, site)
+		calleeSig := cg.resolveCallSite(pkg, callable.Path, site)
 		if calleeSig == "" {
 			utils.Debug("unresolved call site: %s in %s", site.MethodName, callable.Signature)
 			continue
@@ -147,36 +148,46 @@ func (cg *CallGraphBuilder) resolveCallable(
 	return callable, edges
 }
 
-// resolveCallSite resolves a single call site to a callee signature string.
-// Returns "" when the site cannot be resolved (graceful fallback).
-func (cg *CallGraphBuilder) resolveCallSite(pkg *packages.Package, site *schema.GoCallsite) string {
+// resolveCallSite resolves a single call site to a callee signature string by
+// looking its position up in the package's call-site index. relPath is the
+// file declaring the enclosing callable (site columns are byte offsets within
+// that file). Returns "" when the site cannot be resolved (graceful fallback).
+func (cg *CallGraphBuilder) resolveCallSite(pkg *packages.Package, relPath string, site *schema.GoCallsite) string {
 	if pkg.TypesInfo == nil {
 		return ""
 	}
+	tf := cg.tokenFile(pkg, relPath)
+	if tf == nil || site.StartLine < 1 || site.StartLine > tf.LineCount() || site.StartColumn < 1 {
+		return ""
+	}
+	pos := tf.LineStart(site.StartLine) + token.Pos(site.StartColumn-1)
+	call, ok := cg.indexFor(pkg)[pos]
+	if !ok {
+		return ""
+	}
+	return cg.resolveCallExpr(pkg, call)
+}
 
-	// Walk the package's syntax to find the call expression at this location.
-	for _, astFile := range pkg.Syntax {
-		var result string
-		ast.Inspect(astFile, func(n ast.Node) bool {
-			if result != "" {
-				return false
-			}
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			pos := cg.fset.Position(call.Pos())
-			if pos.Line != site.StartLine || pos.Column != site.StartColumn {
-				return true
-			}
-			result = cg.resolveCallExpr(pkg, call)
-			return false
-		})
-		if result != "" {
-			return result
+// indexFor returns the (lazily built, cached) call-site index of pkg.
+func (cg *CallGraphBuilder) indexFor(pkg *packages.Package) callSiteIndex {
+	if idx, ok := cg.indexes[pkg]; ok {
+		return idx
+	}
+	idx := newCallSiteIndex(pkg)
+	cg.indexes[pkg] = idx
+	return idx
+}
+
+// tokenFile finds the token.File of pkg's syntax file whose project-relative
+// path is relPath.
+func (cg *CallGraphBuilder) tokenFile(pkg *packages.Package, relPath string) *token.File {
+	for _, f := range pkg.Syntax {
+		tf := cg.fset.File(f.Pos())
+		if tf != nil && utils.RelativePath(cg.projectDir, tf.Name()) == relPath {
+			return tf
 		}
 	}
-	return ""
+	return nil
 }
 
 // resolveCallExpr resolves a *ast.CallExpr to a callee signature using go/types.

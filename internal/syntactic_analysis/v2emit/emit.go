@@ -182,17 +182,30 @@ func emitCallable(parentID, modRel string, modLI *lineIndex, c schema.GoCallable
 //     it names an external/stdlib callee (no in-tree node), callee stays null —
 //     the honest-unresolved fallback the L2 gate expects.
 func emitBody(callableID string, li *lineIndex, sites []schema.GoCallsite, idx sigIndex) map[string]v2.BodyNode {
+	keys := callBodyKeys(sites)
 	body := make(map[string]v2.BodyNode, len(sites))
-	for _, cs := range sites {
-		local := v2.LocalID(cs.StartLine, cs.StartColumn)
+	for i, cs := range sites {
+		local := keys[i]
 		body[local] = v2.BodyNode{
 			Kind:        "call",
 			Span:        colSpan(li, cs.StartLine, cs.StartColumn, cs.EndLine, cs.EndColumn),
 			Callee:      calleeID(cs.CalleeSignature, idx),
 			IsGoroutine: cs.IsGoroutine,
+			IsDeferred:  cs.IsDeferred,
 		}
 	}
 	return body
+}
+
+// callBodyKeys maps each call site to its body-map key. It is a thin wrapper:
+// the co-positioned-call keying (l:c, l:c/2, …) lives in v2.CallBodyKeys so the
+// L3 body builder shares it.
+func callBodyKeys(sites []schema.GoCallsite) []string {
+	pos := make([][2]int, len(sites))
+	for i, cs := range sites {
+		pos[i] = [2]int{cs.StartLine, cs.StartColumn}
+	}
+	return v2.CallBodyKeys(pos)
 }
 
 // calleeID translates a v1 backfilled callee signature into the v2 can:// id
@@ -289,10 +302,13 @@ func emitCallGraph(edges []schema.GoCallEdge, idx sigIndex) []v2.Edge {
 
 // ─── kind mapping ────────────────────────────────────────────────────────────
 
-// typeKind collapses the v1 is_interface boolean into the v2 kind vocabulary.
-// v1 only distinguishes struct vs interface; alias/defined await richer v1
-// facts, so a non-interface type maps to struct for now.
+// typeKind reports the v2 kind (struct | interface | alias | defined), recorded
+// by the symbol-table builder from the type declaration. The IsInterface
+// fallback covers hand-built v1 types that carry no TypeKind.
 func typeKind(t schema.GoType) string {
+	if t.TypeKind != "" {
+		return t.TypeKind
+	}
 	if t.IsInterface {
 		return "interface"
 	}

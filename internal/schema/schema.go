@@ -84,6 +84,7 @@ type GoCallsite struct {
 	CalleeSignature *string  `json:"callee_signature"` // null until resolved
 	IsConstructorCall bool   `json:"is_constructor_call"`
 	IsGoroutine     bool     `json:"is_goroutine"` // true when preceded by `go` keyword
+	IsDeferred      bool     `json:"is_deferred,omitempty"` // true when preceded by `defer` keyword
 	StartLine       int      `json:"start_line"`
 	StartColumn     int      `json:"start_column"`
 	EndLine         int      `json:"end_line"`
@@ -132,6 +133,7 @@ type GoType struct {
 	Comments     []GoComment             `json:"comments"`
 	Code         string                  `json:"code,omitempty"`
 	IsInterface  bool                    `json:"is_interface"`
+	TypeKind     string                  `json:"type_kind,omitempty"` // struct | interface | alias | defined
 	IsExported   bool                    `json:"is_exported"`
 	Fields       []GoField               `json:"fields"`       // empty for interfaces
 	Methods      map[string]GoCallable   `json:"methods"`      // sig → callable

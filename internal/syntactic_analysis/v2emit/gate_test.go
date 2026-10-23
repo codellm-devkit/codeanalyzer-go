@@ -368,3 +368,93 @@ func contains(ss []string, want string) bool {
 	}
 	return false
 }
+
+// ─── L1 fixes: type kinds, defer marker, co-positioned calls ─────────────────
+
+// buildDataflowL1V2 emits the L1 payload for the testdata/dataflow fixture.
+func buildDataflowL1V2(t *testing.T) *v2.Analysis {
+	t.Helper()
+	_, thisFile, _, _ := runtime.Caller(0)
+	dir, err := filepath.Abs(filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "testdata", "dataflow"))
+	if err != nil {
+		t.Fatalf("resolving fixture dir: %v", err)
+	}
+	b := syntactic_analysis.NewSymbolTableBuilder(dir)
+	st, err := b.Build(nil, true)
+	if err != nil {
+		t.Fatalf("symbol table build failed: %v", err)
+	}
+	app := &schema.GoApplication{SymbolTable: st, CallGraph: []schema.GoCallEdge{}}
+	return Emit(app, "dataflow", dir, 1, "gate-test")
+}
+
+func TestGateL1_TypeKindsAliasAndDefined(t *testing.T) {
+	mod := mustModule(t, buildDataflowL1V2(t), "l1/l1.go")
+	want := map[string]string{"Celsius": "defined", "Alias": "alias", "S": "struct"}
+	for name, kind := range want {
+		ty, ok := mod.Types[name]
+		if !ok {
+			t.Errorf("type %s missing from l1/l1.go; have %v", name, keys(mod.Types))
+			continue
+		}
+		if ty.Kind != kind {
+			t.Errorf("type %s: kind=%q, want %q", name, ty.Kind, kind)
+		}
+	}
+}
+
+// functionByName finds a package-level function node by name.
+func functionByName(t *testing.T, mod v2.Module, name string) v2.Callable {
+	t.Helper()
+	for sig, c := range mod.Functions {
+		if strings.HasSuffix(sig, "."+name) {
+			return c
+		}
+	}
+	t.Fatalf("function %q missing; have %v", name, keys(mod.Functions))
+	return v2.Callable{}
+}
+
+func TestGateL1_DeferredCallNode(t *testing.T) {
+	d := functionByName(t, mustModule(t, buildDataflowL1V2(t), "l1/l1.go"), "D")
+	var deferred, goroutine int
+	for _, n := range d.Body {
+		if n.Kind != "call" {
+			continue
+		}
+		if n.IsDeferred {
+			deferred++
+			if n.IsGoroutine {
+				t.Error("deferred call must not be a goroutine")
+			}
+		}
+		if n.IsGoroutine {
+			goroutine++
+		}
+	}
+	if deferred != 1 || goroutine != 1 {
+		t.Errorf("D body: deferred=%d goroutine=%d, want 1 and 1 (body=%v)", deferred, goroutine, d.Body)
+	}
+}
+
+func TestGateL1_CoPositionedCallsBothKept(t *testing.T) {
+	c := functionByName(t, mustModule(t, buildDataflowL1V2(t), "l1/l1.go"), "Chain")
+	if len(c.Body) != 2 {
+		t.Fatalf("Chain body has %d nodes, want 2: %v", len(c.Body), c.Body)
+	}
+	var bare, second string
+	for k := range c.Body {
+		if strings.HasSuffix(k, "/2") {
+			second = k
+		} else {
+			bare = k
+		}
+	}
+	if bare == "" || second != bare+"/2" {
+		t.Fatalf("want keys L:C and L:C/2, got %v", keys(c.Body))
+	}
+	// The bare key is the outermost call (s.A().B()), which spans further.
+	if c.Body[bare].Span.End[1] <= c.Body[second].Span.End[1] {
+		t.Errorf("bare key should hold the outermost (longer) call: %+v vs %+v", c.Body[bare].Span, c.Body[second].Span)
+	}
+}
