@@ -296,3 +296,132 @@ func Spin(n int) {
 	for {
 	}
 }
+
+// LabeledSwitchBreak leaves a labeled switch with `break Sw` from a nested for.
+func LabeledSwitchBreak(a, n int) int {
+Sw:
+	switch a {
+	case 1:
+		for n > 0 {
+			if n == 3 {
+				break Sw
+			}
+			n--
+		}
+		a = n
+	}
+	return a
+}
+
+// LabeledSelectBreak leaves a labeled select with `break Sel`.
+func LabeledSelectBreak(ch chan int, a int) int {
+Sel:
+	select {
+	case v := <-ch:
+		if v > 0 {
+			break Sel
+		}
+		a = v
+	}
+	return a
+}
+
+// ContinueInSwitch continues the enclosing for from inside a switch.
+func ContinueInSwitch(n int) int {
+	for n > 0 {
+		n--
+		switch n {
+		case 2:
+			continue
+		}
+		n--
+	}
+	return n
+}
+
+// BreakInSelect breaks out of a select, not out of the enclosing for.
+func BreakInSelect(ch chan int, n int) int {
+	for n > 0 {
+		select {
+		case v := <-ch:
+			if v == 0 {
+				break
+			}
+			n = v
+		}
+		n--
+	}
+	return n
+}
+
+// DefaultMiddle has its default between two cases, with fallthrough across it.
+func DefaultMiddle(a int) int {
+	r := 0
+	switch a {
+	case 1:
+		r = 1
+		fallthrough
+	default:
+		r += 2
+		fallthrough
+	case 3:
+		r += 3
+	}
+	return r
+}
+
+// TypeSwitchNil has a `case nil:` clause.
+func TypeSwitchNil(v any) int {
+	switch v.(type) {
+	case nil:
+		return 0
+	case int:
+		return 1
+	}
+	return 2
+}
+
+// GotoInLoop jumps backward inside a loop body.
+func GotoInLoop(n int) int {
+	for i := 0; i < n; i++ {
+	again:
+		n--
+		if n > 10 {
+			goto again
+		}
+	}
+	return n
+}
+
+// GotoForever loops by a backward goto with no way out, under a defer.
+func GotoForever(n int) {
+	defer cleanup()
+L:
+	n++
+	goto L
+}
+
+// SelectForever blocks in select {} under a defer.
+func SelectForever() {
+	defer cleanup()
+	select {}
+}
+
+// PanicLast ends in a panic, so nothing falls off the end.
+func PanicLast(xs []int, i int) {
+	xs[i] = 1
+	panic(i)
+}
+
+// ShadowPanic calls a local named panic: an ordinary call, not the builtin.
+func ShadowPanic() int {
+	panic := func(int) {}
+	panic(1)
+	return 2
+}
+
+// DeadDefer has a defer after a return: it is never registered.
+func DeadDefer() {
+	return
+	defer cleanup()
+}

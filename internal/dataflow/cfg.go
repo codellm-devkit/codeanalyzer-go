@@ -7,8 +7,8 @@ import (
 	"sort"
 )
 
-// CFG edge kinds (spec §4.3). Shared vocabulary; the Go add "defer_resume" is
-// emitted by the defer chain, not here.
+// CFG edge kinds (spec §4.3), shared vocabulary. The Go add EdgeDeferResume
+// is in cfg_exits.go, with the defer chain.
 const (
 	EdgeFallthrough = "fallthrough"
 	EdgeTrue        = "true"
@@ -22,18 +22,26 @@ const (
 )
 
 // BuildCFG links the body nodes of one callable into its statement-level CFG
-// (spec §4.3, structured statements). nodes and keyOf are BuildNodes' output
-// for body; every edge endpoint is a key from keyOf, EntryKey or ExitKey.
-// nodes and info are not read yet: the defer chain and panic rules that need
-// them (deferred call nodes, the type of a called panic) come in a later
-// pass. A nil body yields an empty, non-nil slice.
+// (spec §4.3) and returns the kept nodes with the edges. nodes and keyOf are
+// BuildNodes' output for body; every edge endpoint is a key from keyOf,
+// EntryKey or ExitKey. info resolves the builtin panic and the types canPanic
+// needs; it may be nil (panic by name, every call / selector can panic).
+//
+// The returned nodes are nodes minus the pruned ones, in nodes' order: a
+// statement / header / clause-head node unreachable from @entry (code after a
+// return / panic / goto, the implicit empty statement of `L: }`), a deferred
+// call whose defer statement is unreachable, and every satellite call node of
+// a pruned statement. Callers (the L3 emitter) must emit body nodes from this
+// set, not from BuildNodes' output. A nil body yields empty, non-nil slices.
 //
 // The linker works backwards like Java's CfgBuilder: link(s, next, kind)
 // wires statement s so its normal completion reaches next, and returns the
 // key control enters s at. A frame stack resolves break / continue /
 // fallthrough; goto edges are added once every label's entry is known.
+// finishExits then adds panic edges and the defer chain, prunes, and repairs
+// exit reachability (see there).
 //
-// Edge rules:
+// Structured edge rules:
 //   - @entry → first statement: fallthrough (return when the body is empty).
 //   - straight-line: fallthrough. The last statement of a body falls to
 //     @exit with kind return; the last statement of a loop body goes back to
@@ -63,15 +71,13 @@ const (
 //     a label at the end, …) is normalized to kind return too, so the defer
 //     chain sees only return / exception edges into @exit.
 //
-// Deferred call nodes and satellite call nodes are never linked: only
-// statement, header and clause-head keys are. Panic edges, the defer chain and
-// pruning of unreachable nodes are left to the caller's later passes; code
-// after a return / goto / break is linked forward but unreachable.
+// Satellite call nodes are never linked. Deferred call nodes are linked only
+// in the exit chain; their defer statements are on the straight-line path.
 //
 // Edges are deduplicated and sorted by (Src, Dst, Kind).
-func BuildCFG(nodes []Node, keyOf map[ast.Node]string, body *ast.BlockStmt, info *types.Info) []CfgEdge {
+func BuildCFG(nodes []Node, keyOf map[ast.Node]string, body *ast.BlockStmt, info *types.Info) ([]Node, []CfgEdge) {
 	if body == nil {
-		return []CfgEdge{}
+		return []Node{}, []CfgEdge{}
 	}
 	l := &linker{keyOf: keyOf, edges: map[CfgEdge]bool{}, labels: map[string]string{}}
 	first := l.seq(body.List, ExitKey, EdgeReturn)
@@ -85,7 +91,7 @@ func BuildCFG(nodes []Node, keyOf map[ast.Node]string, body *ast.BlockStmt, info
 			l.edge(g.src, dst, EdgeFallthrough)
 		}
 	}
-	return l.sorted()
+	return finishExits(l, nodes, body, info)
 }
 
 // frame is one enclosing break / continue / fallthrough scope.
@@ -235,8 +241,9 @@ func (l *linker) loop(s ast.Stmt, body *ast.BlockStmt, infinite bool, next, labe
 
 // blocksForever adds the synthetic exception edge h → @exit that keeps a
 // header with no normal way out (for {}, select {}) post-dominated by @exit.
-// A later "every node reaches @exit" repair adding the same edge is absorbed
-// by the (src, dst, kind) dedup.
+// The defer chain redirects it like any exit edge; the later "every node
+// reaches @exit" repair then finds h's loop already exiting, and would add
+// the same edge anyway (absorbed by the dedup).
 func (l *linker) blocksForever(h string) {
 	l.edge(h, ExitKey, EdgeException)
 }

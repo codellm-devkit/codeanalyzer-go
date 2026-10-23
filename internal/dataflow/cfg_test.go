@@ -3,9 +3,11 @@ package dataflow_test
 import (
 	"fmt"
 	"go/ast"
+	"go/parser"
 	"go/token"
 	"go/types"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -14,6 +16,7 @@ import (
 	"golang.org/x/tools/go/packages"
 
 	"github.com/codellm-devkit/codeanalyzer-go/internal/dataflow"
+	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
 )
 
 // Statement keys in testdata/dataflow/flow/flow.go (line:col of each node's
@@ -50,23 +53,35 @@ const (
 	gkIf, gkGotoM, gkDec, gkInc, gkIf5, gkGotoE, gkAsg, gkRet = "265:2", "266:3", "268:2", "271:3", "273:2", "274:3", "276:2", "280:2"
 	// GotoEnd
 	geIf, geGoto, geInc, geEmpty = "285:2", "286:3", "288:2", "290:1"
+	// EarlyReturnDefer: d1 is the last defer in source (first in the chain).
+	erdReg1, erdReg2, erdIf, erdRetNeg, erdCall, erdRet, erdD1, erdD2 = "126:2", "127:2", "128:2", "129:3", "131:2", "132:2", "127:8", "126:8"
+	// Panics
+	pIf, pPanic, pIndex, pRet = "137:2", "138:3", "140:2", "141:2"
 )
 
-// edges runs Tasks 5–6 over fixture function fn and checks the output
-// contract: edges sorted by (src, dst, kind) with no duplicates.
+// edges runs Tasks 5–7 over fixture function fn with its real L1 call keys
+// and checks the output contract.
 func edges(t *testing.T, fn string) []dataflow.CfgEdge {
+	t.Helper()
+	_, es := cfgOf(t, fn)
+	return es
+}
+
+// cfgOf is edges, also returning the pruned node set.
+func cfgOf(t *testing.T, fn string) ([]dataflow.Node, []dataflow.CfgEdge) {
 	t.Helper()
 	fx := loadFlow(t)
 	body := fx.decl(t, fn).Body
 	nodes, keyOf := dataflow.BuildNodes(fx.fset, body, fx.callKeys(t, fn))
-	es := dataflow.BuildCFG(nodes, keyOf, body, fx.info)
-	checkContract(t, fn, nodes, es)
-	return es
+	kept, es := dataflow.BuildCFG(nodes, keyOf, body, fx.info)
+	checkContract(t, fn, kept, es)
+	return kept, es
 }
 
-// checkContract asserts the output contract: every endpoint is a node, never
-// a satellite or deferred call node (neither is a CFG step here), and the
-// edges are sorted by (src, dst, kind) with no duplicates.
+// checkContract asserts the output contract: every endpoint is a returned
+// node and never a satellite call node; a deferred call node is linked only
+// by exit-chain edges (it is entered by an exit edge, left by defer_resume /
+// exception); the edges are sorted by (src, dst, kind) with no duplicates.
 func checkContract(t *testing.T, fn string, nodes []dataflow.Node, es []dataflow.CfgEdge) {
 	t.Helper()
 	byKey := map[string]dataflow.Node{}
@@ -78,9 +93,15 @@ func checkContract(t *testing.T, fn string, nodes []dataflow.Node, es []dataflow
 			n, ok := byKey[k]
 			if !ok {
 				t.Errorf("%s: edge %v endpoint %s is not a node", fn, g, k)
-			} else if n.Parent != "" || n.Deferred {
-				t.Errorf("%s: edge %v links satellite/deferred call %s", fn, g, k)
+			} else if n.Parent != "" {
+				t.Errorf("%s: edge %v links satellite call %s", fn, g, k)
 			}
+		}
+		if byKey[g.Src].Deferred && g.Kind != "defer_resume" && g.Kind != "exception" {
+			t.Errorf("%s: deferred call leaves by %v", fn, g)
+		}
+		if byKey[g.Dst].Deferred && g.Kind != "defer_resume" && g.Kind != "exception" && g.Kind != "return" {
+			t.Errorf("%s: deferred call entered by %v", fn, g)
 		}
 	}
 	for i := 1; i < len(es); i++ {
@@ -225,6 +246,7 @@ func TestCFG_Select(t *testing.T) {
 		e(selRecv, selRetX, "fallthrough"),
 		e(selRetX, exit, "return"),
 		e(selSend, selRet0, "fallthrough"),
+		e(selSend, exit, "exception"), // a send on a closed channel panics
 		e(selRet0, exit, "return"),
 	)
 	// select {} blocks forever: only the synthetic exception edge leaves it.
@@ -286,7 +308,8 @@ func TestCFG_GotoLabeledBlock(t *testing.T) {
 	// `L: }` labels the implicit empty statement: goto L continues past the
 	// end of the body to @exit — and every non-exception edge into @exit is
 	// kind return. BuildNodes still emits a zero-width node for it (290:1);
-	// the CFG leaves it unlinked, for Task 7's pruning.
+	// the CFG leaves it unlinked and unreachable, so pruning drops it from the
+	// returned node set.
 	got := wantEdges(t, "GotoEnd",
 		e(entry, geIf, "fallthrough"),
 		e(geIf, geGoto, "true"),
@@ -299,6 +322,19 @@ func TestCFG_GotoLabeledBlock(t *testing.T) {
 			t.Errorf("GotoEnd: implicit empty statement is linked: %v", g)
 		}
 	}
+	nodes, _ := cfgOf(t, "GotoEnd")
+	if hasNode(nodes, geEmpty) {
+		t.Errorf("GotoEnd: implicit empty statement %s not pruned", geEmpty)
+	}
+}
+
+func hasNode(nodes []dataflow.Node, key string) bool {
+	for _, n := range nodes {
+		if n.Key == key {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCFG_Infinite(t *testing.T) {
@@ -329,20 +365,510 @@ func TestCFG_EmptyLoopBody(t *testing.T) {
 	)
 }
 
-// TestCFG_DeferredCallOffPath: the defer registration statement is on the
-// straight-line path; the deferred call nodes are not linked (Task 7 puts
-// them in the exit chain).
-func TestCFG_DeferredCallOffPath(t *testing.T) {
+// TestCFG_DeferChainOrderAndKinds: deferred calls run only in the exit chain,
+// last-registered first. Edges into the chain keep their kind (return /
+// exception); chain-internal edges and the tail → @exit are defer_resume, and
+// a deferred call that can panic also passes an exception edge down the chain.
+func TestCFG_DeferChainOrderAndKinds(t *testing.T) {
 	wantEdges(t, "EarlyReturnDefer",
-		e(entry, "126:2", "fallthrough"),
-		e("126:2", "127:2", "fallthrough"),
-		e("127:2", "128:2", "fallthrough"),
-		e("128:2", "129:3", "true"),
-		e("128:2", "131:2", "false"),
-		e("129:3", exit, "return"),
-		e("131:2", "132:2", "fallthrough"),
-		e("132:2", exit, "return"),
+		e(entry, erdReg1, "fallthrough"),
+		e(erdReg1, erdReg2, "fallthrough"),
+		e(erdReg2, erdIf, "fallthrough"),
+		e(erdReg2, erdD1, "exception"), // evaluating g(a) at registration
+		e(erdIf, erdRetNeg, "true"),
+		e(erdIf, erdCall, "false"),
+		e(erdRetNeg, erdD1, "return"),
+		e(erdCall, erdRet, "fallthrough"),
+		e(erdCall, erdD1, "exception"),
+		e(erdRet, erdD1, "return"),
+		e(erdD1, erdD2, "defer_resume"),
+		e(erdD1, erdD2, "exception"),
+		e(erdD2, exit, "defer_resume"),
+		e(erdD2, exit, "exception"),
 	)
+}
+
+// TestCFG_PanicOnlyException: a panic(...) statement leaves only by its
+// exception edge; nothing falls through it.
+func TestCFG_PanicOnlyException(t *testing.T) {
+	got := wantEdges(t, "Panics",
+		e(entry, pIf, "fallthrough"),
+		e(pIf, pPanic, "true"),
+		e(pIf, pIndex, "false"),
+		e(pPanic, exit, "exception"),
+		e(pIndex, pRet, "fallthrough"),
+		e(pIndex, exit, "exception"),
+		e(pRet, exit, "return"),
+	)
+	if out := outEdges(got, pPanic); len(out) != 1 || out[0].Kind != "exception" {
+		t.Errorf("Panics: panic out-edges = %v, want one exception", out)
+	}
+	// A body ending in panic falls off nowhere.
+	wantEdges(t, "PanicLast",
+		e(entry, "412:2", "fallthrough"),
+		e("412:2", "413:2", "fallthrough"),
+		e("412:2", exit, "exception"),
+		e("413:2", exit, "exception"),
+	)
+	// A local named panic is an ordinary call: it falls through too.
+	wantEdges(t, "ShadowPanic",
+		e(entry, "418:2", "fallthrough"),
+		e("418:2", "419:2", "fallthrough"),
+		e("419:2", "420:2", "fallthrough"),
+		e("419:2", exit, "exception"),
+		e("420:2", exit, "return"),
+	)
+}
+
+func outEdges(es []dataflow.CfgEdge, src string) []dataflow.CfgEdge {
+	var out []dataflow.CfgEdge
+	for _, g := range es {
+		if g.Src == src {
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
+// TestCFG_IndexCanPanic: `v := xs[i]` both falls through and may panic.
+func TestCFG_IndexCanPanic(t *testing.T) {
+	got := edges(t, "Panics")
+	out := outEdges(got, pIndex)
+	if len(out) != 2 || out[0] != e(pIndex, pRet, "fallthrough") || out[1] != e(pIndex, exit, "exception") {
+		t.Errorf("Panics: %s out-edges = %v, want exception + fallthrough", pIndex, out)
+	}
+}
+
+// TestCFG_UnreachableAfterReturnPruned: code after a return is dropped from
+// both the edges and the returned node set, and a defer that is never
+// registered stays out of the exit chain. Satellite calls of a kept statement
+// are kept.
+func TestCFG_UnreachableAfterReturnPruned(t *testing.T) {
+	wantEdges(t, "Unreachable",
+		e(entry, "189:2", "fallthrough"),
+		e("189:2", exit, "return"),
+	)
+	nodes, _ := cfgOf(t, "Unreachable")
+	if keys := nodeKeys(nodes); strings.Join(keys, " ") != entry+" 189:2 "+exit {
+		t.Errorf("Unreachable: nodes = %v, want [@entry 189:2 @exit]", keys)
+	}
+	wantEdges(t, "DeadDefer",
+		e(entry, "425:2", "fallthrough"),
+		e("425:2", exit, "return"),
+	)
+	nodes, _ = cfgOf(t, "DeadDefer")
+	if keys := nodeKeys(nodes); strings.Join(keys, " ") != entry+" 425:2 "+exit {
+		t.Errorf("DeadDefer: nodes = %v, want [@entry 425:2 @exit]", keys)
+	}
+	nodes, _ = cfgOf(t, "Nested")
+	if keys := nodeKeys(nodes); strings.Join(keys, " ") != entry+" 196:2 196:7 196:9 197:2 "+exit {
+		t.Errorf("Nested: nodes = %v, want the satellites kept", keys)
+	}
+}
+
+func nodeKeys(nodes []dataflow.Node) []string {
+	keys := make([]string, len(nodes))
+	for i, n := range nodes {
+		keys[i] = n.Key
+	}
+	return keys
+}
+
+// TestCFG_GotoBackwardAndEmptySelect: a node that cannot reach @exit gets one
+// synthetic exception edge to the exit target (the chain head under a defer)
+// from the header of its endless loop — the goto target, found structurally.
+// select {} keeps Task 6's synthetic edge, now routed through the chain.
+func TestCFG_GotoBackwardAndEmptySelect(t *testing.T) {
+	wantEdges(t, "GotoForever",
+		e(entry, "398:2", "fallthrough"),
+		e("398:2", "400:2", "fallthrough"),
+		e("400:2", "401:2", "fallthrough"),
+		e("400:2", "398:8", "exception"), // repair: loop header → chain
+		e("401:2", "400:2", "fallthrough"),
+		e("398:8", exit, "defer_resume"),
+		e("398:8", exit, "exception"),
+	)
+	wantEdges(t, "SelectForever",
+		e(entry, "406:2", "fallthrough"),
+		e("406:2", "407:2", "fallthrough"),
+		e("407:2", "406:8", "exception"),
+		e("406:8", exit, "defer_resume"),
+		e("406:8", exit, "exception"),
+	)
+	wantEdges(t, "EmptySelect",
+		e(entry, esSel, "fallthrough"),
+		e(esSel, exit, "exception"),
+	)
+}
+
+// ---- R9: regression locks for Task 6 constructs ----
+
+func TestCFG_LabeledSwitchBreak(t *testing.T) {
+	// break Sw from a for nested in a clause leaves the switch.
+	wantEdges(t, "LabeledSwitchBreak",
+		e(entry, "303:2", "fallthrough"),
+		e("303:2", "304:2", "switch_case"),
+		e("303:2", "313:2", "switch_case"),
+		e("304:2", "305:3", "fallthrough"),
+		e("305:3", "306:4", "true"),
+		e("305:3", "311:3", "false"),
+		e("306:4", "307:5", "true"),
+		e("306:4", "309:4", "false"),
+		e("307:5", "313:2", "break"),
+		e("309:4", "305:3", "loop_back"),
+		e("311:3", "313:2", "fallthrough"),
+		e("313:2", exit, "return"),
+	)
+}
+
+func TestCFG_LabeledSelectBreak(t *testing.T) {
+	wantEdges(t, "LabeledSelectBreak",
+		e(entry, "319:2", "fallthrough"),
+		e("319:2", "320:2", "switch_case"),
+		e("320:2", "321:3", "fallthrough"),
+		e("321:3", "322:4", "true"),
+		e("321:3", "324:3", "false"),
+		e("322:4", "326:2", "break"),
+		e("324:3", "326:2", "fallthrough"),
+		e("326:2", exit, "return"),
+	)
+}
+
+func TestCFG_ContinueInSwitch(t *testing.T) {
+	// continue inside a switch targets the enclosing for header.
+	wantEdges(t, "ContinueInSwitch",
+		e(entry, "331:2", "fallthrough"),
+		e("331:2", "332:3", "true"),
+		e("331:2", "339:2", "false"),
+		e("332:3", "333:3", "fallthrough"),
+		e("333:3", "334:3", "switch_case"),
+		e("333:3", "337:3", "switch_case"),
+		e("334:3", "335:4", "fallthrough"),
+		e("335:4", "331:2", "continue"),
+		e("337:3", "331:2", "loop_back"),
+		e("339:2", exit, "return"),
+	)
+}
+
+func TestCFG_BreakInSelect(t *testing.T) {
+	// break inside a select leaves the select, not the for.
+	wantEdges(t, "BreakInSelect",
+		e(entry, "344:2", "fallthrough"),
+		e("344:2", "345:3", "true"),
+		e("344:2", "354:2", "false"),
+		e("345:3", "346:3", "switch_case"),
+		e("346:3", "347:4", "fallthrough"),
+		e("347:4", "348:5", "true"),
+		e("347:4", "350:4", "false"),
+		e("348:5", "352:3", "break"),
+		e("350:4", "352:3", "fallthrough"),
+		e("352:3", "344:2", "loop_back"),
+		e("354:2", exit, "return"),
+	)
+}
+
+func TestCFG_DefaultMiddle(t *testing.T) {
+	// default in the middle: still no header → after edge; fallthrough into
+	// and out of the default enters the next clause's body.
+	wantEdges(t, "DefaultMiddle",
+		e(entry, "359:2", "fallthrough"),
+		e("359:2", "360:2", "fallthrough"),
+		e("360:2", "361:2", "switch_case"),
+		e("360:2", "364:2", "switch_case"),
+		e("360:2", "367:2", "switch_case"),
+		e("361:2", "362:3", "fallthrough"),
+		e("362:3", "363:3", "fallthrough"),
+		e("363:3", "365:3", "fallthrough"),
+		e("364:2", "365:3", "fallthrough"),
+		e("365:3", "366:3", "fallthrough"),
+		e("366:3", "368:3", "fallthrough"),
+		e("367:2", "368:3", "fallthrough"),
+		e("368:3", "370:2", "fallthrough"),
+		e("370:2", exit, "return"),
+	)
+}
+
+func TestCFG_TypeSwitchNil(t *testing.T) {
+	// case nil: is an ordinary clause; no default, so header → after too.
+	wantEdges(t, "TypeSwitchNil",
+		e(entry, "375:2", "fallthrough"),
+		e("375:2", "376:2", "switch_case"),
+		e("375:2", "378:2", "switch_case"),
+		e("375:2", "381:2", "switch_case"),
+		e("376:2", "377:3", "fallthrough"),
+		e("377:3", exit, "return"),
+		e("378:2", "379:3", "fallthrough"),
+		e("379:3", exit, "return"),
+		e("381:2", exit, "return"),
+	)
+}
+
+func TestCFG_GotoInLoop(t *testing.T) {
+	// backward goto inside a loop body; the else-less if at the body's tail
+	// keeps its false kind into the header.
+	wantEdges(t, "GotoInLoop",
+		e(entry, "386:2", "fallthrough"),
+		e("386:2", "388:3", "true"),
+		e("386:2", "393:2", "false"),
+		e("388:3", "389:3", "fallthrough"),
+		e("389:3", "390:4", "true"),
+		e("389:3", "386:2", "false"),
+		e("390:4", "388:3", "fallthrough"),
+		e("393:2", exit, "return"),
+	)
+}
+
+// ---- CFG gates (spec §4.3) ----
+
+// TestCFG_Gate runs the full CFG over every function and function literal
+// body in testdata/dataflow and testdata/chi, with call keys built in L1
+// recording order, and checks the gates: exactly one @entry and @exit; every
+// CFG node reachable from @entry and reaching @exit; every satellite's parent
+// kept; every non-synthetic node has a valid Pos; edges sorted and deduped;
+// two builds deep-equal.
+func TestCFG_Gate(t *testing.T) {
+	_, thisFile, _, _ := runtime.Caller(0)
+	root := filepath.Join(filepath.Dir(thisFile), "..", "..", "testdata")
+	total, deferred := 0, 0
+	for _, dir := range []string{"dataflow", "chi"} {
+		fset, cases := loadDiffCases(t, filepath.Join(root, dir))
+		for _, c := range cases {
+			total++
+			calls := gateCallKeys(fset, c.body)
+			nodes, keyOf := dataflow.BuildNodes(fset, c.body, calls)
+			kept, es := dataflow.BuildCFG(nodes, keyOf, c.body, c.info)
+			checkContract(t, c.name, kept, es)
+			deferred += gateOne(t, c.name, kept, es)
+
+			nodes2, keyOf2 := dataflow.BuildNodes(fset, c.body, calls)
+			kept2, es2 := dataflow.BuildCFG(nodes2, keyOf2, c.body, c.info)
+			if !reflect.DeepEqual(kept, kept2) || !reflect.DeepEqual(es, es2) {
+				t.Errorf("%s: two builds differ", c.name)
+			}
+		}
+	}
+	if total < 100 || deferred == 0 {
+		t.Errorf("gate covered only %d bodies / %d deferred calls", total, deferred)
+	}
+	t.Logf("gate: %d bodies, %d deferred calls in exit chains", total, deferred)
+}
+
+// gateOne checks one body's gates and returns its number of chain members.
+func gateOne(t *testing.T, name string, nodes []dataflow.Node, es []dataflow.CfgEdge) int {
+	t.Helper()
+	entries, exits, chain := 0, 0, 0
+	keys := map[string]bool{}
+	for _, n := range nodes {
+		keys[n.Key] = true
+	}
+	fwd := map[string]bool{entry: true}
+	for k := range closure(es)[entry] {
+		fwd[k] = true
+	}
+	rev := make([]dataflow.CfgEdge, len(es))
+	for i, g := range es {
+		rev[i] = dataflow.CfgEdge{Src: g.Dst, Dst: g.Src, Kind: g.Kind}
+	}
+	bwd := map[string]bool{exit: true}
+	for k := range closure(rev)[exit] {
+		bwd[k] = true
+	}
+	for _, n := range nodes {
+		switch n.Key {
+		case entry:
+			entries++
+			continue
+		case exit:
+			exits++
+			continue
+		}
+		if !n.Pos.IsValid() || n.End < n.Pos || n.Stmt == nil {
+			t.Errorf("%s: node %s has no valid span", name, n.Key)
+		}
+		if n.Deferred {
+			chain++
+		}
+		if n.Parent != "" {
+			if !keys[n.Parent] {
+				t.Errorf("%s: satellite %s kept without its parent %s", name, n.Key, n.Parent)
+			}
+			continue
+		}
+		if !fwd[n.Key] {
+			t.Errorf("%s: node %s unreachable from @entry", name, n.Key)
+		}
+		if !bwd[n.Key] {
+			t.Errorf("%s: node %s cannot reach @exit", name, n.Key)
+		}
+	}
+	if entries != 1 || exits != 1 {
+		t.Errorf("%s: %d @entry / %d @exit nodes, want 1 / 1", name, entries, exits)
+	}
+	if !fwd[exit] {
+		t.Errorf("%s: @exit unreachable from @entry", name)
+	}
+	return chain
+}
+
+// gateCallKeys lists every call in body in the L1 recording order (pre-order;
+// a go statement's call only; no function literal bodies) with v2 keys.
+func gateCallKeys(fset *token.FileSet, body *ast.BlockStmt) []dataflow.CallKey {
+	var calls []*ast.CallExpr
+	ast.Inspect(body, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.FuncLit:
+			return false
+		case *ast.GoStmt:
+			calls = append(calls, n.Call)
+			return false
+		case *ast.CallExpr:
+			calls = append(calls, n)
+		}
+		return true
+	})
+	pos := make([][2]int, len(calls))
+	for i, c := range calls {
+		p := fset.Position(c.Pos())
+		pos[i] = [2]int{p.Line, p.Column}
+	}
+	keys := v2.CallBodyKeys(pos)
+	out := make([]dataflow.CallKey, len(calls))
+	for i, c := range calls {
+		out[i] = dataflow.CallKey{Pos: c.Pos(), Key: keys[i]}
+	}
+	return out
+}
+
+// ---- canPanic rules (spec §4.3.2) ----
+
+const panicSrc = `package p
+
+type T struct {
+	x int
+	p *T
+}
+
+func (T) M() {}
+
+func f() int { return 0 }
+
+type Celsius float64
+
+func _(s []int, p *T, t T, i any, ch chan int, a, b int, fl float64) {
+	_ = Celsius(fl)
+	_ = f()
+	_ = s[a]
+	_ = s[a:b]
+	_ = i.(int)
+	v, ok := i.(int)
+	_ = *p
+	_ = p.x
+	_ = t.x
+	ch <- a
+	_ = a / b
+	_ = a / 2
+	_ = a % b
+	a /= b
+	_ = func() { _ = s[0] }
+	var q *T
+	_ = <-ch
+	_ = []*T{}
+	if a > 0 {
+		f()
+	}
+	for i := 0; i < len(s); i++ {
+	}
+	switch x := i.(type) {
+	case *T:
+		_ = x
+	}
+	switch a {
+	case f():
+	}
+	defer f()
+	defer t.M()
+	defer p.M()
+	defer close(ch)
+	defer g(s[0])
+	go f()
+	go g(f())
+	_, _, _ = v, ok, q
+}
+
+func g(int) {}
+`
+
+func TestCanPanic(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "p.go", panicSrc, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := &types.Info{Types: map[ast.Expr]types.TypeAndValue{}, Uses: map[*ast.Ident]types.Object{}, Defs: map[*ast.Ident]types.Object{}, Selections: map[*ast.SelectorExpr]*types.Selection{}}
+	if _, err := (&types.Config{}).Check("p", fset, []*ast.File{file}, info); err != nil {
+		t.Fatal(err)
+	}
+	var body []ast.Stmt
+	for _, d := range file.Decls {
+		if fd, ok := d.(*ast.FuncDecl); ok && fd.Name.Name == "_" {
+			body = fd.Body.List
+		}
+	}
+	want := []bool{
+		false, // conversion
+		true,  // call
+		true,  // index
+		true,  // slice
+		true,  // type assertion
+		false, // comma-ok type assertion
+		true,  // dereference
+		true,  // selector on a pointer
+		false, // selector on a value
+		true,  // send
+		true,  // non-constant divisor
+		false, // constant divisor
+		true,  // non-constant %
+		true,  // /=
+		false, // function literal body not entered
+		false, // pointer type in a declaration
+		false, // receive
+		false, // composite literal of pointer element type
+		false, // if header only (body has the call)
+		true,  // for header calls len
+		false, // type switch guard
+		false, // expression switch with no init / tag panic
+		false, // defer f(): the call runs at exit
+		false, // defer t.M(): value receiver
+		true,  // defer p.M(): *p is dereferenced at registration
+		false, // defer close(ch): close runs at exit
+		true,  // defer g(s[0]): argument evaluated at registration
+		false, // go f()
+		true,  // go g(f()): argument evaluated here
+		false, // _, _, _ = …
+	}
+	if len(body) != len(want) {
+		t.Fatalf("snippet has %d statements, table %d", len(body), len(want))
+	}
+	for i, s := range body {
+		if got := dataflow.CanPanic(s, info); got != want[i] {
+			t.Errorf("stmt %d (line %d): canPanic = %v, want %v", i, fset.Position(s.Pos()).Line, got, want[i])
+		}
+	}
+	// Clause heads inspect their own list: `case *T:` is a type, `case f():`
+	// a call.
+	tsClause := body[20].(*ast.TypeSwitchStmt).Body.List[0]
+	swClause := body[21].(*ast.SwitchStmt).Body.List[0]
+	if dataflow.CanPanic(tsClause, info) || !dataflow.CanPanic(swClause, info) {
+		t.Errorf("clause heads: type case = %v, call case = %v; want false, true", dataflow.CanPanic(tsClause, info), dataflow.CanPanic(swClause, info))
+	}
+	// A deferred call node itself (the CallExpr) can panic.
+	if !dataflow.CanPanic(body[25].(*ast.DeferStmt).Call, info) {
+		t.Errorf("deferred close(ch) call: canPanic = false, want true")
+	}
+	// Without type info, every call and selector is conservatively true.
+	if !dataflow.CanPanic(body[0], nil) || !dataflow.CanPanic(body[8], nil) {
+		t.Errorf("nil info: conversion / value selector must be conservatively true")
+	}
 }
 
 func TestCFG_EmptyBody(t *testing.T) {
@@ -352,12 +878,26 @@ func TestCFG_EmptyBody(t *testing.T) {
 
 func TestCFG_BodylessCallable(t *testing.T) {
 	nodes, keyOf := dataflow.BuildNodes(token.NewFileSet(), nil, nil)
-	if es := dataflow.BuildCFG(nodes, keyOf, nil, nil); len(es) != 0 || es == nil {
+	kept, es := dataflow.BuildCFG(nodes, keyOf, nil, nil)
+	if len(es) != 0 || es == nil {
 		t.Errorf("nil body: edges = %#v, want empty non-nil", es)
+	}
+	if len(kept) != 0 || kept == nil {
+		t.Errorf("nil body: nodes = %#v, want empty non-nil", kept)
 	}
 }
 
 // ---- differential test against golang.org/x/tools/go/cfg ----
+
+// isBuiltinPanic reports whether call calls the builtin panic.
+func isBuiltinPanic(call *ast.CallExpr, info *types.Info) bool {
+	id, ok := ast.Unparen(call.Fun).(*ast.Ident)
+	if !ok {
+		return false
+	}
+	b, ok := info.Uses[id].(*types.Builtin)
+	return ok && b.Name() == "panic"
+}
 
 // diffCase is one function body for the differential test.
 type diffCase struct {
@@ -407,7 +947,12 @@ func loadDiffCases(t *testing.T, dir string) (*token.FileSet, []diffCase) {
 // TestCFG_Differential checks that our CFG is at least as connected as
 // go/cfg's: whenever go/cfg has a path from statement A to statement B, ours
 // has a path from A's node to B's node. The reverse is not asserted (ours adds
-// synthetic exception edges, and Task 7 adds panic/defer edges).
+// synthetic exception edges, panic edges and the defer chain).
+//
+// go/cfg's mayReturn is false exactly for a call to the builtin panic, which
+// in ours has only its exception edge; every other call (os.Exit included)
+// returns, as in ours (spec §4.3.2). Only live go/cfg blocks are compared:
+// ours prunes what is unreachable from @entry.
 //
 // Mapping rule (go/cfg block Nodes → our keys), see diffKeyOf:
 //   - a statement, or a statement folded into a header (if/for/switch init,
@@ -444,9 +989,9 @@ func TestCFG_Differential(t *testing.T) {
 		for _, c := range cases {
 			total++
 			nodes, keyOf := dataflow.BuildNodes(fset, c.body, nil)
-			ours := dataflow.BuildCFG(nodes, keyOf, c.body, c.info)
-			checkContract(t, c.name, nodes, ours)
-			pairs += diffOne(t.Errorf, c.name, c.body, keyOf, ours)
+			kept, ours := dataflow.BuildCFG(nodes, keyOf, c.body, c.info)
+			checkContract(t, c.name, kept, ours)
+			pairs += diffOne(t.Errorf, c.name, c.body, c.info, keyOf, ours)
 		}
 	}
 	if total < 100 || pairs < 1000 {
@@ -457,13 +1002,17 @@ func TestCFG_Differential(t *testing.T) {
 
 // diffOne reports every go/cfg-reachable pair that ours does not reach and
 // returns the number of distinct pairs checked.
-func diffOne(errorf func(string, ...any), name string, body *ast.BlockStmt, keyOf map[ast.Node]string, ours []dataflow.CfgEdge) int {
-	g := cfg.New(body, func(*ast.CallExpr) bool { return true })
+func diffOne(errorf func(string, ...any), name string, body *ast.BlockStmt, info *types.Info, keyOf map[ast.Node]string, ours []dataflow.CfgEdge) int {
+	g := cfg.New(body, func(call *ast.CallExpr) bool { return !isBuiltinPanic(call, info) })
 	km := diffKeyOf(body, keyOf)
 
-	// Map each block's nodes to our keys, in block order.
+	// Map each live block's nodes to our keys, in block order. Dead blocks
+	// (code after a return / panic / goto) are pruned from ours.
 	blockKeys := make([][]string, len(g.Blocks))
 	for _, b := range g.Blocks {
+		if !b.Live {
+			continue
+		}
 		for _, n := range b.Nodes {
 			k, ok := km[n]
 			if r, isRet := n.(*ast.ReturnStmt); !ok && isRet && r.Return == body.End()-1 {
@@ -613,7 +1162,7 @@ func TestCFG_DifferentialCatchesMissingEdge(t *testing.T) {
 	fx := loadFlow(t)
 	body := fx.decl(t, "Labeled").Body
 	nodes, keyOf := dataflow.BuildNodes(fx.fset, body, nil)
-	full := dataflow.BuildCFG(nodes, keyOf, body, fx.info)
+	_, full := dataflow.BuildCFG(nodes, keyOf, body, fx.info)
 	var cut []dataflow.CfgEdge // drop every edge into the return
 	for _, g := range full {
 		if g.Dst != lbRet {
@@ -621,7 +1170,7 @@ func TestCFG_DifferentialCatchesMissingEdge(t *testing.T) {
 		}
 	}
 	var errs []string
-	diffOne(func(f string, a ...any) { errs = append(errs, fmt.Sprintf(f, a...)) }, "Labeled(cut)", body, keyOf, cut)
+	diffOne(func(f string, a ...any) { errs = append(errs, fmt.Sprintf(f, a...)) }, "Labeled(cut)", body, fx.info, keyOf, cut)
 	if !strings.Contains(strings.Join(errs, "\n"), lbInit+" → "+lbRet) {
 		t.Errorf("differential missed the cut edges; got %v", errs)
 	}
