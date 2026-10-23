@@ -188,12 +188,13 @@ func (p *projector) projectBodyNode(callableRef NodeRef, module, callableID, loc
 	p.b.Edge(RelHasBodyNode, callableRef, bRef, nil, "")
 
 	// A resolved callee (backfilled at L2) → GO_RESOLVES_TO. The callee is
-	// already a resolved can:// id; route through the plain edge only when it
-	// names a declared callable (an external callee stays null in JSON and
-	// emits no edge here).
-	if bn.Callee != nil && p.declared[*bn.Callee] {
-		p.b.Edge(RelResolvesTo, bRef,
-			NodeRef{Label: SymbolLabel, KeyProp: "id", Value: *bn.Callee}, nil, "")
+	// already a resolved can:// id: a declared callable, or a library callee's
+	// @external id, which routes to its ghost via callEndpoint.
+	if bn.Callee != nil {
+		_, external := p.analysis.Application.ExternalSymbols[*bn.Callee]
+		if p.declared[*bn.Callee] || external {
+			p.b.Edge(RelResolvesTo, bRef, p.callEndpoint(*bn.Callee), nil, "")
+		}
 	}
 }
 
@@ -253,9 +254,15 @@ func (p *projector) callEndpoint(id string) NodeRef {
 	if p.declared[id] {
 		return ref
 	}
-	// Emit the ghost so the endpoint is a real node, not a dangling MATCH.
-	p.b.Node([]string{SymbolLabel, LabelExternal, MarkerLabel}, "id", id,
-		Props{"name": lastSegment(id)}, "")
+	// Emit the ghost so the endpoint is a real node, not a dangling MATCH. A
+	// library callee recorded in external_symbols carries its signature/module.
+	props := Props{"name": lastSegment(id)}
+	if ext, ok := p.analysis.Application.ExternalSymbols[id]; ok {
+		props["name"] = ext.Name
+		props["signature"] = ext.Signature
+		props["module"] = ext.Module
+	}
+	p.b.Node([]string{SymbolLabel, LabelExternal, MarkerLabel}, "id", id, props, "")
 	return ref
 }
 

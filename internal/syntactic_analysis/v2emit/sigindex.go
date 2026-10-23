@@ -32,6 +32,8 @@ import (
 type sigIndex struct {
 	bySig     map[string]string
 	bySigPath map[sigPathKey]string
+	// externals maps a library callee's full signature to its @external id.
+	externals map[string]string
 }
 
 type sigPathKey struct {
@@ -94,6 +96,17 @@ func (idx sigIndex) addCallable(parentID, relPath string, c schema.GoCallable) {
 // idForWithPath for the precise node.
 func (idx sigIndex) idFor(sig string) (string, bool) {
 	id, ok := idx.bySig[sig]
+	return id, ok
+}
+
+// resolve returns the node id for a callee signature: the in-tree callable id
+// when the signature names one, else the @external id of a recorded library
+// callee.
+func (idx sigIndex) resolve(sig string) (string, bool) {
+	if id, ok := idx.idFor(sig); ok {
+		return id, true
+	}
+	id, ok := idx.externals[sig]
 	return id, ok
 }
 

@@ -209,7 +209,7 @@ var Nodes = []NodeSpec{
 	},
 	{
 		Label: LabelExternal, MergeLabel: SymbolLabel, Key: "id", CanNode: true,
-		Props: []string{"name", "path"},
+		Props: []string{"name", "path", "signature", "module"},
 	},
 
 	// Neutral layer. Keyed by own id (not a can:// id), so NO marker label and

@@ -33,7 +33,7 @@ func buildMultipackageL2(t *testing.T) *v2.Analysis {
 	}
 	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 	edges := cg.Build(st)
-	app := &schema.GoApplication{SymbolTable: st, CallGraph: edges}
+	app := &schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}
 	return v2emit.Emit(app, "multipackage", dir, 2, "neo4j-gate")
 }
 
@@ -155,4 +155,41 @@ func hasLabel(n NodeRow, label string) bool {
 		}
 	}
 	return false
+}
+
+// TestProject_ExternalGhostCarriesSignature locks that a library callee becomes a
+// :GoExternal ghost carrying signature/module, is the target of a GO_CALLS edge,
+// and is reached by a GO_RESOLVES_TO edge from the call body node.
+func TestProject_ExternalGhostCarriesSignature(t *testing.T) {
+	a := buildMultipackageL2(t)
+	rows := Project(a)
+	ext := v2.ExternalID(a.Application.ID, "fmt", "Println")
+
+	var ghost *NodeRow
+	for i, n := range rows.Nodes {
+		if n.Value == ext && hasLabel(n, LabelExternal) {
+			ghost = &rows.Nodes[i]
+		}
+	}
+	if ghost == nil {
+		t.Fatalf("no :GoExternal ghost for %s", ext)
+	}
+	if ghost.Props["signature"] != "Println" || ghost.Props["module"] != "fmt" {
+		t.Errorf("ghost props = %v, want signature=Println module=fmt", ghost.Props)
+	}
+	var calls, resolves bool
+	for _, e := range rows.Edges {
+		if e.To.Value != ext {
+			continue
+		}
+		switch e.Type {
+		case RelCalls:
+			calls = true
+		case RelResolvesTo:
+			resolves = true
+		}
+	}
+	if !calls || !resolves {
+		t.Errorf("edges to external: GO_CALLS=%v GO_RESOLVES_TO=%v, want both", calls, resolves)
+	}
 }

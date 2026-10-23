@@ -123,7 +123,8 @@ func TestChi_NoDanglingEdges(t *testing.T) {
 		if !sigs[e.Source] {
 			t.Errorf("dangling edge source: %s", e.Source)
 		}
-		if !sigs[e.Target] {
+		// A target is either an in-project callable or a recorded library callee.
+		if _, ext := sharedChiL2.Externals[e.Target]; !sigs[e.Target] && !ext {
 			t.Errorf("dangling edge target: %s", e.Target)
 		}
 	}

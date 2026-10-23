@@ -40,12 +40,22 @@ the JSON tags from that file.
    │     │        └─ <callable>       # ← callable node, defined below
    │     └─ functions                 # { "<signature>": callable }
    │        └─ <callable>             # ← callable node, defined below
-   └─ call_graph[]                    # L2+; empty [] at L1
-      └─ <edge>
-         ├─ src                       # can:// callable id
-         ├─ dst                       # can:// callable id
-         ├─ prov[]                    # optional: e.g. ["go/types"]
-         └─ weight                    # optional
+   ├─ call_graph[]                   # L2+; empty [] at L1
+   │  └─ <edge>
+   │     ├─ src                       # can:// callable id
+   │     ├─ dst                       # can:// callable id, or an @external id
+   │     ├─ prov[]                    # optional: e.g. ["go/types"]
+   │     └─ weight                    # optional
+   └─ external_symbols               # L2+; optional: { "<@external id>": external }
+      └─ <external>                  # library callee: `can://<app>/@external/<import-path>/<sig>`
+         ├─ id
+         ├─ kind                     # "external"
+         ├─ name                     # e.g. "Println"
+         ├─ module                   # import path, e.g. "fmt"
+         ├─ signature                # [Type.]Name, e.g. "Builder.WriteString"
+         ├─ parameters[]             # { name, type, span, is_variadic? }; receiver excluded;
+         │                           #   unnamed params are "_<i>"; span is zero (not in-project)
+         └─ return_type              # optional
 ```
 
 ## `<callable>` node (recursive)
@@ -93,7 +103,10 @@ span
 - **`omitempty` — emitted only when non-empty:** `content_hash`, `imports[].alias`,
   `base_types`, `interfaces`, `fields`, `source_file`, `return_type`, `error_channel`,
   `metrics`, a callable's nested `callables`, `parameters[].is_variadic`, edge `prov` /
-  `weight`.
+  `weight`, `external_symbols` (absent when no library call was resolved),
+  `external_symbols[].return_type`.
+- A call node's `callee` is an in-tree callable id, an `external_symbols` key (library
+  callee), or `null` (conversion, builtin, call through a function value, unresolved).
 - **Emitted only when `true`:** `is_goroutine`, `is_deferred`.
 
 ## `id` shape

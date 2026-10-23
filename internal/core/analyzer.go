@@ -78,6 +78,7 @@ func (a *Analyzer) Analyze() (*schema.GoApplication, error) {
 	)
 	edges := cgBuilder.Build(symbolTable)
 	app.CallGraph = edges
+	app.Externals = cgBuilder.Externals()
 	utils.Info("call graph: %d edges", len(edges))
 
 	// ── Phase 4: Pass pipeline ────────────────────────────────────────────────

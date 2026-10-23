@@ -25,6 +25,7 @@ func Emit(app *schema.GoApplication, appName, projectDir string, maxLevel int, a
 	// into v2 node ids. It is what the L2 refinement uses to backfill body
 	// callees and to map call_graph edge endpoints onto real callable ids.
 	idx := buildSigIndex(appID, app.SymbolTable)
+	idx.externals = externalIDs(appID, app.Externals)
 
 	// One lineIndex per source file, read once and shared. A method whose
 	// receiver type lives in a different file is nested under that type's module
@@ -45,6 +46,7 @@ func Emit(app *schema.GoApplication, appName, projectDir string, maxLevel int, a
 			CallGraph:   emitCallGraph(app.CallGraph, idx),
 		},
 	}
+	out.Application.ExternalSymbols = emitExternalSymbols(appID, app.Externals)
 
 	// Deterministic module order does not affect the JSON map, but iterating
 	// sorted keeps any incidental ordering (and logs) stable across runs.
@@ -179,8 +181,9 @@ func emitCallable(parentID, modRel string, modLI *lineIndex, c schema.GoCallable
 //   - L1: the v1 site has no backfilled signature, so callee stays null.
 //   - L2: the resolver backfilled the site's callee signature. When that
 //     signature names an in-tree callable, callee becomes its can:// id; when
-//     it names an external/stdlib callee (no in-tree node), callee stays null —
-//     the honest-unresolved fallback the L2 gate expects.
+//     it names a library callee, callee becomes its @external id (a key of
+//     application.external_symbols); otherwise (conversions, builtins, calls
+//     through function values) callee stays null.
 func emitBody(callableID string, li *lineIndex, sites []schema.GoCallsite, idx sigIndex) map[string]v2.BodyNode {
 	keys := callBodyKeys(sites)
 	body := make(map[string]v2.BodyNode, len(sites))
@@ -209,18 +212,49 @@ func callBodyKeys(sites []schema.GoCallsite) []string {
 }
 
 // calleeID translates a v1 backfilled callee signature into the v2 can:// id
-// refinement slot: nil (JSON null) when unresolved or external, a pointer to the
-// in-tree callable id when resolved. Never returns the raw v1 signature — a
-// call node's callee is always a node id or null.
+// refinement slot: nil (JSON null) when unresolved, a pointer to the in-tree
+// callable id or the library callee's @external id when resolved. Never returns
+// the raw v1 signature — a call node's callee is always a node id or null.
 func calleeID(sig *string, idx sigIndex) *string {
 	if sig == nil {
 		return nil
 	}
-	id, ok := idx.idFor(*sig)
+	id, ok := idx.resolve(*sig)
 	if !ok {
 		return nil
 	}
 	return &id
+}
+
+// externalIDs maps each library callee's full signature to its @external id.
+func externalIDs(appID string, externals map[string]schema.GoExternalCallee) map[string]string {
+	ids := make(map[string]string, len(externals))
+	for fullSig, ext := range externals {
+		ids[fullSig] = v2.ExternalID(appID, ext.ImportPath, ext.Sig)
+	}
+	return ids
+}
+
+// emitExternalSymbols builds application.external_symbols, keyed by @external
+// id. Nil (omitted from JSON) when no library callee was recorded.
+func emitExternalSymbols(appID string, externals map[string]schema.GoExternalCallee) map[string]v2.ExternalSymbol {
+	if len(externals) == 0 {
+		return nil
+	}
+	out := make(map[string]v2.ExternalSymbol, len(externals))
+	for _, ext := range externals {
+		id := v2.ExternalID(appID, ext.ImportPath, ext.Sig)
+		params := make([]v2.Parameter, 0, len(ext.Params))
+		for _, p := range ext.Params {
+			// Library parameters have no source span in this project; Span stays zero.
+			params = append(params, v2.Parameter{Name: p.Name, Type: p.Type, IsVariadic: p.IsVariadic})
+		}
+		out[id] = v2.ExternalSymbol{
+			ID: id, Kind: "external", Name: ext.Name, Module: ext.ImportPath,
+			Signature: ext.Sig, Parameters: params, ReturnType: ext.ReturnType,
+		}
+	}
+	return out
 }
 
 func emitParams(li *lineIndex, params []schema.GoParameter) []v2.Parameter {
@@ -251,10 +285,10 @@ func emitImports(li *lineIndex, imports []schema.GoImport) []v2.Import {
 
 // emitCallGraph maps v1 identity-only edges to the v2 {src,dst,prov,weight}
 // shape: the source/target/provenance rename, PLUS the endpoint translation from
-// v1 signatures to can:// callable ids. An edge whose src or dst does not resolve
-// to an in-tree node is dropped rather than emitted with a dangling endpoint —
-// the L2 gate requires every endpoint to be a real callable id. (The v1 resolver
-// only emits edges to in-project targets, so this drop is defensive.)
+// v1 signatures to can:// ids. A dst may be an in-tree callable or a library
+// callee's @external id (a key of external_symbols). An edge whose src or dst
+// does not resolve is dropped rather than emitted with a dangling endpoint —
+// the L2 gate requires every endpoint to be a real node id.
 func emitCallGraph(edges []schema.GoCallEdge, idx sigIndex) []v2.Edge {
 	out := make([]v2.Edge, 0, len(edges))
 	for _, e := range edges {
@@ -264,7 +298,7 @@ func emitCallGraph(edges []schema.GoCallEdge, idx sigIndex) []v2.Edge {
 		// The target stays signature-only — a call target is never an init
 		// (Go forbids calling init), and every other signature is unique.
 		src, srcOK := idx.idForWithPath(e.Source, e.SourcePath)
-		dst, dstOK := idx.idFor(e.Target)
+		dst, dstOK := idx.resolve(e.Target)
 		if !srcOK || !dstOK {
 			continue
 		}

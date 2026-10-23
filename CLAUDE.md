@@ -56,6 +56,20 @@ committed spec is the full transcript: `docs/design/specs/v2-l1-emission.md`.
   v1). `is_constructor_call` **dropped** — Go has no constructors.
 - `callee` is the sanctioned `null → id` refinement slot (null at L1, backfilled at L2).
 
+### `external_symbols` (L2 library calls)
+- **L2 keeps library call edges.** A call to a function outside the project (`fmt.Println`,
+  `(*strings.Builder).WriteString`) is no longer dropped: the call node's `callee` and the
+  `call_graph` edge `dst` are the callee's `@external` id. Builtins, type conversions
+  (no longer minted as `<Type>.__new__`) and calls through function values stay `null`.
+- **Id** = `can://<app>/@external/<import-path>/<sig>` where `<sig>` is the callee signature
+  minus the `<import-path>.` prefix (`Println`, `Builder.WriteString`). `@external` is
+  language-neutral (not `go/`), so a polyglot app shares one external namespace.
+- **Home:** `application.external_symbols{<id>: {id, kind:"external", name, module,
+  signature, parameters, return_type}}`, omitempty; parameters come from the callee's
+  `*types.Signature` (receiver excluded, unnamed params `_<i>`).
+- Mirrors the Python/Java precedent (library callees are leaf nodes at application scope);
+  on by default at L2, no flag.
+
 ### Deferred (not this train)
 - L3 (CFG/CDG/DDG) and L4 (SDG param edges) — reuse Group A ids/spans unchanged.
   **Now designed** (2026-10-23): spec `docs/design/specs/v2-l3-l4-dataflow.md`.

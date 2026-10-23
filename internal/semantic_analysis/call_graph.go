@@ -11,9 +11,11 @@
 package semantic_analysis
 
 import (
+	"fmt"
 	"go/ast"
 	"go/token"
 	"go/types"
+	"strings"
 
 	"golang.org/x/tools/go/packages"
 
@@ -27,6 +29,7 @@ type CallGraphBuilder struct {
 	fset       *token.FileSet
 	pkgs       map[string]*packages.Package
 	indexes    map[*packages.Package]callSiteIndex
+	externals  map[string]schema.GoExternalCallee
 }
 
 // NewCallGraphBuilder creates a builder using the same pkgs/fset loaded for the symbol table.
@@ -34,15 +37,20 @@ func NewCallGraphBuilder(projectDir string, fset *token.FileSet, pkgs map[string
 	return &CallGraphBuilder{projectDir: projectDir, fset: fset, pkgs: pkgs, indexes: map[*packages.Package]callSiteIndex{}}
 }
 
+// Externals returns the library callees recorded by Build, keyed by the full
+// callee signature. Nil before Build or when no library call was seen.
+func (cg *CallGraphBuilder) Externals() map[string]schema.GoExternalCallee { return cg.externals }
+
 // Build resolves all call sites in symbolTable, backfills callee_signature, and
 // returns the identity-only edge list. Never crashes on unresolved sites — it logs
 // and skips the edge while leaving callee_signature nil.
 func (cg *CallGraphBuilder) Build(symbolTable map[string]schema.GoFile) []schema.GoCallEdge {
 	var edges []schema.GoCallEdge
 	seen := map[[2]string]bool{}
+	cg.externals = nil
 
-	// Build the known-sig set once. Only emit edges where the target is in the
-	// project's symbol table (drop stdlib / external callees, same as Python/Jedi).
+	// Build the known-sig set once. It separates in-project callees from library
+	// callees, which are recorded in cg.externals rather than dropped.
 	knownSigs := buildKnownSigs(symbolTable)
 
 	for fileKey, goFile := range symbolTable {
@@ -92,9 +100,12 @@ func buildKnownSigs(symbolTable map[string]schema.GoFile) map[string]bool {
 }
 
 // resolveCallable backfills callee_signature on each call site and produces edges.
-// Only emits edges where the target is in knownSigs (project-internal callees).
-// External/stdlib callees have callee_signature backfilled but no edge emitted —
-// matching Python/Jedi's behavior of dropping unresolved external sites.
+//
+// An in-project callee (in knownSigs) gets an edge. A library callee (a package
+// outside the project) is recorded in cg.externals, its site is tagged with the
+// callee's import path, and it gets an edge too (target = the full callee
+// signature). A callee in a project package that is not in the symbol table
+// (e.g. an interface method) is backfilled but gets no edge.
 func (cg *CallGraphBuilder) resolveCallable(
 	pkg *packages.Package,
 	callable schema.GoCallable,
@@ -109,19 +120,23 @@ func (cg *CallGraphBuilder) resolveCallable(
 			continue // already resolved
 		}
 
-		calleeSig := cg.resolveCallSite(pkg, callable.Path, site)
-		if calleeSig == "" {
+		fn := cg.resolveCallSite(pkg, callable.Path, site)
+		if fn == nil {
 			utils.Debug("unresolved call site: %s in %s", site.MethodName, callable.Signature)
 			continue
 		}
+		calleeSig := calleeSignatureOf(fn)
 
-		// Backfill the site regardless of whether the callee is in-project.
+		// Backfill the site whether the callee is in-project or a library.
 		site.CalleeSignature = &calleeSig
 
-		// Only emit an edge when the callee is in the project's symbol table.
 		if !knownSigs[calleeSig] {
-			utils.Debug("external callee (no edge): %s", calleeSig)
-			continue
+			if !cg.isLibrary(fn) {
+				utils.Debug("in-project callee without a symbol-table entry (no edge): %s", calleeSig)
+				continue
+			}
+			site.CalleeImportPath = fn.Pkg().Path()
+			cg.recordExternal(fn, calleeSig)
 		}
 
 		key := [2]string{callable.Signature, calleeSig}
@@ -148,19 +163,78 @@ func (cg *CallGraphBuilder) resolveCallable(
 	return callable, edges
 }
 
-// resolveCallSite resolves a single call site to a callee signature string by
-// looking its [start, end) position up in the package's call-site index. relPath is the
+// isLibrary reports whether fn lives outside the project: it has a package and
+// that package is not one of the loaded project packages.
+func (cg *CallGraphBuilder) isLibrary(fn *types.Func) bool {
+	if fn.Pkg() == nil {
+		return false
+	}
+	_, inProject := cg.pkgs[fn.Pkg().Path()]
+	return !inProject
+}
+
+// recordExternal registers a library callee, keyed by its full signature.
+// Parameter names and types come from the callee's *types.Signature; unnamed
+// parameters become "_<i>". The receiver is not a parameter.
+func (cg *CallGraphBuilder) recordExternal(fn *types.Func, fullSig string) {
+	if _, ok := cg.externals[fullSig]; ok {
+		return
+	}
+	if cg.externals == nil {
+		cg.externals = map[string]schema.GoExternalCallee{}
+	}
+	importPath := fn.Pkg().Path()
+	sig := fn.Type().(*types.Signature)
+
+	var params []schema.GoParameter
+	for i := 0; i < sig.Params().Len(); i++ {
+		p := sig.Params().At(i)
+		name := p.Name()
+		if name == "" || name == "_" {
+			name = fmt.Sprintf("_%d", i)
+		}
+		params = append(params, schema.GoParameter{
+			Name:       name,
+			Type:       types.TypeString(p.Type(), nil),
+			IsVariadic: sig.Variadic() && i == sig.Params().Len()-1,
+		})
+	}
+
+	var rets []string
+	for i := 0; i < sig.Results().Len(); i++ {
+		rets = append(rets, types.TypeString(sig.Results().At(i).Type(), nil))
+	}
+	ret := ""
+	switch len(rets) {
+	case 0:
+	case 1:
+		ret = rets[0]
+	default:
+		ret = "(" + strings.Join(rets, ", ") + ")"
+	}
+
+	cg.externals[fullSig] = schema.GoExternalCallee{
+		ImportPath: importPath,
+		Sig:        strings.TrimPrefix(fullSig, importPath+"."),
+		Name:       fn.Name(),
+		Params:     params,
+		ReturnType: ret,
+	}
+}
+
+// resolveCallSite resolves a single call site to its callee function by looking
+// its [start, end) position up in the package's call-site index. relPath is the
 // file declaring the enclosing callable (site columns are byte offsets within
-// that file). Returns "" when the site cannot be resolved (graceful fallback).
-func (cg *CallGraphBuilder) resolveCallSite(pkg *packages.Package, relPath string, site *schema.GoCallsite) string {
+// that file). Returns nil when the site cannot be resolved (graceful fallback).
+func (cg *CallGraphBuilder) resolveCallSite(pkg *packages.Package, relPath string, site *schema.GoCallsite) *types.Func {
 	if pkg.TypesInfo == nil {
-		return ""
+		return nil
 	}
 	tf := cg.tokenFile(pkg, relPath)
 	if tf == nil ||
 		site.StartLine < 1 || site.StartLine > tf.LineCount() || site.StartColumn < 1 ||
 		site.EndLine < 1 || site.EndLine > tf.LineCount() || site.EndColumn < 1 {
-		return ""
+		return nil
 	}
 	key := callKey{
 		pos: tf.LineStart(site.StartLine) + token.Pos(site.StartColumn-1),
@@ -168,7 +242,7 @@ func (cg *CallGraphBuilder) resolveCallSite(pkg *packages.Package, relPath strin
 	}
 	call, ok := cg.indexFor(pkg)[key]
 	if !ok {
-		return ""
+		return nil
 	}
 	return cg.resolveCallExpr(pkg, call)
 }
@@ -195,36 +269,29 @@ func (cg *CallGraphBuilder) tokenFile(pkg *packages.Package, relPath string) *to
 	return nil
 }
 
-// resolveCallExpr resolves a *ast.CallExpr to a callee signature using go/types.
-func (cg *CallGraphBuilder) resolveCallExpr(pkg *packages.Package, call *ast.CallExpr) string {
+// resolveCallExpr resolves a *ast.CallExpr to its callee *types.Func using
+// go/types. Type conversions, builtins and calls through function values are
+// not calls to a function and resolve to nil.
+func (cg *CallGraphBuilder) resolveCallExpr(pkg *packages.Package, call *ast.CallExpr) *types.Func {
 	info := pkg.TypesInfo
 
 	switch fn := call.Fun.(type) {
 	case *ast.Ident:
-		if obj := info.ObjectOf(fn); obj != nil {
-			if f, ok := obj.(*types.Func); ok {
-				return calleeSignatureOf(f)
-			}
-			// Type conversion — normalize as constructor.
-			if tn, ok := obj.(*types.TypeName); ok {
-				return calleeSignatureOf(tn) + ".__new__"
-			}
+		if f, ok := info.ObjectOf(fn).(*types.Func); ok {
+			return f
 		}
 	case *ast.SelectorExpr:
-		sel, ok := info.Selections[fn]
-		if ok {
+		if sel, ok := info.Selections[fn]; ok {
 			if f, ok := sel.Obj().(*types.Func); ok {
-				return calleeSignatureOf(f)
+				return f
 			}
 		}
 		// Package-level function via qualified identifier.
-		if obj := info.ObjectOf(fn.Sel); obj != nil {
-			if f, ok := obj.(*types.Func); ok {
-				return calleeSignatureOf(f)
-			}
+		if f, ok := info.ObjectOf(fn.Sel).(*types.Func); ok {
+			return f
 		}
 	}
-	return ""
+	return nil
 }
 
 // calleeSignatureOf is the call-site mirror of signatureOf — same canonicalization.

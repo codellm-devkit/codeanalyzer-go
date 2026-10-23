@@ -82,6 +82,9 @@ type GoCallsite struct {
 	ArgumentTypes   []string `json:"argument_types"`
 	ReturnType      string   `json:"return_type,omitempty"`
 	CalleeSignature *string  `json:"callee_signature"` // null until resolved
+	// CalleeImportPath is the callee's package import path, set only when the
+	// resolved callee is an external (library) function; see GoApplication.Externals.
+	CalleeImportPath string `json:"callee_import_path,omitempty"`
 	IsConstructorCall bool   `json:"is_constructor_call"`
 	IsGoroutine     bool     `json:"is_goroutine"` // true when preceded by `go` keyword
 	IsDeferred      bool     `json:"is_deferred,omitempty"` // true when preceded by `defer` keyword
@@ -192,6 +195,19 @@ type GoApplication struct {
 	SymbolTable map[string]GoFile `json:"symbol_table"` // file_path → GoFile
 	CallGraph   []GoCallEdge      `json:"call_graph"`   // identity-only edges
 	Entrypoints map[string][]GoEntrypoint `json:"entrypoints"` // optional, default {}
+	// Externals holds the library (out-of-project) functions the resolver saw
+	// called, keyed by the full callee signature ("<importpath>.[Type.]Name").
+	Externals map[string]GoExternalCallee `json:"externals,omitempty"`
+}
+
+// GoExternalCallee describes a library function or method called from the
+// project. Params exclude the receiver; unnamed parameters are named "_<i>".
+type GoExternalCallee struct {
+	ImportPath string        `json:"import_path"`
+	Sig        string        `json:"signature"` // callee signature without the "<importpath>." prefix
+	Name       string        `json:"name"`
+	Params     []GoParameter `json:"parameters"`
+	ReturnType string        `json:"return_type,omitempty"`
 }
 
 // GoEntrypoint marks a callable as a framework entry point.

@@ -134,10 +134,15 @@ func TestCallGraph_IndexMatchesWalk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("symbol table build failed: %v", err)
 	}
-	edges := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs()).Build(st)
+	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
+	edges := cg.Build(st)
+	externals := cg.Externals()
 
 	got := make([]string, 0, len(edges))
 	for _, e := range edges {
+		if _, ext := externals[e.Target]; ext {
+			continue // the golden set locks in-project edges; library edges are tested apart
+		}
 		got = append(got, e.Source+" -> "+e.Target)
 	}
 	sort.Strings(got)

@@ -16,6 +16,10 @@ package v2emit
 //   - the L1 ⊆ L2 superset holds: the tree is unchanged except the callee fill.
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/codellm-devkit/codeanalyzer-go/internal/schema"
@@ -36,7 +40,7 @@ func buildMultipackageL2(t *testing.T) *v2.Analysis {
 	}
 	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 	edges := cg.Build(st) // mutates st in place: backfills callee_signature
-	app := &schema.GoApplication{SymbolTable: st, CallGraph: edges}
+	app := &schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}
 	return Emit(app, "multipackage", dir, 2, "gate-test")
 }
 
@@ -80,6 +84,10 @@ func TestGateL2_MaxLevelAndEdgesPresent(t *testing.T) {
 func TestGateL2_NoDanglingEndpoints(t *testing.T) {
 	out := buildMultipackageL2(t)
 	ids := allCallableIDs(out)
+	// A library callee is a real node too: its id is a key of external_symbols.
+	for id := range out.Application.ExternalSymbols {
+		ids[id] = true
+	}
 
 	for i, e := range out.Application.CallGraph {
 		if !ids[e.Src] {
@@ -159,8 +167,8 @@ func TestGateL2_CalleeBackfilled(t *testing.T) {
 		if node.Callee == nil {
 			continue
 		}
-		if !ids[*node.Callee] {
-			t.Errorf("body[%s].callee = %q is not an in-tree callable id", local, *node.Callee)
+		if _, ext := out.Application.ExternalSymbols[*node.Callee]; !ids[*node.Callee] && !ext {
+			t.Errorf("body[%s].callee = %q is neither an in-tree callable nor an external symbol", local, *node.Callee)
 		}
 		sawBackfilled = true
 	}
@@ -240,4 +248,146 @@ func assertCallablesEqualModuloCallee(t *testing.T, where string, a, b map[strin
 		}
 		assertCallablesEqualModuloCallee(t, where+" "+sig, c1.Callables, c2.Callables)
 	}
+}
+
+func anyCallNodeHasCallee(out *v2.Analysis, id string) bool {
+	found := false
+	var walk func(c v2.Callable)
+	walk = func(c v2.Callable) {
+		for _, n := range c.Body {
+			if n.Callee != nil && *n.Callee == id {
+				found = true
+			}
+		}
+		for _, inner := range c.Callables {
+			walk(inner)
+		}
+	}
+	for _, mod := range out.Application.SymbolTable {
+		for _, fn := range mod.Functions {
+			walk(fn)
+		}
+		for _, ty := range mod.Types {
+			for _, m := range ty.Callables {
+				walk(m)
+			}
+		}
+	}
+	return found
+}
+
+func anyEdgeTo(edges []v2.Edge, dst string) bool {
+	for _, e := range edges {
+		if e.Dst == dst {
+			return true
+		}
+	}
+	return false
+}
+
+// TestGateL2_ExternalCalleeBackfilled locks that a call into a library keeps its
+// edge: multipackage/main.go calls fmt.Println, so external_symbols carries it,
+// the call node's callee is its @external id, and a call_graph edge targets it.
+func TestGateL2_ExternalCalleeBackfilled(t *testing.T) {
+	out := buildMultipackageL2(t)
+	ext := v2.ExternalID(out.Application.ID, "fmt", "Println")
+
+	sym, ok := out.Application.ExternalSymbols[ext]
+	if !ok {
+		t.Fatalf("external_symbols missing %s", ext)
+	}
+	want := v2.ExternalSymbol{ID: ext, Kind: "external", Name: "Println", Module: "fmt", Signature: "Println"}
+	if sym.ID != want.ID || sym.Kind != want.Kind || sym.Name != want.Name ||
+		sym.Module != want.Module || sym.Signature != want.Signature {
+		t.Errorf("external symbol = %+v, want identity fields %+v", sym, want)
+	}
+	if len(sym.Parameters) != 1 || sym.Parameters[0].Name != "a" || !sym.Parameters[0].IsVariadic {
+		t.Errorf("Println parameters = %+v, want one variadic param named a", sym.Parameters)
+	}
+	if !anyCallNodeHasCallee(out, ext) {
+		t.Errorf("no call node has callee %s", ext)
+	}
+	if !anyEdgeTo(out.Application.CallGraph, ext) {
+		t.Errorf("no call_graph edge targets %s", ext)
+	}
+}
+
+// TestGateL2_ExternalMethodSignature locks the method form of the sig segment:
+// strings.Builder.WriteString style -- Type.Method, receiver not a parameter.
+func TestGateL2_ExternalMethodSignature(t *testing.T) {
+	out := emitTemp(t, `package p
+
+import "strings"
+
+func F() string {
+	var sb strings.Builder
+	sb.WriteString("x")
+	return sb.String()
+}
+`)
+	ext := v2.ExternalID(out.Application.ID, "strings", "Builder.WriteString")
+	sym, ok := out.Application.ExternalSymbols[ext]
+	if !ok {
+		t.Fatalf("external_symbols missing %s; have %v", ext, out.Application.ExternalSymbols)
+	}
+	if sym.Name != "WriteString" || sym.Signature != "Builder.WriteString" || sym.Module != "strings" {
+		t.Errorf("unexpected symbol %+v", sym)
+	}
+	if len(sym.Parameters) != 1 || sym.Parameters[0].Name != "s" {
+		t.Errorf("params = %+v, want exactly [s] (receiver excluded)", sym.Parameters)
+	}
+}
+
+// TestGateL2_ConversionIsNotACall locks that a type conversion is not minted as
+// a call: its call node keeps callee null and no "__new__" appears anywhere.
+func TestGateL2_ConversionIsNotACall(t *testing.T) {
+	out := emitTemp(t, `package p
+
+func F(b []byte) string {
+	return string(b)
+}
+`)
+	fn := out.Application.SymbolTable["p.go"].Functions
+	if len(fn) != 1 {
+		t.Fatalf("want 1 function, got %d", len(fn))
+	}
+	for _, c := range fn {
+		if len(c.Body) != 1 {
+			t.Fatalf("want 1 call node (the conversion), got %d", len(c.Body))
+		}
+		for _, n := range c.Body {
+			if n.Callee != nil {
+				t.Errorf("conversion callee = %q, want null", *n.Callee)
+			}
+		}
+	}
+	raw, _ := json.Marshal(out)
+	if strings.Contains(string(raw), "__new__") {
+		t.Error("output contains __new__")
+	}
+	if len(out.Application.ExternalSymbols) != 0 {
+		t.Errorf("conversion minted external symbols: %v", out.Application.ExternalSymbols)
+	}
+}
+
+// emitTemp builds a one-file module (p.go) in a temp dir through the real
+// builder + resolver and emits v2 at L2.
+func emitTemp(t *testing.T, src string) *v2.Analysis {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/p\n\ngo 1.21\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "p.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := syntactic_analysis.NewSymbolTableBuilder(dir)
+	st, err := b.Build(nil, true)
+	if err != nil {
+		t.Fatalf("symbol table build failed: %v", err)
+	}
+	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
+	edges := cg.Build(st)
+	app := &schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}
+	return Emit(app, "p", dir, 2, "gate-test")
 }

@@ -69,6 +69,25 @@ type Application struct {
 	// CallGraph holds the L2 cross-function edges (callable → callable). Empty
 	// at L1.
 	CallGraph []Edge `json:"call_graph"`
+	// ExternalSymbols holds the out-of-project (library) callables the call graph
+	// reaches, keyed by their `can://<app>/@external/<import-path>/<sig>` id.
+	// Absent when the analysis saw no library call.
+	ExternalSymbols map[string]ExternalSymbol `json:"external_symbols,omitempty"`
+}
+
+// ExternalSymbol is a library callable that call-graph edges and call nodes
+// target but whose body is not in the project. It is a leaf node: identity and
+// signature only.
+type ExternalSymbol struct {
+	ID   string `json:"id"`
+	Kind string `json:"kind"` // always "external"
+	Name string `json:"name"`
+	// Module is the package import path the symbol lives in.
+	Module string `json:"module"`
+	// Signature is the id's last segment: [Type.]Name, no import-path prefix.
+	Signature  string      `json:"signature"`
+	Parameters []Parameter `json:"parameters"`
+	ReturnType string      `json:"return_type,omitempty"`
 }
 
 // ─── module (per-file compilation unit) ───────────────────────────────────────
