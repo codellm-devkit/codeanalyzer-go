@@ -86,8 +86,16 @@ type ExternalSymbol struct {
 	Module string `json:"module"`
 	// Signature is the id's last segment: [Type.]Name, no import-path prefix.
 	Signature  string      `json:"signature"`
-	Parameters []Parameter `json:"parameters"`
-	ReturnType string      `json:"return_type,omitempty"`
+	Parameters []ExternalParameter `json:"parameters"`
+	ReturnType string              `json:"return_type,omitempty"`
+}
+
+// ExternalParameter is a library callee's formal parameter. It has no span: the
+// declaration is not in the project, so there is no location to slice.
+type ExternalParameter struct {
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	IsVariadic bool   `json:"is_variadic,omitempty"`
 }
 
 // ─── module (per-file compilation unit) ───────────────────────────────────────

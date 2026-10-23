@@ -62,7 +62,9 @@ committed spec is the full transcript: `docs/design/specs/v2-l1-emission.md`.
   `call_graph` edge `dst` are the callee's `@external` id. Builtins, type conversions
   (no longer minted as `<Type>.__new__`) and calls through function values stay `null`.
 - **Id** = `can://<app>/@external/<import-path>/<sig>` where `<sig>` is the callee signature
-  minus the `<import-path>.` prefix (`Println`, `Builder.WriteString`). `@external` is
+  minus the `<import-path>.` prefix (`Println`, `Builder.WriteString`); it may also name a
+  library *interface* method (`@external/io/Writer.Write`). Methods on generic library types
+  record the declared (origin) signature, not the instance. `@external` is
   language-neutral (not `go/`), so a polyglot app shares one external namespace.
 - **Home:** `application.external_symbols{<id>: {id, kind:"external", name, module,
   signature, parameters, return_type}}`, omitempty; parameters come from the callee's

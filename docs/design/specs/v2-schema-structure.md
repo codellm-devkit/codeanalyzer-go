@@ -52,9 +52,10 @@ the JSON tags from that file.
          ├─ kind                     # "external"
          ├─ name                     # e.g. "Println"
          ├─ module                   # import path, e.g. "fmt"
-         ├─ signature                # [Type.]Name, e.g. "Builder.WriteString"
-         ├─ parameters[]             # { name, type, span, is_variadic? }; receiver excluded;
-         │                           #   unnamed params are "_<i>"; span is zero (not in-project)
+         ├─ signature                # [Type.]Name, e.g. "Builder.WriteString"; may name a
+         │                           #   library interface method (e.g. "Writer.Write")
+         ├─ parameters[]             # { name, type, is_variadic? } (no span: not in-project);
+         │                           #   receiver excluded; unnamed params are "_<i>"
          └─ return_type              # optional
 ```
 

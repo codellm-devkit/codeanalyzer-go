@@ -244,10 +244,9 @@ func emitExternalSymbols(appID string, externals map[string]schema.GoExternalCal
 	out := make(map[string]v2.ExternalSymbol, len(externals))
 	for _, ext := range externals {
 		id := v2.ExternalID(appID, ext.ImportPath, ext.Sig)
-		params := make([]v2.Parameter, 0, len(ext.Params))
+		params := make([]v2.ExternalParameter, 0, len(ext.Params))
 		for _, p := range ext.Params {
-			// Library parameters have no source span in this project; Span stays zero.
-			params = append(params, v2.Parameter{Name: p.Name, Type: p.Type, IsVariadic: p.IsVariadic})
+			params = append(params, v2.ExternalParameter{Name: p.Name, Type: p.Type, IsVariadic: p.IsVariadic})
 		}
 		out[id] = v2.ExternalSymbol{
 			ID: id, Kind: "external", Name: ext.Name, Module: ext.ImportPath,

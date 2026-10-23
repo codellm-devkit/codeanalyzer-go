@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -390,4 +391,70 @@ func emitTemp(t *testing.T, src string) *v2.Analysis {
 	edges := cg.Build(st)
 	app := &schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}
 	return Emit(app, "p", dir, 2, "gate-test")
+}
+
+// TestGateL2_ExternalParamsHaveNoSpan locks that external parameters serialize
+// without a span key (no fabricated location).
+func TestGateL2_ExternalParamsHaveNoSpan(t *testing.T) {
+	out := buildMultipackageL2(t)
+	ext := v2.ExternalID(out.Application.ID, "fmt", "Println")
+	raw, err := json.Marshal(out.Application.ExternalSymbols[ext])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "span") {
+		t.Errorf("external symbol JSON carries a span: %s", raw)
+	}
+}
+
+// TestGateL2_GenericLibraryMethodUsesDeclaredSignature locks that methods on two
+// instantiations of one generic library type (atomic.Pointer[A], [B], called in
+// two files) collapse to ONE external whose params are the declared form (*T),
+// independent of which instance the resolver visits first.
+func TestGateL2_GenericLibraryMethodUsesDeclaredSignature(t *testing.T) {
+	_, thisFile, _, _ := runtime.Caller(0)
+	dir := filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "testdata", "dataflow")
+	for i := 0; i < 6; i++ { // fresh builds: map order varies
+		b := syntactic_analysis.NewSymbolTableBuilder(dir)
+		st, err := b.Build(nil, true)
+		if err != nil {
+			t.Fatalf("build: %v", err)
+		}
+		cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
+		edges := cg.Build(st)
+		out := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}, "dataflow", dir, 2, "gate-test")
+		ext := v2.ExternalID(out.Application.ID, "sync/atomic", "Pointer.Store")
+		sym, ok := out.Application.ExternalSymbols[ext]
+		if !ok {
+			t.Fatalf("missing %s; have %v", ext, out.Application.ExternalSymbols)
+		}
+		if len(sym.Parameters) != 1 || sym.Parameters[0].Type != "*T" {
+			t.Fatalf("Pointer.Store params = %+v, want one param of type *T", sym.Parameters)
+		}
+	}
+}
+
+// TestGateL2_IncrementalModeKeepsProjectCalleesInternal locks that with
+// TargetFiles (sibling project packages load only as deps) calls into the project
+// are never minted as @external symbols named after the project's own module.
+func TestGateL2_IncrementalModeKeepsProjectCalleesInternal(t *testing.T) {
+	dir := multipackageDir(t)
+	b := syntactic_analysis.NewSymbolTableBuilder(dir)
+	st, err := b.Build([]string{filepath.Join(dir, "main.go")}, true)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
+	edges := cg.Build(st)
+	out := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}, "multipackage", dir, 2, "gate-test")
+
+	const projectModule = "example.com/multipackage"
+	for id, sym := range out.Application.ExternalSymbols {
+		if sym.Module == projectModule || strings.HasPrefix(sym.Module, projectModule+"/") {
+			t.Errorf("project callee minted as external: %s (module %s)", id, sym.Module)
+		}
+	}
+	if _, ok := out.Application.ExternalSymbols[v2.ExternalID(out.Application.ID, "fmt", "Println")]; !ok {
+		t.Error("fmt.Println should still be external in incremental mode")
+	}
 }

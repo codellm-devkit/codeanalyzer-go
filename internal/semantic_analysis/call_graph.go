@@ -15,6 +15,8 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
@@ -163,14 +165,47 @@ func (cg *CallGraphBuilder) resolveCallable(
 	return callable, edges
 }
 
-// isLibrary reports whether fn lives outside the project: it has a package and
-// that package is not one of the loaded project packages.
+// isLibrary reports whether fn lives outside the project: its declaring file is
+// outside projectDir. This does not depend on which packages were loaded as
+// roots, so it also holds in incremental (-t) mode, where sibling project
+// packages load only as dependencies. When the position is unavailable it falls
+// back to comparing the import path against the project's module path.
 func (cg *CallGraphBuilder) isLibrary(fn *types.Func) bool {
 	if fn.Pkg() == nil {
 		return false
 	}
+	if tf := cg.fset.File(fn.Pos()); tf != nil {
+		return !utils.IsWithin(cg.absProjectDir(), absPath(tf.Name()))
+	}
+	if mod := cg.modulePath(); mod != "" {
+		p := fn.Pkg().Path()
+		return p != mod && !strings.HasPrefix(p, mod+"/")
+	}
 	_, inProject := cg.pkgs[fn.Pkg().Path()]
 	return !inProject
+}
+
+func absPath(p string) string {
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
+}
+
+func (cg *CallGraphBuilder) absProjectDir() string { return absPath(cg.projectDir) }
+
+// modulePath reads the project's module path from go.mod ("" when unavailable).
+func (cg *CallGraphBuilder) modulePath() string {
+	data, err := os.ReadFile(filepath.Join(cg.projectDir, "go.mod"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "module "); ok {
+			return strings.Trim(strings.TrimSpace(rest), "\"")
+		}
+	}
+	return ""
 }
 
 // recordExternal registers a library callee, keyed by its full signature.
@@ -184,6 +219,10 @@ func (cg *CallGraphBuilder) recordExternal(fn *types.Func, fullSig string) {
 		cg.externals = map[string]schema.GoExternalCallee{}
 	}
 	importPath := fn.Pkg().Path()
+	// Record the declared signature, not the instance the call site selected: a
+	// method on a generic library type (atomic.Pointer[A].Store) must yield one
+	// order-independent entry whose params mention the type parameter (*T).
+	fn = fn.Origin()
 	sig := fn.Type().(*types.Signature)
 
 	var params []schema.GoParameter

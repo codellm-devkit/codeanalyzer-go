@@ -498,7 +498,9 @@ and then drops them: no `call_graph` edge, and the emitter leaves the call node'
 - **`application.external_symbols{}`** (the Python/Java name) — one entry per distinct external
   callee: `id` (`can://<app>/@external/<import-path>/<sig>`, §6), `kind:"external"`, `name`,
   `module` (import path), `signature`. Parameters/return type are added here too (cheap from
-  `go/types`); the L4 `body{}` vertices come in Phase 2.
+  `go/types`; span-less `{name, type, is_variadic?}`); the L4 `body{}` vertices come in Phase 2.
+  An external id may name a library *interface* method (e.g. `@external/io/Writer.Write`), and a
+  method on a generic library type records the declared (origin) signature.
 - **`call_graph`** keeps edges to external targets (`dst` = external id, `prov:["go/types"]`).
 - **Body `callee`** is backfilled to the external id (Python precedent: a callee is "a symbol-table
   callable or an `@external` home"). Still a monotone `null → id` refinement.
