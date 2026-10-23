@@ -101,8 +101,8 @@ func TestGateL2_NamedEdgePresent(t *testing.T) {
 	out := buildMultipackageL2(t)
 
 	const (
-		src = "can://go/multipackage/worker/worker.go/example.com/multipackage/worker.Worker/example.com/multipackage/worker.Worker.Run"
-		dst = "can://go/multipackage/worker/worker.go/example.com/multipackage/worker.Worker/example.com/multipackage/worker.Worker.execute"
+		src = "can://multipackage/go/worker/worker.go/example.com/multipackage/worker.Worker/example.com/multipackage/worker.Worker.Run"
+		dst = "can://multipackage/go/worker/worker.go/example.com/multipackage/worker.Worker/example.com/multipackage/worker.Worker.execute"
 	)
 	found := false
 	for _, e := range out.Application.CallGraph {
@@ -124,8 +124,8 @@ func TestGateL2_CrossPackageEdge(t *testing.T) {
 	out := buildMultipackageL2(t)
 
 	const (
-		src = "can://go/multipackage/main.go/example.com/multipackage.main"
-		dst = "can://go/multipackage/server/server.go/example.com/multipackage/server.New"
+		src = "can://multipackage/go/main.go/example.com/multipackage.main"
+		dst = "can://multipackage/go/server/server.go/example.com/multipackage/server.New"
 	)
 	found := false
 	for _, e := range out.Application.CallGraph {

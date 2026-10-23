@@ -278,8 +278,8 @@ func TestRootCmd_EmitsCanonicalV2(t *testing.T) {
 	if v.Language != "go" {
 		t.Errorf("language = %q, want go", v.Language)
 	}
-	if v.Application.ID != "can://go/greeter" {
-		t.Errorf("application.id = %q, want can://go/greeter", v.Application.ID)
+	if v.Application.ID != "can://greeter" {
+		t.Errorf("application.id = %q, want can://greeter", v.Application.ID)
 	}
 }
 

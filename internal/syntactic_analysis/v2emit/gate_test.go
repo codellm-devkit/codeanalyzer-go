@@ -85,7 +85,7 @@ func TestGateL1_ModuleSet(t *testing.T) {
 		if mod.Kind != "module" {
 			t.Errorf("%s: kind = %q, want module", rel, mod.Kind)
 		}
-		wantID := "can://go/multipackage/" + rel
+		wantID := "can://multipackage/go/" + rel
 		if mod.ID != wantID {
 			t.Errorf("%s: id = %q, want %q", rel, mod.ID, wantID)
 		}
@@ -299,8 +299,8 @@ func TestGateL1_Envelope(t *testing.T) {
 	if out.MaxLevel != 1 {
 		t.Errorf("max_level = %d, want 1", out.MaxLevel)
 	}
-	if out.Application.ID != "can://go/multipackage" {
-		t.Errorf("application.id = %q, want can://go/multipackage", out.Application.ID)
+	if out.Application.ID != "can://multipackage" {
+		t.Errorf("application.id = %q, want can://multipackage", out.Application.ID)
 	}
 	// L1: no call_graph edges yet.
 	if len(out.Application.CallGraph) != 0 {

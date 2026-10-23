@@ -48,8 +48,8 @@ func TestEmit_Envelope(t *testing.T) {
 	if out.MaxLevel != 1 {
 		t.Errorf("max_level = %d, want 1", out.MaxLevel)
 	}
-	if out.Application.ID != "can://go/greeter" {
-		t.Errorf("application.id = %q, want can://go/greeter", out.Application.ID)
+	if out.Application.ID != "can://greeter" {
+		t.Errorf("application.id = %q, want can://greeter", out.Application.ID)
 	}
 	if out.Application.Kind != "application" {
 		t.Errorf("application.kind = %q, want application", out.Application.Kind)
@@ -70,8 +70,8 @@ func TestEmit_ModuleSourceAndIDs(t *testing.T) {
 	if mod.Kind != "module" {
 		t.Errorf("module.kind = %q, want module", mod.Kind)
 	}
-	if mod.ID != "can://go/greeter/main.go" {
-		t.Errorf("module.id = %q, want can://go/greeter/main.go", mod.ID)
+	if mod.ID != "can://greeter/go/main.go" {
+		t.Errorf("module.id = %q, want can://greeter/go/main.go", mod.ID)
 	}
 	if !strings.HasPrefix(mod.Source, "package main") {
 		t.Errorf("module.source should hold the file text; got prefix %q", head(mod.Source, 20))

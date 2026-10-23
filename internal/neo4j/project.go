@@ -22,7 +22,7 @@ import (
 // resolves to a declared node or an id-keyed :GoExternal ghost — nothing dangles.
 
 // Project is the pure (tree) → GraphRows function. appID is analysis.Application.ID
-// (the can://<lang>/<app> root); it is read from the envelope, never recomposed.
+// (the can://<app> root); it is read from the envelope, never recomposed.
 func Project(a *v2.Analysis) GraphRows {
 	p := &projector{
 		b:        NewRowBuilder(),
@@ -217,7 +217,7 @@ func (p *projector) projectImports(modRef NodeRef, m v2.Module) {
 			continue
 		}
 		// External/stdlib → :GoExternal ghost keyed by import path.
-		ghostID := appID + "/@external/" + imp.Path
+		ghostID := v2.ExternalID(appID, imp.Path, "")
 		ghostRef := p.b.Node(
 			[]string{SymbolLabel, LabelExternal, MarkerLabel},
 			"id", ghostID,

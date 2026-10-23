@@ -14,9 +14,9 @@ import (
 
 func TestPartitionNodes_SharedHaveNoModule(t *testing.T) {
 	b := NewRowBuilder()
-	b.Node([]string{LabelModule, MarkerLabel}, "id", "can://go/app/x.go", Props{"content_hash": "h1"}, "x.go")
-	b.Node([]string{LabelCallable, SymbolLabel, MarkerLabel}, "id", "can://go/app/x.go/f", nil, "x.go")
-	b.Node([]string{SymbolLabel, LabelExternal, MarkerLabel}, "id", "can://go/app/@external/fmt", nil, "") // shared
+	b.Node([]string{LabelModule, MarkerLabel}, "id", "can://app/go/x.go", Props{"content_hash": "h1"}, "x.go")
+	b.Node([]string{LabelCallable, SymbolLabel, MarkerLabel}, "id", "can://app/go/x.go/f", nil, "x.go")
+	b.Node([]string{SymbolLabel, LabelExternal, MarkerLabel}, "id", "can://app/@external/fmt", nil, "") // shared
 	rows := b.Finish()
 
 	byModule, shared := partitionNodes(rows.Nodes)
@@ -30,8 +30,8 @@ func TestPartitionNodes_SharedHaveNoModule(t *testing.T) {
 
 func TestModuleHash_ReadsModuleNode(t *testing.T) {
 	nodes := []NodeRow{
-		{Labels: []string{LabelCallable}, Value: "can://go/app/x.go/f"},
-		{Labels: []string{LabelModule}, Value: "can://go/app/x.go", Props: Props{"content_hash": "abc123"}},
+		{Labels: []string{LabelCallable}, Value: "can://app/go/x.go/f"},
+		{Labels: []string{LabelModule}, Value: "can://app/go/x.go", Props: Props{"content_hash": "abc123"}},
 	}
 	if got := moduleHash(nodes); got != "abc123" {
 		t.Errorf("moduleHash = %q, want abc123", got)
@@ -44,15 +44,15 @@ func TestModuleHash_ReadsModuleNode(t *testing.T) {
 func TestDestructiveQueries_AreScopedAndAnchored(t *testing.T) {
 	// Both destructive queries MUST filter on :GoCanNode and bind the prefix as a
 	// parameter — never an unqualified DETACH DELETE.
-	eq, ep := eagerPurgeQuery("can://go/app")
+	eq, ep := eagerPurgeQuery("can://app")
 	assertScoped(t, "eagerPurge", eq, ep)
-	if ep["p"] != "can://go/app/" || ep["root"] != "can://go/app" {
+	if ep["p"] != "can://app/" || ep["root"] != "can://app" {
 		t.Errorf("eagerPurge params not the app prefix+root: %v", ep)
 	}
 
-	pq, pp := purgeModuleQuery("can://go/app/x.go")
+	pq, pp := purgeModuleQuery("can://app/go/x.go")
 	assertScoped(t, "purgeModule", pq, pp)
-	if pp["p"] != "can://go/app/x.go/" || pp["m"] != "can://go/app/x.go" {
+	if pp["p"] != "can://app/go/x.go/" || pp["m"] != "can://app/go/x.go" {
 		t.Errorf("purgeModule params not the module prefix+id: %v", pp)
 	}
 }

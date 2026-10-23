@@ -45,10 +45,10 @@ func TestCypher_WipeIsPrefixScopedAndAnchored(t *testing.T) {
 	script := renderFixture(t)
 	// The wipe must match on the :GoCanNode marker and the can://<app>/ prefix,
 	// never a bare label like (:GoModule) or the whole store.
-	if !strings.Contains(script, "MATCH (n:GoCanNode) WHERE n.id STARTS WITH 'can://go/multipackage/'") {
+	if !strings.Contains(script, "MATCH (n:GoCanNode) WHERE n.id STARTS WITH 'can://multipackage/'") {
 		t.Errorf("wipe not anchored on :GoCanNode + descendant prefix:\n%s", wipeBlock(script))
 	}
-	if !strings.Contains(script, "MATCH (n:GoCanNode) WHERE n.id = 'can://go/multipackage'") {
+	if !strings.Contains(script, "MATCH (n:GoCanNode) WHERE n.id = 'can://multipackage'") {
 		t.Errorf("wipe does not match the root id separately:\n%s", wipeBlock(script))
 	}
 	// A destructive statement must never be unscoped.
@@ -63,8 +63,8 @@ func TestCypher_NoRootEmitsNoWipe(t *testing.T) {
 	// A hand-built bag with no bare application id must emit NO destructive
 	// statement — the applicationPrefix refusal in action.
 	b := NewRowBuilder()
-	b.Node([]string{LabelCallable, SymbolLabel}, "id", "can://go/app/x.go/f", nil, "x.go")
-	script := RenderCypher(b.Finish(), "can://go/app/x.go/f") // not a bare app id
+	b.Node([]string{LabelCallable, SymbolLabel}, "id", "can://app/go/x.go/f", nil, "x.go")
+	script := RenderCypher(b.Finish(), "can://app/go/x.go/f") // not a bare app id
 	if strings.Contains(script, "DETACH DELETE") {
 		t.Errorf("a bag with no bare application root must emit no wipe:\n%s", script)
 	}

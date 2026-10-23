@@ -175,7 +175,7 @@ func edgeSortKey(e EdgeRow) string {
 // ─── scoping helpers ──────────────────────────────────────────────────────────
 
 // applicationPrefix returns the bare application id used to scope destructive
-// statements. It REFUSES anything that is not a bare can://<lang>/<app> id (an
+// statements. It REFUSES anything that is not a bare can://<app> id (an
 // empty or deeper id would silently widen or narrow the blast radius): it
 // returns ("", false) so a hand-built GraphRows with no proper application root
 // gets NO destructive statement. The app segment is the outermost, so one
@@ -186,9 +186,8 @@ func applicationPrefix(appID string) (string, bool) {
 		return "", false
 	}
 	rest := strings.TrimPrefix(appID, scheme)
-	// A bare app id is exactly <lang>/<app> — two non-empty segments, no deeper.
-	parts := strings.Split(rest, "/")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+	// A bare app id is exactly <app> — one non-empty segment, no deeper.
+	if rest == "" || strings.Contains(rest, "/") {
 		return "", false
 	}
 	return appID, true
@@ -196,8 +195,8 @@ func applicationPrefix(appID string) (string, bool) {
 
 // descendantPrefix appends "/" to a can:// id so a STARTS WITH predicate matches
 // strict descendants only — "foo.go" is not treated as a prefix of "foo.go2",
-// and the app root id itself (can://go/app) is outside its own descendant
-// prefix (can://go/app/), so a wipe must match the root separately.
+// and the app root id itself (can://app) is outside its own descendant
+// prefix (can://app/), so a wipe must match the root separately.
 func descendantPrefix(canID string) string {
 	return canID + "/"
 }

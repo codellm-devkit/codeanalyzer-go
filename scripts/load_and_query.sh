@@ -94,7 +94,7 @@ queries() {
   q "relationship counts by type" \
     "MATCH ()-[r]->() RETURN type(r) AS rel, count(*) AS n ORDER BY n DESC"
   q "everything scoped to the cobra app (prefix seek)" \
-    "MATCH (n:GoCanNode) WHERE n.id STARTS WITH 'can://go/cobra' RETURN count(n) AS cobra_nodes"
+    "MATCH (n:GoCanNode) WHERE n.id STARTS WITH 'can://cobra/' RETURN count(n) AS cobra_nodes"
   q "sample call graph edges" \
     "MATCH (a:GoCallable)-[:GO_CALLS]->(b) RETURN a.signature AS caller, b.signature AS callee LIMIT 15"
   q "types and how many methods each has" \

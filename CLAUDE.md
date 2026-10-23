@@ -12,9 +12,11 @@ v2 vocabulary (parity clause: add at the leaves, never rename shared names). The
 committed spec is the full transcript: `docs/design/specs/v2-l1-emission.md`.
 
 ### Identity & positioning (Group A — reused verbatim by L3/L4)
-- **`application.id`** = `can://go/<app>`, where `<app>` is the **`--app-name`** value,
-  defaulting to the input directory's base name (per the CLI contract; the SDK's Neo4j
-  backend must use the same anchor). L3/L4 build ids on this unchanged.
+- **`application.id`** = `can://<app>` (app outermost, so a polyglot app shares one prefix),
+  where `<app>` is the **`--app-name`** value, defaulting to the input directory's base name
+  (per the CLI contract; the SDK's Neo4j backend must use the same anchor). Module ids are
+  `can://<app>/go/<file>`; externals are language-neutral `can://<app>/@external/<import-path>/<sig>`.
+  L3/L4 build ids on this unchanged.
 - **Callable signature** = existing `signatureOf()` output as the last `can://` path
   segment; receiver folded in for methods. One canonicalizer, unchanged from v1.
 - **`span.bytes`** = **UTF-8 byte offsets** into `module.source` (Go strings are

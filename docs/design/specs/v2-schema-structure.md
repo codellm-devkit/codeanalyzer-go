@@ -16,7 +16,7 @@ the JSON tags from that file.
 │  ├─ name                            # "codeanalyzer-go"
 │  └─ version
 └─ application
-   ├─ id                              # "can://go/<app>"
+   ├─ id                              # "can://<app>"
    ├─ kind                            # "application"
    ├─ symbol_table                    # { "<rel/path.go>": module }
    │  └─ <module>
@@ -99,10 +99,11 @@ span
 ## `id` shape
 
 ```
-application   can://go/<app>
-module        can://go/<app>/<rel/path.go>
-type          can://go/<app>/<rel/path.go>/<type-signature>
-callable      can://go/<app>/<rel/path.go>/<type-signature>/<callable-signature>
+application   can://<app>
+module        can://<app>/go/<rel/path.go>
+type          can://<app>/go/<rel/path.go>/<type-signature>
+callable      can://<app>/go/<rel/path.go>/<type-signature>/<callable-signature>
               (functions omit the <type-signature> segment)
+external      can://<app>/@external/<import-path>/<sig>   (language-neutral)
 body call     keyed by "<line>:<col>" within the callable's body map
 ```

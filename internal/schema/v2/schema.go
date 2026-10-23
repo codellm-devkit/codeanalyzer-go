@@ -22,7 +22,7 @@ package v2
 // SchemaVersion is the canonical schema major this package targets.
 const SchemaVersion = "2.0.0"
 
-// Language is the analyzer's language tag in the manifest and `can://<lang>/…`.
+// Language is the analyzer's language tag in the manifest and `can://<app>/<lang>/…`.
 const Language = "go"
 
 // ─── Positioning ───────────────────────────────────────────────────────────
@@ -60,8 +60,8 @@ type AnalyzerTag struct {
 
 // Application is the root node of the containment tree.
 type Application struct {
-	// ID is `can://<lang>/<app>` — the app segment disambiguates apps in one
-	// language. <app> is the --app-name value (default: input dir base name).
+	// ID is `can://<app>` — the app segment is outermost, so a polyglot
+	// app shares one prefix across languages. <app> is the --app-name value (default: input dir base name).
 	ID   string `json:"id"`
 	Kind string `json:"kind"` // always "application"
 	// SymbolTable is the L1 named map keyed by relative file path.
