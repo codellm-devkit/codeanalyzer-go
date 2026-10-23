@@ -8,6 +8,18 @@ type Celsius float64
 // Alias is a type alias.
 type Alias = Celsius
 
+// Base is a plain struct.
+type Base struct{ N int }
+
+// MyErr is defined over a struct, so its kind is struct (underlying type).
+type MyErr Base
+
+// I1 is an interface.
+type I1 interface{ M() }
+
+// I2 is defined over an interface, so its kind is interface (underlying type).
+type I2 I1
+
 // S is a struct whose methods chain.
 type S struct{}
 

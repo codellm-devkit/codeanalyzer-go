@@ -372,19 +372,7 @@ func (b *SymbolTableBuilder) buildType(
 		EndLine:     end.Line,
 	}
 
-	switch {
-	case spec.Assign.IsValid():
-		gt.TypeKind = "alias"
-	default:
-		switch spec.Type.(type) {
-		case *ast.StructType:
-			gt.TypeKind = "struct"
-		case *ast.InterfaceType:
-			gt.TypeKind = "interface"
-		default:
-			gt.TypeKind = "defined"
-		}
-	}
+	gt.TypeKind = b.typeKindOf(pkg, spec)
 
 	switch t := spec.Type.(type) {
 	case *ast.StructType:
@@ -399,6 +387,37 @@ func (b *SymbolTableBuilder) buildType(
 	}
 
 	return gt
+}
+
+// typeKindOf classifies a type declaration: alias for `type X = Y`; otherwise
+// by the UNDERLYING type (so `type E S` over a struct is struct and `type J I`
+// over an interface is interface); defined for any other underlying type. It
+// falls back to the AST shape of the right-hand side when type info is missing.
+func (b *SymbolTableBuilder) typeKindOf(pkg *packages.Package, spec *ast.TypeSpec) string {
+	if spec.Assign.IsValid() {
+		return "alias"
+	}
+	if pkg.TypesInfo != nil {
+		if obj := pkg.TypesInfo.Defs[spec.Name]; obj != nil {
+			if named, ok := obj.Type().(*types.Named); ok {
+				switch named.Underlying().(type) {
+				case *types.Struct:
+					return "struct"
+				case *types.Interface:
+					return "interface"
+				default:
+					return "defined"
+				}
+			}
+		}
+	}
+	switch spec.Type.(type) {
+	case *ast.StructType:
+		return "struct"
+	case *ast.InterfaceType:
+		return "interface"
+	}
+	return "defined"
 }
 
 func (b *SymbolTableBuilder) buildStructFields(pkg *packages.Package, st *ast.StructType) []schema.GoField {

@@ -25,11 +25,13 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/codellm-devkit/codeanalyzer-go/internal/schema"
 	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
+	"github.com/codellm-devkit/codeanalyzer-go/internal/semantic_analysis"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/syntactic_analysis"
 )
 
@@ -390,7 +392,8 @@ func buildDataflowL1V2(t *testing.T) *v2.Analysis {
 
 func TestGateL1_TypeKindsAliasAndDefined(t *testing.T) {
 	mod := mustModule(t, buildDataflowL1V2(t), "l1/l1.go")
-	want := map[string]string{"Celsius": "defined", "Alias": "alias", "S": "struct"}
+	want := map[string]string{"Celsius": "defined", "Alias": "alias", "S": "struct",
+		"Base": "struct", "MyErr": "struct", "I1": "interface", "I2": "interface"}
 	for name, kind := range want {
 		ty, ok := mod.Types[name]
 		if !ok {
@@ -456,5 +459,78 @@ func TestGateL1_CoPositionedCallsBothKept(t *testing.T) {
 	// The bare key is the outermost call (s.A().B()), which spans further.
 	if c.Body[bare].Span.End[1] <= c.Body[second].Span.End[1] {
 		t.Errorf("bare key should hold the outermost (longer) call: %+v vs %+v", c.Body[bare].Span, c.Body[second].Span)
+	}
+}
+
+// buildDataflowL2V2 emits the L2 payload (resolver run) for the dataflow fixture.
+func buildDataflowL2V2(t *testing.T) *v2.Analysis {
+	t.Helper()
+	_, thisFile, _, _ := runtime.Caller(0)
+	dir, err := filepath.Abs(filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "testdata", "dataflow"))
+	if err != nil {
+		t.Fatalf("resolving fixture dir: %v", err)
+	}
+	b := syntactic_analysis.NewSymbolTableBuilder(dir)
+	st, err := b.Build(nil, true)
+	if err != nil {
+		t.Fatalf("symbol table build failed: %v", err)
+	}
+	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
+	edges := cg.Build(st)
+	app := &schema.GoApplication{SymbolTable: st, CallGraph: edges}
+	return Emit(app, "dataflow", dir, 2, "gate-test")
+}
+
+// TestGateL2_CoPositionedCallsResolveSeparately: in s.A().B() the outer call
+// (bare key) resolves to B and the inner s.A() (key /2) resolves to A; the call
+// graph has exactly the edges Chain->A and Chain->B.
+func TestGateL2_CoPositionedCallsResolveSeparately(t *testing.T) {
+	out := buildDataflowL2V2(t)
+	mod := mustModule(t, out, "l1/l1.go")
+	chain := functionByName(t, mod, "Chain")
+	s := mod.Types["S"]
+	var aID, bID string
+	for sig, m := range s.Callables {
+		switch {
+		case strings.HasSuffix(sig, ".A"):
+			aID = m.ID
+		case strings.HasSuffix(sig, ".B"):
+			bID = m.ID
+		}
+	}
+	if aID == "" || bID == "" {
+		t.Fatalf("methods A/B not found on S: %v", keys(s.Callables))
+	}
+	var bare, second string
+	for k := range chain.Body {
+		if strings.HasSuffix(k, "/2") {
+			second = k
+		} else {
+			bare = k
+		}
+	}
+	got := func(k string) string {
+		if c := chain.Body[k].Callee; c != nil {
+			return *c
+		}
+		return "<nil>"
+	}
+	if got(bare) != bID {
+		t.Errorf("outer call %s callee=%s, want B %s", bare, got(bare), bID)
+	}
+	if got(second) != aID {
+		t.Errorf("inner call %s callee=%s, want A %s", second, got(second), aID)
+	}
+	var dsts []string
+	for _, e := range out.Application.CallGraph {
+		if e.Src == chain.ID {
+			dsts = append(dsts, e.Dst)
+		}
+	}
+	sort.Strings(dsts)
+	want := []string{aID, bID}
+	sort.Strings(want)
+	if strings.Join(dsts, ",") != strings.Join(want, ",") {
+		t.Errorf("Chain edges = %v, want {A, B} = %v", dsts, want)
 	}
 }

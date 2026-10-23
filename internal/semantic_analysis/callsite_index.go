@@ -7,21 +7,20 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-// callSiteIndex maps a call expression's start position to the call. Several
-// calls can start at the same position (a chained s.A().B() starts where s.A()
-// does); the outermost, first visited in pre-order, is kept, matching the
-// first-match behaviour of the per-site AST walk this index replaces.
-type callSiteIndex map[token.Pos]*ast.CallExpr
+// callKey identifies a call expression by its start AND end position. Start
+// alone is ambiguous: a chained s.A().B() starts where its inner s.A() does.
+type callKey struct{ pos, end token.Pos }
 
-// newCallSiteIndex walks each file of pkg once and indexes every call by Pos().
+// callSiteIndex maps a call expression's [Pos, End) to the call.
+type callSiteIndex map[callKey]*ast.CallExpr
+
+// newCallSiteIndex walks each file of pkg once and indexes every call.
 func newCallSiteIndex(pkg *packages.Package) callSiteIndex {
 	idx := callSiteIndex{}
 	for _, f := range pkg.Syntax {
 		ast.Inspect(f, func(n ast.Node) bool {
 			if call, ok := n.(*ast.CallExpr); ok {
-				if _, dup := idx[call.Pos()]; !dup {
-					idx[call.Pos()] = call
-				}
+				idx[callKey{call.Pos(), call.End()}] = call
 			}
 			return true
 		})

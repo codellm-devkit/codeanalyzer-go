@@ -4,16 +4,14 @@ package semantic_analysis_test
 //
 // It was captured with the pre-index resolver (a per-site walk of every file in
 // the package, matching on line:col alone) and then corrected for that walk's
-// cross-file collisions. The file-scoped index drops three edges the walk
-// invented from a same-position call in a sibling file:
-//
-//	DefaultLogFormatter.NewLogEntry -> Compressor.SetEncoder
-//	Logger -> ThrottleWithOpts
-//	init -> LogFormatter.NewLogEntry
-//
-// and gains one it missed for the same reason (throttle.go:33):
-//
-//	Throttle -> ThrottleWithOpts
+// defects. The index is file-scoped and keyed on [start, end):
+//   - three edges the walk invented from a same-position call in a sibling file
+//     are gone: DefaultLogFormatter.NewLogEntry -> Compressor.SetEncoder,
+//     Logger -> ThrottleWithOpts, init -> LogFormatter.NewLogEntry;
+//   - Throttle -> ThrottleWithOpts (throttle.go:33) is gained for the same reason;
+//   - seven edges from the inner call of a chained call (e.g.
+//     mx.NotFoundHandler().ServeHTTP, Chain(...).HandlerFunc) are gained, since
+//     the outer call no longer shadows the co-positioned inner one.
 var chiGoldenEdges = []string{
 	"github.com/go-chi/chi/v5.Context.RoutePattern -> github.com/go-chi/chi/v5.replaceWildcards",
 	"github.com/go-chi/chi/v5.Middlewares.Handler -> github.com/go-chi/chi/v5.chain",
@@ -32,6 +30,7 @@ var chiGoldenEdges = []string{
 	"github.com/go-chi/chi/v5.Mux.Match -> github.com/go-chi/chi/v5.Mux.Find",
 	"github.com/go-chi/chi/v5.Mux.Method -> github.com/go-chi/chi/v5.Mux.handle",
 	"github.com/go-chi/chi/v5.Mux.MethodFunc -> github.com/go-chi/chi/v5.Mux.Method",
+	"github.com/go-chi/chi/v5.Mux.MethodNotAllowed -> github.com/go-chi/chi/v5.Chain",
 	"github.com/go-chi/chi/v5.Mux.MethodNotAllowed -> github.com/go-chi/chi/v5.Middlewares.HandlerFunc",
 	"github.com/go-chi/chi/v5.Mux.MethodNotAllowed -> github.com/go-chi/chi/v5.Mux.updateSubRoutes",
 	"github.com/go-chi/chi/v5.Mux.MethodNotAllowedHandler -> github.com/go-chi/chi/v5.methodNotAllowedHandler",
@@ -39,6 +38,7 @@ var chiGoldenEdges = []string{
 	"github.com/go-chi/chi/v5.Mux.Mount -> github.com/go-chi/chi/v5.Mux.NotFound",
 	"github.com/go-chi/chi/v5.Mux.Mount -> github.com/go-chi/chi/v5.Mux.handle",
 	"github.com/go-chi/chi/v5.Mux.Mount -> github.com/go-chi/chi/v5.node.findPattern",
+	"github.com/go-chi/chi/v5.Mux.NotFound -> github.com/go-chi/chi/v5.Chain",
 	"github.com/go-chi/chi/v5.Mux.NotFound -> github.com/go-chi/chi/v5.Middlewares.HandlerFunc",
 	"github.com/go-chi/chi/v5.Mux.NotFound -> github.com/go-chi/chi/v5.Mux.updateSubRoutes",
 	"github.com/go-chi/chi/v5.Mux.Options -> github.com/go-chi/chi/v5.Mux.handle",
@@ -49,12 +49,16 @@ var chiGoldenEdges = []string{
 	"github.com/go-chi/chi/v5.Mux.Route -> github.com/go-chi/chi/v5.NewRouter",
 	"github.com/go-chi/chi/v5.Mux.Routes -> github.com/go-chi/chi/v5.node.routes",
 	"github.com/go-chi/chi/v5.Mux.ServeHTTP -> github.com/go-chi/chi/v5.Context.Reset",
+	"github.com/go-chi/chi/v5.Mux.ServeHTTP -> github.com/go-chi/chi/v5.Mux.NotFoundHandler",
 	"github.com/go-chi/chi/v5.Mux.Trace -> github.com/go-chi/chi/v5.Mux.handle",
 	"github.com/go-chi/chi/v5.Mux.With -> github.com/go-chi/chi/v5.Mux.updateRouteHandler",
+	"github.com/go-chi/chi/v5.Mux.handle -> github.com/go-chi/chi/v5.Chain",
 	"github.com/go-chi/chi/v5.Mux.handle -> github.com/go-chi/chi/v5.Middlewares.Handler",
 	"github.com/go-chi/chi/v5.Mux.handle -> github.com/go-chi/chi/v5.Mux.updateRouteHandler",
 	"github.com/go-chi/chi/v5.Mux.handle -> github.com/go-chi/chi/v5.node.InsertRoute",
 	"github.com/go-chi/chi/v5.Mux.routeHTTP -> github.com/go-chi/chi/v5.Context.RoutePattern",
+	"github.com/go-chi/chi/v5.Mux.routeHTTP -> github.com/go-chi/chi/v5.Mux.MethodNotAllowedHandler",
+	"github.com/go-chi/chi/v5.Mux.routeHTTP -> github.com/go-chi/chi/v5.Mux.NotFoundHandler",
 	"github.com/go-chi/chi/v5.Mux.routeHTTP -> github.com/go-chi/chi/v5.node.FindRoute",
 	"github.com/go-chi/chi/v5.Mux.updateRouteHandler -> github.com/go-chi/chi/v5.chain",
 	"github.com/go-chi/chi/v5.Mux.updateSubRoutes -> github.com/go-chi/chi/v5.node.routes",
@@ -117,6 +121,7 @@ var chiGoldenEdges = []string{
 	"github.com/go-chi/chi/v5/middleware.compressResponseWriter.Hijack -> github.com/go-chi/chi/v5/middleware.compressResponseWriter.writer",
 	"github.com/go-chi/chi/v5/middleware.compressResponseWriter.Push -> github.com/go-chi/chi/v5/middleware.compressResponseWriter.writer",
 	"github.com/go-chi/chi/v5/middleware.compressResponseWriter.Write -> github.com/go-chi/chi/v5/middleware.compressResponseWriter.WriteHeader",
+	"github.com/go-chi/chi/v5/middleware.compressResponseWriter.Write -> github.com/go-chi/chi/v5/middleware.compressResponseWriter.writer",
 	"github.com/go-chi/chi/v5/middleware.compressResponseWriter.WriteHeader -> github.com/go-chi/chi/v5/middleware.compressResponseWriter.isCompressible",
 	"github.com/go-chi/chi/v5/middleware.contentEncoding -> github.com/go-chi/chi/v5/middleware.split",
 	"github.com/go-chi/chi/v5/middleware.defaultLogEntry.Panic -> github.com/go-chi/chi/v5/middleware.PrintPrettyStack",

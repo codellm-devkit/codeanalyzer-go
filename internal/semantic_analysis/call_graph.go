@@ -149,7 +149,7 @@ func (cg *CallGraphBuilder) resolveCallable(
 }
 
 // resolveCallSite resolves a single call site to a callee signature string by
-// looking its position up in the package's call-site index. relPath is the
+// looking its [start, end) position up in the package's call-site index. relPath is the
 // file declaring the enclosing callable (site columns are byte offsets within
 // that file). Returns "" when the site cannot be resolved (graceful fallback).
 func (cg *CallGraphBuilder) resolveCallSite(pkg *packages.Package, relPath string, site *schema.GoCallsite) string {
@@ -157,11 +157,16 @@ func (cg *CallGraphBuilder) resolveCallSite(pkg *packages.Package, relPath strin
 		return ""
 	}
 	tf := cg.tokenFile(pkg, relPath)
-	if tf == nil || site.StartLine < 1 || site.StartLine > tf.LineCount() || site.StartColumn < 1 {
+	if tf == nil ||
+		site.StartLine < 1 || site.StartLine > tf.LineCount() || site.StartColumn < 1 ||
+		site.EndLine < 1 || site.EndLine > tf.LineCount() || site.EndColumn < 1 {
 		return ""
 	}
-	pos := tf.LineStart(site.StartLine) + token.Pos(site.StartColumn-1)
-	call, ok := cg.indexFor(pkg)[pos]
+	key := callKey{
+		pos: tf.LineStart(site.StartLine) + token.Pos(site.StartColumn-1),
+		end: tf.LineStart(site.EndLine) + token.Pos(site.EndColumn-1),
+	}
+	call, ok := cg.indexFor(pkg)[key]
 	if !ok {
 		return ""
 	}
