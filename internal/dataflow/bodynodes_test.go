@@ -3,6 +3,7 @@ package dataflow_test
 import (
 	"go/ast"
 	"go/token"
+	"go/types"
 	"path/filepath"
 	"runtime"
 	"sync"
@@ -18,6 +19,7 @@ import (
 // symbol-table builder, so call keys come from the L1 call-site list.
 type flowFixture struct {
 	fset  *token.FileSet
+	info  *types.Info
 	decls map[string]*ast.FuncDecl
 	sites map[string][]schema.GoCallsite
 }
@@ -43,7 +45,9 @@ func loadFlow(t *testing.T) *flowFixture {
 		for _, fn := range st[filepath.Join("flow", "flow.go")].Functions {
 			fx.sites[fn.Name] = fn.CallSites
 		}
-		for _, f := range b.Pkgs()["example.com/dataflow/flow"].Syntax {
+		pkg := b.Pkgs()["example.com/dataflow/flow"]
+		fx.info = pkg.TypesInfo
+		for _, f := range pkg.Syntax {
 			for _, d := range f.Decls {
 				if fd, ok := d.(*ast.FuncDecl); ok && fd.Recv == nil {
 					fx.decls[fd.Name.Name] = fd

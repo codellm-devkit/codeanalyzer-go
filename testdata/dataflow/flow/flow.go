@@ -233,3 +233,66 @@ func (s *S) B() {}
 func Chain(s *S) {
 	s.A().B()
 }
+
+// SwitchNoDefault has no default; its fallthrough enters an empty clause.
+func SwitchNoDefault(a int) int {
+	switch a {
+	case 1:
+		a = 2
+		fallthrough
+	case 2:
+	}
+	return a
+}
+
+// BreakContinue has an unlabeled break and continue in a cond-only for.
+func BreakContinue(n int) int {
+	for n > 0 {
+		n--
+		if n == 5 {
+			continue
+		}
+		if n == 2 {
+			break
+		}
+	}
+	return n
+}
+
+// GotoBlock jumps to a labeled block (target: its first statement) and to a
+// labeled empty block (target: the block's continuation).
+func GotoBlock(a int) int {
+	if a > 0 {
+		goto M
+	}
+	a--
+M:
+	{
+		a++
+	}
+	if a > 5 {
+		goto E
+	}
+	a = 0
+E:
+	{
+	}
+	return a
+}
+
+// GotoEnd jumps to a label on the implicit empty statement before `}`.
+func GotoEnd(a int) {
+	if a > 0 {
+		goto L
+	}
+	a++
+L:
+}
+
+// Spin has loops with empty bodies.
+func Spin(n int) {
+	for n > 0 {
+	}
+	for {
+	}
+}
