@@ -1,0 +1,235 @@
+// Package flow is the L3 fixture for the dataflow train: one named function per
+// control-flow / dataflow construct. Tests pin body-node keys by line:col, so
+// keep each statement on its own line and append new functions at the end.
+package flow
+
+func f(x int) int { return x }
+
+func g(x int) int { return x }
+
+func cleanup() {}
+
+func work(x int) { _ = x }
+
+// IfElse is an `if` with an init statement.
+func IfElse(a int) int {
+	if b := a * 2; b > 10 {
+		return b
+	} else {
+		a = b
+	}
+	return a
+}
+
+// ForLoop is a 3-clause `for`.
+func ForLoop(n int) int {
+	s := 0
+	for i := 0; i < n; i++ {
+		s += i
+	}
+	return s
+}
+
+// Infinite is a `for {}` left only by a return.
+func Infinite(ch chan int) {
+	for {
+		v := <-ch
+		if v < 0 {
+			return
+		}
+	}
+}
+
+// Range is a `for … range`.
+func Range(xs []int) int {
+	s := 0
+	for _, x := range xs {
+		s += x
+	}
+	return s
+}
+
+// Switch has a `fallthrough`.
+func Switch(a int) int {
+	r := 0
+	switch a {
+	case 1:
+		r = 1
+		fallthrough
+	case 2:
+		r += 2
+	default:
+		r = -1
+	}
+	return r
+}
+
+// TypeSwitch is a type switch.
+func TypeSwitch(v any) string {
+	switch t := v.(type) {
+	case int:
+		_ = t
+		return "int"
+	case string:
+		return t
+	default:
+		return ""
+	}
+}
+
+// Select2 selects over two channels.
+func Select2(a, b chan int) int {
+	select {
+	case x := <-a:
+		return x
+	case b <- 1:
+		return 0
+	}
+}
+
+// Labeled has a labeled `break` and `continue`.
+func Labeled(m [][]int) int {
+	s := 0
+outer:
+	for _, row := range m {
+		for _, v := range row {
+			if v < 0 {
+				continue outer
+			}
+			if v == 0 {
+				break outer
+			}
+			s += v
+		}
+	}
+	return s
+}
+
+// GotoBack is a backward `goto`.
+func GotoBack(n int) int {
+	i := 0
+loop:
+	i++
+	if i < n {
+		goto loop
+	}
+	return i
+}
+
+// EmptySelect blocks forever.
+func EmptySelect() {
+	select {}
+}
+
+// EarlyReturnDefer has two defers and an early return.
+func EarlyReturnDefer(a int) int {
+	defer cleanup()
+	defer work(g(a))
+	if a < 0 {
+		return -1
+	}
+	cleanup()
+	return a
+}
+
+// Panics has an explicit panic and a slice index.
+func Panics(xs []int, i int) int {
+	if i < 0 {
+		panic("negative")
+	}
+	v := xs[i]
+	return v
+}
+
+// Bump has the loop-carried y = y + 1.
+func Bump(n int) int {
+	y := 0
+	for i := 0; i < n; i++ {
+		y = y + 1
+	}
+	return y
+}
+
+// Shadow shadows x in an inner block.
+func Shadow(a int) int {
+	x := a
+	if a > 0 {
+		x := a * 2
+		_ = x
+	}
+	return x
+}
+
+type H struct{ i int }
+
+type G struct {
+	h H
+	x int
+}
+
+type F struct{ g G }
+
+type P struct{ f F }
+
+// Fields writes a deep access path, then reads a sibling path.
+func Fields(p *P, v int) int {
+	p.f.g.h.i = v
+	return p.f.g.x
+}
+
+// Chan sends and receives on a channel.
+func Chan(ch chan int, v int) int {
+	ch <- v
+	w := <-ch
+	return w
+}
+
+// Unreachable has statements after a return.
+func Unreachable(a int) int {
+	return a
+	a++
+	return a + 1
+}
+
+// Nested is a call nested in a call inside an assignment.
+func Nested(y int) int {
+	x := f(g(y))
+	return x
+}
+
+// Spawn launches a goroutine.
+func Spawn(x int) {
+	go work(f(x))
+}
+
+// get returns a *P so a statement can start with a call.
+func get() *P { return &P{} }
+
+// CallLHS is a statement whose first token starts a call: the assignment and
+// the call share a position.
+func CallLHS(v int) {
+	get().f.g.x = v
+}
+
+// Closure has a function literal whose body is its own callable.
+func Closure(x int) int {
+	h := func() int {
+		return f(x)
+	}
+	return h()
+}
+
+// S has chainable methods.
+type S struct{}
+
+// A returns s so calls can chain.
+func (s *S) A() *S { return s }
+
+// B ends the chain.
+func (s *S) B() {}
+
+// Chain is a bare call statement whose call is co-positioned with the call
+// nested in it: s.A().B() is "l:c" (the statement's node), s.A() is "l:c/2".
+func Chain(s *S) {
+	s.A().B()
+}
