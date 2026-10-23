@@ -39,6 +39,7 @@ func rootCmd() *cobra.Command {
 		emit          string
 		appName       string
 		level         int
+		fieldDepth    int
 		targetFiles   []string
 		skipTests     bool
 		eager         bool
@@ -75,15 +76,23 @@ via CLDK(language="go").analysis(project_path=...).`,
 			emitTarget := options.EmitTarget(emit)
 			switch emitTarget {
 			case options.EmitJSON:
-				// valid — falls through to the JSON path below.
+				if err := validateAnalysisLevel(level); err != nil {
+					return err
+				}
+				if err := validateFieldDepth(cmd, level, fieldDepth); err != nil {
+					return err
+				}
 			case options.EmitNeo4j:
 				if cmd.Flags().Changed("analysis-level") {
 					return fmt.Errorf("--analysis-level does not apply to --emit neo4j; the graph is always projected at full depth")
 				}
+				if cmd.Flags().Changed("graph-field-depth") {
+					return fmt.Errorf("--graph-field-depth does not apply to --emit neo4j; the graph is always projected at full depth")
+				}
 				// Force full depth: the graph carries every implemented
 				// level's facts in both projections. (Output is always the
 				// canonical v2 tree.)
-				level = int(options.LevelCallGraph)
+				level = int(options.LevelDataflow)
 			case options.EmitSchema:
 				path, err := neo4j.EmitSchema(outputDir)
 				if err != nil {
@@ -134,6 +143,7 @@ via CLDK(language="go").analysis(project_path=...).`,
 				CacheDir:        cacheDir,
 				Jobs:            jobs,
 				Verbose:         verbosity > 0,
+				FieldDepth:      fieldDepth,
 				Neo4jURI:        firstNonEmpty(neo4jURI, os.Getenv("NEO4J_URI")),
 				Neo4jUser:       firstNonEmpty(neo4jUser, os.Getenv("NEO4J_USERNAME"), "neo4j"),
 				Neo4jPassword:   firstNonEmpty(neo4jPassword, os.Getenv("NEO4J_PASSWORD"), "neo4j"),
@@ -151,6 +161,9 @@ via CLDK(language="go").analysis(project_path=...).`,
 			// absent → a graph.cypher snapshot in the output dir.
 			if emitTarget == options.EmitNeo4j {
 				payload := v2emit.Emit(app, opts.AppName, opts.InputPath, int(opts.Level), opts.AnalyzerVersion)
+				if opts.Level >= options.LevelDataflow {
+					payload.KLimit = opts.FieldDepth
+				}
 				boltCfg := neo4j.BoltConfig{
 					URI:      opts.Neo4jURI,
 					User:     opts.Neo4jUser,
@@ -190,7 +203,9 @@ via CLDK(language="go").analysis(project_path=...).`,
 	f.StringVar(&appName, "app-name", "",
 		"Application anchor name for can:// ids and Neo4j :Application (default: input dir name)")
 	f.IntVarP(&level, "analysis-level", "a", 1,
-		"Analysis level: 1=symbol table only, 2=+resolver call graph")
+		"Analysis level: 1=symbol table, 2=+call graph, 3=+intraprocedural cfg/cdg/ddg")
+	f.IntVar(&fieldDepth, "graph-field-depth", 3,
+		"Field-path depth bound for L3 dataflow nodes (k limit; applies at -a 3 only)")
 	f.StringSliceVarP(&targetFiles, "target-files", "t", nil,
 		"Restrict analysis to specific files (incremental mode)")
 	f.BoolVar(&skipTests, "skip-tests", true, "Skip *_test.go files")
@@ -207,6 +222,31 @@ via CLDK(language="go").analysis(project_path=...).`,
 	f.StringVar(&neo4jDatabase, "neo4j-database", "", "Neo4j database (env NEO4J_DATABASE, optional)")
 
 	return cmd
+}
+
+// validateAnalysisLevel accepts the implemented levels (1..3). Level 4 is
+// reserved for a later release and gets its own message.
+func validateAnalysisLevel(level int) error {
+	switch {
+	case level >= 1 && level <= int(options.LevelDataflow):
+		return nil
+	case level == 4:
+		return fmt.Errorf("analysis level 4 is not implemented yet")
+	default:
+		return fmt.Errorf("analysis level %d is not supported; use 1, 2 or 3", level)
+	}
+}
+
+// validateFieldDepth checks --graph-field-depth. The flag only means something
+// at L3+, and the k limit must be at least 1.
+func validateFieldDepth(cmd *cobra.Command, level, fieldDepth int) error {
+	if cmd.Flags().Changed("graph-field-depth") && level < int(options.LevelDataflow) {
+		return fmt.Errorf("--graph-field-depth applies only at --analysis-level 3 or higher")
+	}
+	if fieldDepth < 1 {
+		return fmt.Errorf("--graph-field-depth must be >= 1; got %d", fieldDepth)
+	}
+	return nil
 }
 
 // firstNonEmpty returns the first non-empty string in vals, or "" if all are

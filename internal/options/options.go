@@ -9,6 +9,8 @@ const (
 	LevelSymbolTable AnalysisLevel = 1
 	// LevelCallGraph produces symbol table + resolver-based call graph (still cheap).
 	LevelCallGraph AnalysisLevel = 2
+	// LevelDataflow adds intraprocedural CFG/CDG/DDG on top of the call graph.
+	LevelDataflow AnalysisLevel = 3
 )
 
 // EmitTarget selects the analyzer's output projection (cli-contract.md § Neo4j).
@@ -36,7 +38,8 @@ type AnalysisOptions struct {
 	// AppName anchors application identity (can://<app-name> and the Neo4j
 	// :Application node). Defaults to the input directory's base name.
 	AppName string
-	// AnalysisLevel controls symbol-table-only (1) vs + call graph (2).
+	// AnalysisLevel controls symbol-table-only (1), + call graph (2), or
+	// + intraprocedural dataflow (3).
 	Level AnalysisLevel
 	// AnalyzerVersion is the analyzer's own version, recorded in the v2
 	// manifest's analyzer{} tag. Set by the CLI from its build-stamped value.
@@ -54,6 +57,9 @@ type AnalysisOptions struct {
 	Jobs int
 	// Verbose enables verbose logging.
 	Verbose bool
+	// FieldDepth is the k limit on field-path depth for L3 dataflow nodes
+	// (--graph-field-depth). Default 3. Recorded in the payload as k_limit.
+	FieldDepth int
 
 	// Neo4j projection targets (consumed by the Neo4j emitter; validated now).
 	// Precedence for each: explicit flag > env var > default.

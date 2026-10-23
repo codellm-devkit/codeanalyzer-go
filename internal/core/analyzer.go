@@ -169,6 +169,9 @@ func RenderJSON(app *schema.GoApplication, opts options.AnalysisOptions) ([]byte
 	}
 
 	payload := v2emit.Emit(app, opts.AppName, opts.InputPath, int(opts.Level), opts.AnalyzerVersion)
+	if opts.Level >= options.LevelDataflow {
+		payload.KLimit = opts.FieldDepth
+	}
 	return json.Marshal(payload)
 }
 

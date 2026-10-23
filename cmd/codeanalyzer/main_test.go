@@ -324,3 +324,133 @@ func TestRootCmd_TargetFilesRestrictsOutput(t *testing.T) {
 		t.Error("--target-files: server/server.go should appear in output")
 	}
 }
+
+// ── --analysis-level 3 and --graph-field-depth ───────────────────────────────
+
+func TestRootCmd_Level3Accepted(t *testing.T) {
+	td := cliTestdataDir()
+
+	out, _, err := runCmd(
+		"--input", filepath.Join(td, "greeter"),
+		"--analysis-level", "3",
+		"--cache-dir", t.TempDir(),
+	)
+	if err != nil {
+		t.Fatalf("-a 3 should succeed; got %v", err)
+	}
+	var v struct {
+		MaxLevel int `json:"max_level"`
+		KLimit   int `json:"k_limit"`
+	}
+	if jsonErr := json.Unmarshal([]byte(out), &v); jsonErr != nil {
+		t.Fatalf("stdout is not valid JSON: %v", jsonErr)
+	}
+	if v.MaxLevel != 3 {
+		t.Errorf("max_level = %d, want 3", v.MaxLevel)
+	}
+	if v.KLimit != 3 {
+		t.Errorf("k_limit = %d, want 3 (the --graph-field-depth default)", v.KLimit)
+	}
+}
+
+func TestRootCmd_Level4RejectedInThisRelease(t *testing.T) {
+	td := cliTestdataDir()
+
+	_, _, err := runCmd(
+		"--input", filepath.Join(td, "greeter"),
+		"--analysis-level", "4",
+		"--cache-dir", t.TempDir(),
+	)
+	if err == nil {
+		t.Fatal("expected error for -a 4, got nil")
+	}
+	if err.Error() != "analysis level 4 is not implemented yet" {
+		t.Errorf("error = %q, want %q", err.Error(), "analysis level 4 is not implemented yet")
+	}
+}
+
+func TestRootCmd_UnsupportedLevelRejected(t *testing.T) {
+	td := cliTestdataDir()
+
+	for _, lvl := range []string{"0", "5", "-1"} {
+		_, _, err := runCmd(
+			"--input", filepath.Join(td, "greeter"),
+			"--analysis-level", lvl,
+			"--cache-dir", t.TempDir(),
+		)
+		if err == nil {
+			t.Errorf("-a %s: expected error, got nil", lvl)
+			continue
+		}
+		if !strings.Contains(err.Error(), "analysis level "+lvl+" is not supported") {
+			t.Errorf("-a %s: error should name the unsupported level; got %q", lvl, err.Error())
+		}
+	}
+}
+
+func TestRootCmd_FieldDepthBelowLevel3Rejected(t *testing.T) {
+	td := cliTestdataDir()
+
+	_, _, err := runCmd(
+		"--input", filepath.Join(td, "greeter"),
+		"--analysis-level", "2",
+		"--graph-field-depth", "2",
+		"--cache-dir", t.TempDir(),
+	)
+	if err == nil {
+		t.Fatal("expected error for --graph-field-depth at -a 2, got nil")
+	}
+	if !strings.Contains(err.Error(), "--graph-field-depth applies only at --analysis-level 3 or higher") {
+		t.Errorf("error should explain the level gate; got %q", err.Error())
+	}
+}
+
+func TestRootCmd_FieldDepthBelowOneRejected(t *testing.T) {
+	td := cliTestdataDir()
+
+	_, _, err := runCmd(
+		"--input", filepath.Join(td, "greeter"),
+		"--analysis-level", "3",
+		"--graph-field-depth", "0",
+		"--cache-dir", t.TempDir(),
+	)
+	if err == nil {
+		t.Fatal("expected error for --graph-field-depth 0, got nil")
+	}
+	if !strings.Contains(err.Error(), "--graph-field-depth must be >= 1") {
+		t.Errorf("error should explain the minimum; got %q", err.Error())
+	}
+}
+
+func TestRootCmd_FieldDepthWithNeo4jRejected(t *testing.T) {
+	td := cliTestdataDir()
+
+	_, _, err := runCmd(
+		"--input", filepath.Join(td, "greeter"),
+		"--emit", "neo4j",
+		"--graph-field-depth", "2",
+	)
+	if err == nil {
+		t.Fatal("expected a flag error for --emit neo4j --graph-field-depth 2, got nil")
+	}
+	if !strings.Contains(err.Error(), "does not apply to --emit neo4j") {
+		t.Errorf("error should explain the neo4j flag gate; got %q", err.Error())
+	}
+}
+
+func TestRootCmd_EmitNeo4jRunsAtLevel3(t *testing.T) {
+	t.Skip("enabled in Task 12")
+
+	td := cliTestdataDir()
+	out := t.TempDir()
+	if _, _, err := runCmd("--input", filepath.Join(td, "multipackage"), "--emit", "neo4j", "--output", out); err != nil {
+		t.Fatalf("--emit neo4j should succeed; got %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(out, "graph.cypher"))
+	if err != nil {
+		t.Fatalf("graph.cypher not written: %v", err)
+	}
+	if !strings.Contains(string(data), "GO_CFG_NEXT") {
+		t.Error("graph.cypher should carry the L3 GO_CFG_NEXT relationship")
+	}
+}
