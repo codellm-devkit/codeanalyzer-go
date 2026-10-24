@@ -198,12 +198,12 @@ func (w *boltWriter) schemaVersionMismatch() (bool, error) {
 
 // ─── destructive steps (--eager only) ─────────────────────────────────────────
 
+// eagerPurge runs as an implicit (auto-commit) transaction: Neo4j rejects
+// CALL { ... } IN TRANSACTIONS inside an explicit one, which is what
+// ExecuteWrite opens.
 func (w *boltWriter) eagerPurge(root string) error {
 	q, params := eagerPurgeQuery(root)
-	return w.write(func(tx neo4j.ManagedTransaction) error {
-		_, err := tx.Run(w.ctx, q, params)
-		return err
-	})
+	return w.autoCommit(q, params)
 }
 
 // purgeModule deletes the edges and declarations a module owned, scoped to its
@@ -352,6 +352,17 @@ func (w *boltWriter) write(fn func(neo4j.ManagedTransaction) error) error {
 	_, err := w.session.ExecuteWrite(w.ctx, func(tx neo4j.ManagedTransaction) (any, error) {
 		return nil, fn(tx)
 	})
+	return err
+}
+
+// autoCommit runs one statement as an implicit transaction and consumes its
+// result, so a server-side failure is returned here rather than dropped.
+func (w *boltWriter) autoCommit(q string, params map[string]any) error {
+	res, err := w.session.Run(w.ctx, q, params)
+	if err != nil {
+		return err
+	}
+	_, err = res.Consume(w.ctx)
 	return err
 }
 
