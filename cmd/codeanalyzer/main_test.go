@@ -439,8 +439,6 @@ func TestRootCmd_FieldDepthWithNeo4jRejected(t *testing.T) {
 }
 
 func TestRootCmd_EmitNeo4jRunsAtLevel3(t *testing.T) {
-	t.Skip("enabled in Task 12")
-
 	td := cliTestdataDir()
 	out := t.TempDir()
 	if _, _, err := runCmd("--input", filepath.Join(td, "multipackage"), "--emit", "neo4j", "--output", out); err != nil {
@@ -450,7 +448,9 @@ func TestRootCmd_EmitNeo4jRunsAtLevel3(t *testing.T) {
 	if err != nil {
 		t.Fatalf("graph.cypher not written: %v", err)
 	}
-	if !strings.Contains(string(data), "GO_CFG_NEXT") {
-		t.Error("graph.cypher should carry the L3 GO_CFG_NEXT relationship")
+	for _, rel := range []string{"GO_CFG_NEXT", "GO_CDG", "GO_DDG"} {
+		if !strings.Contains(string(data), rel) {
+			t.Errorf("graph.cypher should carry the L3 %s relationship", rel)
+		}
 	}
 }

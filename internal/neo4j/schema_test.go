@@ -2,6 +2,7 @@ package neo4j
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -135,7 +136,12 @@ func TestSchemaDocument_RoundTrips(t *testing.T) {
 // never produces a label, relationship type, or property that schema.go does
 // not declare — so the contract cannot silently drift from the projector.
 func TestConformance_ProjectorEmitsOnlyDeclared(t *testing.T) {
-	rows := Project(buildMultipackageL2(t))
+	t.Run("L2", func(t *testing.T) { checkConformance(t, Project(buildMultipackageL2(t))) })
+	t.Run("L3", func(t *testing.T) { checkConformance(t, Project(buildDataflowL3(t))) })
+}
+
+func checkConformance(t *testing.T, rows GraphRows) {
+	t.Helper()
 
 	// Declared label set + per-label allowed property set. A node's labels[0] is
 	// the MERGE label, which for the symbol family is the SHARED SymbolLabel; the
@@ -204,6 +210,44 @@ func TestConformance_ProjectorEmitsOnlyDeclared(t *testing.T) {
 		for pk := range e.Props {
 			if !allowed[pk] {
 				t.Errorf("relationship %s carries undeclared property %q", e.Type, pk)
+			}
+		}
+	}
+}
+
+func TestContract_L3OverlayNotReserved(t *testing.T) {
+	want := map[string]bool{
+		RelCFGNext: false, RelCDG: false, RelDDG: false,
+		RelParamIn: true, RelParamOut: true, RelSummary: true,
+	}
+	for _, r := range Rels {
+		if res, ok := want[r.Type]; ok {
+			if r.Reserved != res {
+				t.Errorf("%s Reserved = %v, want %v", r.Type, r.Reserved, res)
+			}
+			delete(want, r.Type)
+		}
+		if r.Type == RelDDG && r.Discriminant != "var|prov" {
+			t.Errorf("GO_DDG discriminant = %q, want var|prov", r.Discriminant)
+		}
+		if r.Type == RelHasBodyNode {
+			got := strings.Join(r.From, ",")
+			if got != LabelCallable+","+LabelExternal {
+				t.Errorf("GO_HAS_BODY_NODE From = %v", r.From)
+			}
+		}
+	}
+	if len(want) != 0 {
+		t.Errorf("rels not declared: %v", want)
+	}
+	for _, n := range Nodes {
+		if n.Label == LabelBodyNode {
+			have := map[string]bool{}
+			for _, p := range n.Props {
+				have[p] = true
+			}
+			if !have["var"] || !have["call_node"] {
+				t.Errorf(":GoBodyNode props %v lack var/call_node", n.Props)
 			}
 		}
 	}

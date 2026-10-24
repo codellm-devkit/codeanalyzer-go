@@ -2,6 +2,7 @@ package neo4j
 
 import (
 	"encoding/json"
+	"strings"
 
 	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
 )
@@ -163,6 +164,7 @@ func (p *projector) projectCallable(parentRef NodeRef, module string, c v2.Calla
 	for local, bn := range c.Body {
 		p.projectBodyNode(cRef, module, c.ID, local, bn)
 	}
+	p.projectFlow(c)
 
 	// Nested closures → GO_DECLARES (callable → closure).
 	for _, inner := range c.Callables {
@@ -176,6 +178,10 @@ func (p *projector) projectBodyNode(callableRef NodeRef, module, callableID, loc
 	// GlobalOrdinal, not callableID+"@"+local: synthetic keys ("@entry") already
 	// carry the "@", and the JSON body node id uses the same rule.
 	id := v2.GlobalOrdinal(callableID, local)
+	var callNode Value
+	if bn.Parent != "" {
+		callNode = v2.GlobalOrdinal(callableID, bn.Parent)
+	}
 	bRef := p.b.Node(
 		[]string{LabelBodyNode, MarkerLabel},
 		"id", id,
@@ -184,6 +190,9 @@ func (p *projector) projectBodyNode(callableRef NodeRef, module, callableID, loc
 			"is_goroutine": boolOrNil(bn.IsGoroutine),
 			"is_deferred":  boolOrNil(bn.IsDeferred),
 			"span_json":    bodySpanJSON(bn.Span),
+			"call_node":    callNode,
+			// "var" (JSON `of`) is L4: the v2 BodyNode carries no such field yet,
+			// and a nil prop is pruned, so L3 emits none.
 		},
 		module,
 	)
@@ -197,6 +206,29 @@ func (p *projector) projectBodyNode(callableRef NodeRef, module, callableID, loc
 		if p.declared[*bn.Callee] || external {
 			p.b.Edge(RelResolvesTo, bRef, p.callEndpoint(*bn.Callee), nil, "")
 		}
+	}
+}
+
+// projectFlow emits a callable's L3 intra-callable overlay. JSON edge endpoints
+// are LOCAL body keys; the graph addresses :GoBodyNode by its global id, so each
+// endpoint goes through v2.GlobalOrdinal. Parallel edges survive via _k:
+// GO_CFG_NEXT per kind, GO_DDG per (var, prov).
+func (p *projector) projectFlow(c v2.Callable) {
+	ref := func(local string) NodeRef {
+		return NodeRef{Label: LabelBodyNode, KeyProp: "id", Value: v2.GlobalOrdinal(c.ID, local)}
+	}
+	for _, e := range c.Cfg {
+		p.b.Edge(RelCFGNext, ref(e.Src), ref(e.Dst), Props{"kind": e.Kind}, e.Kind)
+	}
+	for _, e := range c.Cdg {
+		p.b.Edge(RelCDG, ref(e.Src), ref(e.Dst), nil, "")
+	}
+	for _, e := range c.Ddg {
+		// Own the slice: the JSON tree stays untouched by later prop mutation.
+		prov := append([]string(nil), e.Prov...)
+		p.b.Edge(RelDDG, ref(e.Src), ref(e.Dst),
+			Props{"var": e.Var, "prov": stringsOrNil(prov)},
+			e.Var+"|"+strings.Join(prov, ","))
 	}
 }
 

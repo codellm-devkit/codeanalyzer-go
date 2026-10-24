@@ -142,16 +142,25 @@ shared neutral vocabulary verbatim; never rename a sibling's shared name). Spec:
   own resolution claims).
 
 ### `_k` relationship discriminants (parallel edges survive MERGE)
-- `GO_CFG_NEXT` per `kind`; `GO_DDG` per `(var, prov)`; `DECLARES_DEPENDENCY` per `kind`
-  — same discriminant mechanism as the siblings.
+- `GO_CFG_NEXT` per `kind`; `GO_DDG` per `(var, prov)` as the composite
+  `_k = var + "|" + join(prov, ",")` (declared as `Discriminant: "var|prov"`);
+  `DECLARES_DEPENDENCY` per `kind` — same discriminant mechanism as the siblings.
 
-### Reserved L3/L4 overlay (declared now, emits nothing until the levels land)
-- `schema.go` declares the full overlay vocabulary **now** — `GO_HAS_BODY_NODE`,
-  `GO_CFG_NEXT`, `GO_CDG`, `GO_DDG`, `GO_PARAM_IN`, `GO_PARAM_OUT`, `GO_SUMMARY`, and the
-  body-node statement kinds — with parity-correct names and `_k` discriminants. The
-  analyzer caps at L2, so the projector walks these sections and emits **zero rows**;
-  when L3/L4 land they fill with **no schema-contract change**. (`--emit neo4j` is
-  "full-depth = max implemented" — L2 today; the graph grows additively.)
+### L3 overlay (live at `-a 3`)
+- `GO_CFG_NEXT {kind}`, `GO_CDG`, `GO_DDG {var, prov}` are no longer reserved; the projector
+  emits one row per JSON `cfg[]`/`cdg[]`/`ddg[]` entry (cross-projection count gate).
+  Endpoints are `:GoBodyNode` **global ids** (`v2.GlobalOrdinal(callable-id, local-key)`),
+  never recomposed by hand. `prov` is a string-array prop.
+- `:GoBodyNode` covers every body node incl. synthetic `@entry`/`@exit` (id
+  `<callable-id>@entry`, no `span_json`), each with `GO_HAS_BODY_NODE` from its callable.
+  It carries `call_node` (JSON `parent`, as a global id) and `var` (JSON `of`; L4 — absent at
+  L3). `GO_HAS_BODY_NODE` may originate at `:GoExternal` (L4 stand-ins).
+
+### Reserved L4 overlay (declared now, emits nothing until L4 lands)
+- `schema.go` still declares `GO_PARAM_IN`, `GO_PARAM_OUT`, `GO_SUMMARY` (`Reserved`) with
+  parity-correct names; the projector emits **zero rows** for them. When L4 lands they fill
+  with **no schema-contract change**. (`--emit neo4j` is "full-depth = max implemented" —
+  L3 today; the graph grows additively.)
 
 ### SDK facade (`GoAnalysisBackend`, on the `python-sdk` fork — frontend rung)
 - **Type-centric surface** (Go is the SDK's first class-less facade; no C precedent exists

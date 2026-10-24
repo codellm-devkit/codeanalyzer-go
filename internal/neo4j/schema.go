@@ -119,13 +119,14 @@ const (
 	RelProvides           = "GO_PROVIDES"
 	RelUnresolvedImport   = "GO_UNRESOLVED_IMPORT"
 
-	// Reserved L3/L4 overlay — declared NOW, emits ZERO rows until the levels
-	// land (CLAUDE.md L1). When L3/L4 arrive the projector fills these with no
-	// schema-contract change. --emit neo4j is "full-depth = max implemented"
-	// (L2 today); the graph grows additively.
-	RelCFGNext  = "GO_CFG_NEXT" // _k=kind
-	RelCDG      = "GO_CDG"
-	RelDDG      = "GO_DDG" // _k=var,prov
+	// L3 overlay (LIVE at -a 3): intra-callable edges between :GoBodyNode ids.
+	// GO_CFG_NEXT _k=kind; GO_DDG _k=var|prov.
+	RelCFGNext = "GO_CFG_NEXT"
+	RelCDG     = "GO_CDG"
+	RelDDG     = "GO_DDG"
+
+	// Reserved L4 overlay — declared NOW, emits ZERO rows until L4 lands
+	// (CLAUDE.md). The projector fills these with no schema-contract change.
 	RelParamIn  = "GO_PARAM_IN"
 	RelParamOut = "GO_PARAM_OUT"
 	RelSummary  = "GO_SUMMARY"
@@ -166,14 +167,16 @@ type RelSpec struct {
 	// discriminant, which is Discriminant).
 	Props []string
 	// Discriminant names the _k key when parallel edges per (endpoint pair) are
-	// legitimate (e.g. "kind" for GO_CFG_NEXT). Empty = plain endpoint-pair MERGE.
+	// legitimate (e.g. "kind" for GO_CFG_NEXT). A composite is written
+	// "a|b" and means _k = a + "|" + strings.Join(b, ","), b being an array
+	// prop (GO_DDG: "var|prov"). Empty = plain endpoint-pair MERGE.
 	Discriminant string
 	// Deferred marks an edge whose target may be library/external code not
 	// present in the graph: it is emitted via the RowBuilder's edge-only-when-
 	// resolved path and kept at finish() only if the target was emitted.
 	Deferred bool
-	// Reserved marks the L3/L4 overlay edges: declared now, emits zero rows at
-	// the current max level.
+	// Reserved marks the L4 overlay edges: declared now, emits zero rows at
+	// the current max level (L3).
 	Reserved bool
 }
 
@@ -204,8 +207,11 @@ var Nodes = []NodeSpec{
 	},
 	{
 		Label: LabelBodyNode, MergeLabel: LabelBodyNode, Key: "id", CanNode: true,
-		// kind "call" at L1; is_goroutine/is_deferred pruned when false.
-		Props: []string{"kind", "is_goroutine", "is_deferred", "span_json"},
+		// kind "call" at L1, statement|branch|loop|switch|return|entry|exit at L3;
+		// is_goroutine/is_deferred pruned when false. call_node = global id of the
+		// enclosing statement (JSON `parent`); var = JSON `of` (L4 — absent at L3).
+		// span_json absent on the synthetic entry/exit nodes.
+		Props: []string{"kind", "is_goroutine", "is_deferred", "span_json", "call_node", "var"},
 	},
 	{
 		Label: LabelExternal, MergeLabel: SymbolLabel, Key: "id", CanNode: true,
@@ -235,7 +241,7 @@ var Rels = []RelSpec{
 	{Type: RelDeclares, From: []string{LabelModule, LabelCallable}, To: []string{LabelType, LabelCallable}},
 	{Type: RelHasMethod, From: []string{LabelType}, To: []string{LabelCallable}},
 	{Type: RelHasField, From: []string{LabelType}, To: []string{LabelField}},
-	{Type: RelHasBodyNode, From: []string{LabelCallable}, To: []string{LabelBodyNode}},
+	{Type: RelHasBodyNode, From: []string{LabelCallable, LabelExternal}, To: []string{LabelBodyNode}},
 
 	// Call graph.
 	{Type: RelCalls, From: []string{LabelCallable, LabelExternal}, To: []string{LabelCallable, LabelExternal}, Props: []string{"weight", "prov"}},
@@ -256,10 +262,12 @@ var Rels = []RelSpec{
 	{Type: RelProvides, From: []string{LabelPackage}, To: []string{LabelExternal}},
 	{Type: RelUnresolvedImport, From: []string{LabelApplication}, To: []string{LabelExternal}},
 
-	// Reserved L3/L4 overlay (zero rows until the levels land).
-	{Type: RelCFGNext, From: []string{LabelBodyNode}, To: []string{LabelBodyNode}, Discriminant: "kind", Reserved: true},
-	{Type: RelCDG, From: []string{LabelBodyNode}, To: []string{LabelBodyNode}, Reserved: true},
-	{Type: RelDDG, From: []string{LabelBodyNode}, To: []string{LabelBodyNode}, Props: []string{"var", "prov"}, Discriminant: "var", Reserved: true},
+	// L3 overlay (live at -a 3).
+	{Type: RelCFGNext, From: []string{LabelBodyNode}, To: []string{LabelBodyNode}, Props: []string{"kind"}, Discriminant: "kind"},
+	{Type: RelCDG, From: []string{LabelBodyNode}, To: []string{LabelBodyNode}},
+	{Type: RelDDG, From: []string{LabelBodyNode}, To: []string{LabelBodyNode}, Props: []string{"var", "prov"}, Discriminant: "var|prov"},
+
+	// Reserved L4 overlay (zero rows until L4 lands).
 	{Type: RelParamIn, From: []string{LabelBodyNode}, To: []string{LabelBodyNode}, Reserved: true},
 	{Type: RelParamOut, From: []string{LabelBodyNode}, To: []string{LabelBodyNode}, Reserved: true},
 	{Type: RelSummary, From: []string{LabelBodyNode}, To: []string{LabelBodyNode}, Reserved: true},
