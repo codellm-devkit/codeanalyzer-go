@@ -62,8 +62,10 @@ const DeferPrefix = "<defer>:"
 //     <call-key> = keyOf[DeferStmt.Call], the deferred call node's Key. The
 //     deferred call node (Deferred) uses that pseudo path, every named result
 //     of fn and, for `defer func(){…}()`, what the closure captures; it
-//     weak-defines what the call may write through (call rule) and never
-//     strong-defines anything (R11: chain membership is unconditional).
+//     weak-defines what the call may write through (call rule), uses those
+//     same paths (it reads receiver and argument state at exit, not at
+//     registration) and never strong-defines anything (R11: chain
+//     membership is unconditional).
 //   - Assignment: each LHS is a def (`:=` reuses an existing object for an
 //     already-declared name); `_` is none. An ident or a field path is a
 //     strong def; a path through an index, a dereference or past k is weak.
@@ -109,6 +111,12 @@ func DefUseOf(n Node, info *types.Info, k int, entryBases []types.Object, fn ast
 			c.captures(lit)
 		}
 		c.callWrites(call)
+		// The call runs at exit and reads, then, the state behind what it may
+		// write through: a write after the registration (`defer w.Flush()`
+		// then `w.buf = …`) reaches it.
+		for _, p := range c.du.WeakDefs {
+			c.add(kindUse, p)
+		}
 	default:
 		c.fn = fn
 		c.keyOf = keyOf

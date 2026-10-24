@@ -122,7 +122,10 @@ The same shape whether it sits under a type's `callables` (methods), a module's
   edge from `@entry`. Sorted by `(src, dst)`.
 - **`ddg`** comes from syntactic reaching definitions over k-limited access paths
   (`base(.field|[*])*`, past `k` → `.*`). `var` is the source spelling of the path, and
-  `prov` is always `["ssa"]` at L3. Sorted by `(src, dst, var)`.
+  `prov` is always `["ssa"]` at L3. Sorted by `(src, dst, var)`. It is **not
+  refutation-complete**: writes to captured variables inside closures and writes through
+  reference-typed fields of value-typed struct arguments/receivers are not modelled at L3
+  (no edge ≠ no flow); L4 closes them. See `v2-l3-l4-dataflow.md` §4.5 "L3 precision".
 - **Spans.** A statement node's span is its AST node's range, and a clause head ends at its
   colon. For a callable with `source_file` (a method declared apart from its receiver type,
   or a closure inside one), body spans index `symbol_table[source_file].source`, as the

@@ -252,12 +252,13 @@ func TestDefUse_DeferRegistrationCarriesArgs(t *testing.T) {
 
 	fx := loadDU(t)
 	// defer mu.Unlock(): the receiver is evaluated at registration; the
-	// deferred call writes through it and reads the named results.
+	// deferred call writes through it, reads the named results and (I7)
+	// reads the state behind the receiver at exit (mu.*).
 	reg, _ := fx.du(t, "Defers", "defer mu.Unlock()", 0)
 	call, ck := fx.du(t, "Defers", "mu.Unlock()", 0)
 	d := "<defer>:" + ck
 	wantDU(t, "defer mu.Unlock()", reg, nil, ss(d), ss("mu"))
-	wantDU(t, "mu.Unlock() (deferred)", call, nil, ss("mu.*"), ss(d, "err", "n"))
+	wantDU(t, "mu.Unlock() (deferred)", call, nil, ss("mu.*"), ss(d, "err", "mu.*", "n"))
 
 	// defer func(){…}(): nothing is evaluated at registration but the func
 	// value; the deferred call uses what the closure captures.
@@ -271,7 +272,7 @@ func TestDefUse_DeferRegistrationCarriesArgs(t *testing.T) {
 	call, ck = fx.du(t, "Defers", "defer mut2(s, x)", len("defer "))
 	d = "<defer>:" + ck
 	wantDU(t, "defer mut2(s, x)", reg, nil, ss(d), ss("s", "x"))
-	wantDU(t, "mut2(s, x) (deferred)", call, nil, ss("s.*"), ss(d, "err", "n"))
+	wantDU(t, "mut2(s, x) (deferred)", call, nil, ss("s.*"), ss(d, "err", "n", "s.*"))
 
 	// A bare return reads the named results; a return with operands assigns
 	// them (the deferred calls run after that assignment).

@@ -414,3 +414,13 @@ func TestDDG_SubsliceArgWritesBase(t *testing.T) {
 	hasDDG(t, "ArraySliceRead", dd("494:2", "495:2", "arr[*]"))
 	hasDDG(t, "CopyInto", dd("501:2", "502:2", "dst[*]"))
 }
+
+// TestDDG_DeferredCallReadsStateAtExit (I7): a deferred call runs at exit and
+// reads through its receiver and reference-typed arguments then, so a write
+// after its registration reaches it.
+func TestDDG_DeferredCallReadsStateAtExit(t *testing.T) {
+	hasDDG(t, "DeferFlush",
+		dd("524:2", "522:8", "w.*"),  // w.buf = nil → deferred w.Flush()
+		dd("525:2", "523:8", "b[*]"), // b[0] = 1 → deferred fill(b[1:])
+	)
+}

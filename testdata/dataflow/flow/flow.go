@@ -508,3 +508,19 @@ func ClearAll(m map[int]int, s []int, n int) int {
 	clear(s[:n])
 	return m[0] + s[0]
 }
+
+type flusher struct{ buf []byte }
+
+func (f *flusher) Flush() {}
+
+func fill(b []byte) { _ = b }
+
+// DeferFlush has deferred calls that read, at exit, state written after
+// their registration: w.buf through the receiver, b's elements through the
+// argument.
+func DeferFlush(w *flusher, b []byte) {
+	defer w.Flush()
+	defer fill(b[1:])
+	w.buf = nil
+	b[0] = 1
+}

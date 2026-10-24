@@ -296,6 +296,27 @@ truncated). Match Java's `AccessPath` / Python's `access_paths` semantics:
 Differential check (non-gating, reported): compare scalar def-use against `go/ssa` (the
 construction guide's answer key) on fixtures; mismatches are triaged, not asserted.
 
+#### L3 precision (known gaps)
+
+The L3 `ddg` is **syntactic and intraprocedural**. It over-approximates where it models a flow
+(weak defs, bidirectional prefix matching), but it is **not refutation-complete**: the absence of
+a `ddg` path does not prove the absence of a flow. It does not model:
+
+- **Writes to captured variables inside closures.** `func(){ x = secret }()` or
+  `once.Do(func(){ cfg = load() })` writes `x` / `cfg` in the closure's own body; the enclosing
+  callable sees only a use of the captures at the closure expression, never a def, so a later
+  read of `x` in the enclosing callable does not link to the closure's write.
+- **Value-typed struct arguments or receivers that contain slice, map or pointer fields.** A
+  value struct is copied (no weak def, §4.5 Calls), but its reference-typed fields alias the
+  caller's: `fill(cfg)` with `cfg.items []T` may write `cfg.items[*]`, which L3 does not record.
+- ~~Deferred calls reading receiver or argument state at exit~~ — **closed at L3**: the
+  deferred call node also uses every path it may write through (`defer w.Flush()` uses `w.*`,
+  `defer fill(b[1:])` uses `b[*]`), so a write after the registration reaches it.
+
+The first two are addressed at **L4**: capture formals (`@formal_in`/`@formal_out` for captured
+variables, §4.6 closures rule) carry closure writes back to the enclosing callable, and the
+points-to delta (§4.10) links writes through reference fields of copied structs.
+
 ### 4.6 L4 vertices [call; naming follows Python because the SDK reads it]
 
 Per callable (formals), all with `kind` + `of`, no span:
