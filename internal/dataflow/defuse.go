@@ -80,11 +80,14 @@ const DeferPrefix = "<defer>:"
 // function literal uses every variable it captures, never its body. The call
 // rule: a call uses its function value / receiver and arguments; it
 // weak-defines a.* for each argument of pointer, slice, map, chan, func or
-// interface type (`&x` gives x.*) and recv.* for a receiver that is
+// interface type (`&x` gives x.*; a slice expression of a path gives its
+// base's elements: buf[:n], arr[:] and (*pa)[i:] give buf[*], arr[*], pa[*])
+// and recv.* for a receiver that is
 // reference-typed (the same kinds) or bound to a pointer-receiver method. A value-typed struct
 // argument is not weak-defined. Conversions write nothing; builtins write
 // nothing except copy(dst, …), delete(m, …) and clear(x), which weak-define
-// dst[*], m[*], x[*]; append's result flows to the assignment's LHS.
+// dst[*], m[*], x[*] (copy(dst[i:], …) gives dst[*] too); append's result
+// flows to the assignment's LHS.
 func DefUseOf(n Node, info *types.Info, k int, entryBases []types.Object, fn ast.Node, keyOf map[ast.Node]string) DefUse {
 	c := &collector{info: info, k: k, seen: map[pathKind]bool{}}
 	switch {

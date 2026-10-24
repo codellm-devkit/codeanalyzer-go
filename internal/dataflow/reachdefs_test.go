@@ -390,3 +390,27 @@ func reversed(ps []dataflow.Path) []dataflow.Path {
 	reverse(out)
 	return out
 }
+
+// hasDDG asserts fn's DDG contains each of want (not necessarily only them).
+func hasDDG(t *testing.T, fn string, want ...dataflow.DdgEdge) {
+	t.Helper()
+	_, _, got := ddgOf(t, fn)
+	have := map[dataflow.DdgEdge]bool{}
+	for _, g := range got {
+		have[g] = true
+	}
+	for _, w := range want {
+		if !have[w] {
+			t.Errorf("%s: missing ddg %s→%s on %q; have %v", fn, w.Src, w.Dst, w.Var, got)
+		}
+	}
+}
+
+// TestDDG_SubsliceArgWritesBase (C1): a callee writing through a subslice
+// (buf[:n], arr[:], dst[i:]) writes the base's elements: the call
+// weak-defines base[*], which reaches a later read of the base.
+func TestDDG_SubsliceArgWritesBase(t *testing.T) {
+	hasDDG(t, "SubsliceRead", dd("487:2", "488:2", "buf[*]"))
+	hasDDG(t, "ArraySliceRead", dd("494:2", "495:2", "arr[*]"))
+	hasDDG(t, "CopyInto", dd("501:2", "502:2", "dst[*]"))
+}

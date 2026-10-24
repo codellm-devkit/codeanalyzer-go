@@ -401,3 +401,14 @@ func TestDefUse_IfInitShadows(t *testing.T) {
 		t.Errorf("IfShadow header uses: want [param x, init x], got bases %v, %v", du.Uses[0].Base, du.Uses[1].Base)
 	}
 }
+
+// TestDefUse_SubsliceArgs (C1): a slice expression passed to a callee (or as
+// copy's/clear's destination) weak-defines its base's elements, base[*]; the
+// call still reads the base and the slice bounds.
+func TestDefUse_SubsliceArgs(t *testing.T) {
+	wantDU(t, "r.Read(buf[:n])", flowDU(t, "SubsliceRead", "487:2"), nil, ss("buf[*]", "r.*"), ss("buf", "n", "r"))
+	wantDU(t, "readFull(r, arr[:])", flowDU(t, "ArraySliceRead", "494:2"), nil, ss("arr[*]", "r.*"), ss("arr", "r"))
+	wantDU(t, "copy(dst[i:], src)", flowDU(t, "CopyInto", "501:2"), nil, ss("dst[*]"), ss("dst", "i", "src"))
+	wantDU(t, "clear(m)", flowDU(t, "ClearAll", "507:2"), nil, ss("m[*]"), ss("m"))
+	wantDU(t, "clear(s[:n])", flowDU(t, "ClearAll", "508:2"), nil, ss("s[*]"), ss("n", "s"))
+}

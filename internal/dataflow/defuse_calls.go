@@ -42,7 +42,8 @@ func (c *collector) callWrites(call *ast.CallExpr) {
 		switch name {
 		case "copy", "delete", "clear":
 			if len(call.Args) > 0 {
-				if b, ok := pathOf(call.Args[0], c.info); ok {
+				x, _ := sliceBase(call.Args[0])
+				if b, ok := pathOf(x, c.info); ok {
 					c.addWeak(b.with("[*]"))
 				}
 			}
@@ -63,8 +64,16 @@ func (c *collector) callWrites(call *ast.CallExpr) {
 	}
 }
 
-// writeThrough weak-defines a.* (x.* for &x) when a is a path.
+// writeThrough weak-defines a.* (x.* for &x) when a is a path, and base[*]
+// when a slices a path (buf[:n], arr[:], (*p)[i:]): the callee writes the
+// elements the slice shares with its base.
 func (c *collector) writeThrough(a ast.Expr) {
+	if base, sliced := sliceBase(a); sliced {
+		if b, ok := pathOf(base, c.info); ok {
+			c.addWeak(b.with("[*]"))
+		}
+		return
+	}
 	a = ast.Unparen(a)
 	if u, ok := a.(*ast.UnaryExpr); ok && u.Op == token.AND {
 		a = u.X
@@ -72,6 +81,36 @@ func (c *collector) writeThrough(a ast.Expr) {
 	if b, ok := pathOf(a, c.info); ok {
 		c.addWeak(b.with(".*"))
 	}
+}
+
+// sliceBase strips slice expressions (and the parentheses, & and * between
+// them) from e down to the sliced operand: buf[2:][:n] gives buf, (&arr)[:]
+// and (*p)[:] give arr and p. sliced reports whether any slice expression was
+// stripped; when it is false e is returned unchanged. The slice's elements are
+// its base's elements, whether the base is a slice, an array or a pointer to
+// an array, so a write through the slice is a write to base[*].
+func sliceBase(e ast.Expr) (base ast.Expr, sliced bool) {
+	base = e
+	for {
+		x := ast.Unparen(base)
+		s, ok := x.(*ast.SliceExpr)
+		if !ok {
+			break
+		}
+		base, sliced = ast.Unparen(s.X), true
+		switch b := base.(type) {
+		case *ast.UnaryExpr:
+			if b.Op == token.AND {
+				base = b.X
+			}
+		case *ast.StarExpr:
+			base = b.X
+		}
+	}
+	if !sliced {
+		return e, false
+	}
+	return base, true
 }
 
 // builtinName returns the name of the builtin fun calls (panic, len, copy,

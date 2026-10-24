@@ -259,7 +259,12 @@ truncated). Match Java's `AccessPath` / Python's `access_paths` semantics:
   receiver if it is a pointer receiver or reference-typed** (pointer, slice, map, chan, func or
   interface — e.g. `hs.Write(b)` on an interface, `h.Set(k, v)` on a map-typed `http.Header`; the
   callee may write through it; Python's suffixed-weak-def precedent). Value-typed struct arguments and
-  receivers are not weak-defined (copy semantics).
+  receivers are not weak-defined (copy semantics). A **slice expression** argument (`r.Read(buf[:n])`,
+  `io.ReadFull(r, hdr[:])`, and the destination of `copy(dst[i:], src)` / `clear(s[:n])`) shares its
+  elements with its base, so it weak-defines the base's elements **`base[*]`** — slice, array or
+  pointer-to-array base alike (`&`, `*` and parentheses around the base are stripped). `[*]` rather
+  than `.*` because it is the element step the builtin rule (`copy`/`clear` → `dst[*]`) and index
+  reads (`buf[0]` uses `buf[*]`) already use; the slice bounds are still uses.
 - **Channels (goal 4, coarse):** `ch <- v` weak-defines `ch[*]` and uses `v`, `ch`; `v := <-ch` /
   `v, ok := <-ch` / `range ch` / recv in a comm clause uses `ch[*]` and defines `v`. Cross-goroutine
   flow then rides parameter/capture/field paths — a channel passed to a goroutine is an argument, so

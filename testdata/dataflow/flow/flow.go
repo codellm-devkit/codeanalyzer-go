@@ -475,3 +475,36 @@ func Guard(c, a int) int {
 	_ = d
 	return r
 }
+
+// reader is a local io.Reader (the fixture imports nothing).
+type reader interface{ Read(p []byte) (int, error) }
+
+func readFull(r reader, b []byte) { _, _ = r.Read(b) }
+
+// SubsliceRead reads into buf through the subslice buf[:n].
+func SubsliceRead(r reader, n int) byte {
+	buf := make([]byte, 16)
+	r.Read(buf[:n])
+	return buf[0]
+}
+
+// ArraySliceRead reads into an array through arr[:].
+func ArraySliceRead(r reader) byte {
+	var arr [8]byte
+	readFull(r, arr[:])
+	return arr[0]
+}
+
+// CopyInto copies into dst through the subslice dst[i:].
+func CopyInto(dst, src []byte, i int) byte {
+	dst = dst[:len(dst):len(dst)]
+	copy(dst[i:], src)
+	return dst[0]
+}
+
+// ClearAll clears a map and a subslice.
+func ClearAll(m map[int]int, s []int, n int) int {
+	clear(m)
+	clear(s[:n])
+	return m[0] + s[0]
+}
