@@ -200,7 +200,10 @@ shared neutral vocabulary verbatim; never rename a sibling's shared name). Spec:
   take the callable, not class+method strings).
 - **Scope this train:** Tier-A lifecycle + L1/L2 leaf accessors + repository-artifact
   getters + `get_source`. Slicing / CFG / CDG / DDG / reachability are **omitted** (they
-  need L3/L4 the analyzer does not produce) per the ABC contract.
+  need L3/L4 the analyzer does not produce) per the ABC contract. (2026-10-24: L3 is now
+  emitted at `-a 3` — per-callable `cfg`/`cdg`/`ddg` and `GO_CFG_NEXT`/`GO_CDG`/`GO_DDG` —
+  so L3 accessors are supportable now; interprocedural slicing and taint still need L4:
+  `param_in`/`param_out`/`summary` and the points-to `ddg`.)
 
 ### Deferred (not this train)
 - SDK consumer slicing/taint surface and L3/L4 facade methods — arrive with the L3/L4

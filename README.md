@@ -56,7 +56,9 @@ The binary is fully self-contained: a single static executable with no runtime d
 - **Symbol table** — packages, structs, interfaces, fields, methods, package-level functions,
   imports, struct tags, and generic type parameters, with precise source spans.
 - **Call graph** — a resolver-based call graph via `go/types`: each call site is resolved to its
-  full import-path signature, with project-internal edges emitted (Level 2).
+  full import-path signature. Level 2 emits edges to project callees and to library callees
+  (homed in `application.external_symbols` under `can://<app>/@external/<import-path>/<sig>`).
+  Level 3 (`-a 3`) adds per-callable `cfg`, `cdg` and `ddg`.
 - **Generics-aware** — Go 1.18+ generics (`Set[T]`, union-constraint interfaces, multi-type-param
   functions) are modeled in the unified type/callable schema.
 - **Self-contained binary** — a single static executable (`go build`, `CGO_ENABLED=0`); no runtime

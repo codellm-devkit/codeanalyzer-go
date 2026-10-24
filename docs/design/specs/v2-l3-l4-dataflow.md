@@ -309,9 +309,15 @@ a `ddg` path does not prove the absence of a flow. It does not model:
 - **Value-typed struct arguments or receivers that contain slice, map or pointer fields.** A
   value struct is copied (no weak def, §4.5 Calls), but its reference-typed fields alias the
   caller's: `fill(cfg)` with `cfg.items []T` may write `cfg.items[*]`, which L3 does not record.
-- ~~Deferred calls reading receiver or argument state at exit~~ — **closed at L3**: the
-  deferred call node also uses every path it may write through (`defer w.Flush()` uses `w.*`,
-  `defer fill(b[1:])` uses `b[*]`), so a write after the registration reaches it.
+- ~~Deferred calls reading receiver or argument state at exit~~ — **closed at L3, except for
+  reassignment**: the deferred call node also uses every path it may write through
+  (`defer w.Flush()` uses `w.*`, `defer fill(b[1:])` uses `b[*]`), so a write after the
+  registration reaches it. The paths are keyed on the *variable* at exit, not on the value
+  bound at registration, so a reassignment after the `defer` (`defer fill(b); …; b = o`) can
+  add a spurious edge, and can kill an earlier def on the normal path.
+- **Appends that write into the destination's backing array.** `append(dst[:0], …)`, and
+  `append(dst, …)` with spare capacity, write into `dst`'s backing array, but L3 records no
+  `dst[*]` weak def: `append` is modelled as pass-through.
 
 The first two are addressed at **L4**: capture formals (`@formal_in`/`@formal_out` for captured
 variables, §4.6 closures rule) carry closure writes back to the enclosing callable, and the
