@@ -75,11 +75,30 @@ committed spec is the full transcript: `docs/design/specs/v2-l1-emission.md`.
 - Mirrors the Python/Java precedent (library callees are leaf nodes at application scope);
   on by default at L2, no flag.
 
+### L3 body and edges (`-a 3`; spec `docs/design/specs/v2-l3-l4-dataflow.md`)
+- **Body node `id`** = `<callable-id>@<key>` (`v2.GlobalOrdinal`) on **every** body node,
+  **from `-a 1` on** (not L3+ only) — Python parity (codeanalyzer-python stamps body ids at
+  L1). **`parent`** (L3 only) = the local key of the statement a satellite call sits in.
+- **Body kinds: shared vocabulary only, no Go-specific kinds** — `if` → `branch`;
+  `for`/`range` → `loop`; `switch`/type switch/`select` → `switch`; `return`; every other
+  statement and each case/comm-clause head → `statement`; L1 `call`; synthetic `entry`/`exit`.
+  `go`/`defer`/`select` facts ride `is_goroutine`/`is_deferred` and the `switch` kind.
+- **`@entry` / `@exit` are span-less** (keystone: synthetic CFG endpoints have no span) and
+  carry no `callee` (a call-node field).
+- **Defer two-node rule:** `defer f(x)` is a registration `statement` node (at the `defer`
+  keyword; evaluates `f`, `x` and weak-defines `<defer>:<call-key>`) **plus** the L1 deferred
+  `call` node (`is_deferred`), placed only in the exit chain (reverse source order before
+  `@exit`; every defer assumed registered). `go f(x)` is NOT split — the statement is its call
+  node.
+- **`cfg` kind `defer_resume`** — the one Go add to the shared `cfg` kinds: chain-internal
+  edges and the chain tail → `@exit`. The edge into the chain keeps its own kind.
+- **`k_limit`** (envelope, L3+ only) = `--graph-field-depth` (default 3), the access-path
+  bound of the syntactic `ddg` (`x.f.g.h` → `x.f.g.*`); `ddg.prov` is `["ssa"]` (parity).
+
 ### Deferred (not this train)
-- L3 (CFG/CDG/DDG) and L4 (SDG param edges) — reuse Group A ids/spans unchanged.
-  **Now designed** (2026-10-23): spec `docs/design/specs/v2-l3-l4-dataflow.md`.
-- Go-specific `cfg` edge kinds (e.g. `defer_resume`, `select`) are recorded when L3
-  is designed, not now.
+- L4 (SDG param edges) — reuses Group A ids/spans and the L3 vocabulary unchanged. Designed in
+  `docs/design/specs/v2-l3-l4-dataflow.md`. A Go-specific `select` cfg kind was not added
+  (`select` is a `switch` with `switch_case` edges).
 
 ## Neo4j-projection decisions
 
@@ -163,8 +182,8 @@ shared neutral vocabulary verbatim; never rename a sibling's shared name). Spec:
   never recomposed by hand. `prov` is a string-array prop.
 - `:GoBodyNode` covers every body node incl. synthetic `@entry`/`@exit` (id
   `<callable-id>@entry`, no `span_json`), each with `GO_HAS_BODY_NODE` from its callable.
-  It carries `call_node` (JSON `parent`, as a global id) and `var` (JSON `of`; L4 — absent at
-  L3). `GO_HAS_BODY_NODE` may originate at `:GoExternal` (L4 stand-ins).
+  It carries `call_node` (JSON `parent` verbatim — the **local** key, see § Flattened
+  properties) and `var` (JSON `of`; L4 — absent at L3). `GO_HAS_BODY_NODE` may originate at `:GoExternal` (L4 stand-ins).
 
 ### Reserved L4 overlay (declared now, emits nothing until L4 lands)
 - `schema.go` still declares `GO_PARAM_IN`, `GO_PARAM_OUT`, `GO_SUMMARY` (`Reserved`) with
@@ -186,4 +205,4 @@ shared neutral vocabulary verbatim; never rename a sibling's shared name). Spec:
 ### Deferred (not this train)
 - SDK consumer slicing/taint surface and L3/L4 facade methods — arrive with the L3/L4
   analyzer train, reusing this graph vocabulary unchanged.
-- Struct-tag modeling; Go-specific `cfg` edge kinds (`defer_resume`, `select`) — with L3.
+- Struct-tag modeling. (`defer_resume` landed with L3; see § L3 body and edges.)

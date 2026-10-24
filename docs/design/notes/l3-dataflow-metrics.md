@@ -644,8 +644,10 @@ The large differences have identifiable causes.
 - **Workaround.** Inheriting the nearest ancestor's `source_file` recovers the right text (it is
   what `scripts/l3_metrics.py` does), and it matches the emitter's intent ("closures share their
   enclosing callable's file", `v2emit/emit.go`).
-- **Open decision.** The schema docs do not state that inheritance, and the SDK should not have to
-  guess. Either document it or emit `source_file` on such closures.
+- **Fixed** (commit `b87c636`). The emitter now sets `source_file` on every callable whose
+  declaring file differs from its containing module, closures and nested closures included, so
+  the text-recovery rule holds as written and no inheritance is needed. The schema docs and
+  CLAUDE.md say so.
 
 ## L4 (to be added)
 

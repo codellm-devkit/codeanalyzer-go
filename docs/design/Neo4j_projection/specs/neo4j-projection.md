@@ -80,7 +80,7 @@ or a verbatim reuse of shared vocabulary. "Ref" names the sibling precedent.
 | **CG1** | `call_graph` → **`GO_CALLS`** (weight, prov); `error_channel[]` → **string-array prop** on `:GoCallable` | `GO_CALLS` parity with `PY_CALLS` (endpoints = callable id or `:GoExternal` ghost; no dangling). Go errors are returned values, not thrown types — a value-shaped fact rides the node, not a `GO_RAISES` edge. |
 | **I1** | `GO_IMPORTS` (aggregated per target) → `:GoModule` (in-project) or `:GoExternal` ghost (stdlib/external, keyed by import path) | Parity with aggregated `PY_IMPORTS` + edge-only-when-resolved. Go imports are overwhelmingly external → ghost targets, never dangling, never minted as `:Package` (packages come from dependencies, not imports). |
 | **A1** | Declare neutral `:Artifact`/`:Package`/`:ConfigKey` + `HAS_ARTIFACT`/`DECLARES_DEPENDENCY`(`_k=kind`)/`LOCKS`/`DEFINES_CONFIG` **verbatim**; project only facts the analyzer produces | These are the cross-language **merge targets** — reused unchanged so a sibling over the same repo converges. go.mod deps → `:Package` `pkg:golang/…`; absent facts → **zero rows** (declared contract, empty projection). `GO_PROVIDES`/`GO_UNRESOLVED_IMPORT` stay `GO_`-prefixed (this analyzer's claims). |
-| **L1** | Declare the **full L3/L4 overlay vocabulary now**; projector emits **zero rows** until the levels land | `GO_HAS_BODY_NODE`, `GO_CFG_NEXT`(`_k=kind`), `GO_CDG`, `GO_DDG`(`_k=var,prov`), `GO_PARAM_IN`, `GO_PARAM_OUT`, `GO_SUMMARY` + body-node statement kinds. `--emit neo4j` = "full-depth = max implemented" (L2 today). The contract is declared once; L3/L4 fill it with **no schema change**. |
+| **L1** | Declare the **full L3/L4 overlay vocabulary now**; projector emits **zero rows** until the levels land | `GO_HAS_BODY_NODE`, `GO_CFG_NEXT`(`_k=kind`), `GO_CDG`, `GO_DDG`(`_k=var,prov`), `GO_PARAM_IN`, `GO_PARAM_OUT`, `GO_SUMMARY` + body-node statement kinds. `--emit neo4j` = "full-depth = max implemented" (**L3 today**: `GO_CFG_NEXT`, `GO_CDG`, `GO_DDG` and the L3 body nodes are live; only `GO_PARAM_IN`, `GO_PARAM_OUT`, `GO_SUMMARY` remain reserved for L4). The contract is declared once; L3 filled it with **no schema change**, and L4 will too. |
 | **K1** | `_k` discriminants: `GO_CFG_NEXT` per `kind`; `GO_DDG` per `(var,prov)`; `DECLARES_DEPENDENCY` per `kind` | Same mechanism as the siblings — parallel edges survive MERGE instead of collapsing. |
 | **V1** | `SCHEMA_VERSION = "2.0.0"`, stamped on `:GoApplication`; additive-MINOR suspended for the 2.0.0 line | Parity with the sibling versioning ruling; consumers gate on the analyzer-version floor. |
 
@@ -88,13 +88,13 @@ or a verbatim reuse of shared vocabulary. "Ref" names the sibling precedent.
 
 | Label | Merge label | Key | Notes |
 | --- | --- | --- | --- |
-| `:GoApplication` | `GoApplication` | `id` | root `can://go/<app>`; schema_version, analyzer name/version, max_level |
+| `:GoApplication` | `GoApplication` | `id` | root `can://<app>` (app-outermost; child ids are `can://<app>/go/…`); schema_version, analyzer name/version, max_level |
 | `:GoModule` | `GoModule` | `id` | per file: package, **source** (whole file), content_hash, span |
 | `:GoType` | `GoSymbol` | `id` | `kind ∈ struct\|interface\|alias\|defined` (property), signature, span |
 | `:GoCallable` | `GoSymbol` | `id` | signature, return_type, `error_channel[]`, `source_file?`, metrics, span |
 | `:GoField` | `GoField` | `id` (`<type-id>/<name>`) | type, span |
-| `:GoBodyNode` | `GoBodyNode` | `id` (global ordinal) | `kind` (`call` at L1), `is_goroutine?`, `is_deferred?`, span |
-| `:GoExternal` | `GoSymbol` | `id` | library/stdlib ghost; name, import path |
+| `:GoBodyNode` | `GoBodyNode` | `id` (global ordinal; the JSON body node's `id`, emitted from L1) | `kind` (`call` at L1; `statement\|branch\|loop\|switch\|return\|entry\|exit` at L3), `is_goroutine?`, `is_deferred?`, span (absent on `@entry`/`@exit`), `call_node?` (L3: the enclosing statement's **local** key, JSON `parent` verbatim — Python parity), `var?` (L4) |
+| `:GoExternal` | `GoSymbol` | `id` | library/stdlib ghost (`can://<app>/@external/…`); name, import path, signature, module |
 | `:Artifact` | `Artifact` | `id` | **neutral** |
 | `:Package` | `Package` | `id` (purl) | **neutral** |
 | `:ConfigKey` | `ConfigKey` | `id` | **neutral** |
@@ -108,7 +108,8 @@ Every `can://`-keyed node also carries `:GoCanNode`.
 - **Inheritance:** `GO_EMBEDS` (deferred/resolved-only), `GO_SATISFIES`
 - **Imports:** `GO_IMPORTS` (aggregated)
 - **Repository (neutral):** `HAS_ARTIFACT`, `DECLARES_DEPENDENCY` (`_k`), `LOCKS`, `DEFINES_CONFIG`; (`GO_`) `GO_PROVIDES`, `GO_UNRESOLVED_IMPORT`
-- **Reserved L3/L4 overlay (zero rows until the level lands):** `GO_CFG_NEXT` (`_k`), `GO_CDG`, `GO_DDG` (`_k`), `GO_PARAM_IN`, `GO_PARAM_OUT`, `GO_SUMMARY`
+- **L3 overlay (live):** `GO_CFG_NEXT` (`kind`, `_k=kind`), `GO_CDG`, `GO_DDG` (`var`, `prov`, `_k=var|prov`)
+- **Reserved L4 overlay (zero rows until L4 lands):** `GO_PARAM_IN`, `GO_PARAM_OUT`, `GO_SUMMARY`
 
 ### CLI surface (parity with TS/Python)
 
@@ -184,8 +185,8 @@ lockstep."** Concretely:
 
 - **Analyzer** ships the `internal/neo4j/` projection as part of the v2 line. `--emit neo4j`
   is independently landable behind the existing flag stubs; it produces a graph at
-  full-depth = L2 today and grows additively when L3/L4 arrive (no contract change — L1
-  reserve).
+  full-depth = L3 today (L3 landed additively, with no contract change) and grows additively
+  again when L4 arrives (no contract change — L1 reserve).
 - **SDK** (`GoAnalysisBackend`) pins the analyzer version **only after** the analyzer v2
   release is cut — same ordering constraint as the JSON wiring (the SDK's Go models can't
   parse v2 until then, and there is no Go wiring yet, so this is net-new, not a migration).

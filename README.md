@@ -285,7 +285,7 @@ recorded in the envelope as `k_limit`. It is a flag error below `-a 3` and with
 `--emit neo4j`. Callables are analyzed in parallel (`-j`), and the output is byte-identical
 for every `-j`. L3 only adds to the L2 output: every L2 fact stays as it is.
 
-**Level 2** adds a resolver pass: for each call site, `go/types` resolves the callee to its full import-path signature (`pkgImportPath.TypeName.MethodName`). Only project-internal edges (both endpoints present in the symbol table) are emitted. `callee_signature` is backfilled on all successfully resolved sites.
+**Level 2** adds a resolver pass: for each call site, `go/types` resolves the callee to its full import-path signature (`pkgImportPath.TypeName.MethodName`). A project callee becomes an edge to its callable; a **library callee** (stdlib, a dependency, or a package vendored under `vendor/`) becomes an edge to an `@external` symbol, recorded once in `application.external_symbols`. A callee that is neither (an interface method of a project type, a conversion, a builtin, a call through a function value) gets no edge. Every resolved call node's `callee` is backfilled.
 
 ## Output schema
 
@@ -336,6 +336,7 @@ node carries a `can://<app>/…` `id`, a `kind`, and a `span`:
                 "body": {
                   "10:2": {
                     "kind": "call",
+                    "id": "can://myapp/go/pkg/greeter/greeter.go/…/example.com/pkg/greeter.Greeter.Greet@10:2",
                     "span": { "start": [10, 2], "end": [10, 30], "bytes": [90, 118] },
                     "callee": "can://myapp/go/pkg/greeter/greeter.go/…/example.com/pkg/greeter.format"
                   }
@@ -368,7 +369,8 @@ Key v2 schema properties:
 - **One containment tree** — `application → module → type → callable → body`, keyed as
   `symbol_table` (modules, by **project-relative file path**), `types`, `callables`, `body`.
 - **`id`** — every node carries a durable `can://<app>/go/<file>/<type>/<signature>` id;
-  `<app>` is the `--app-name` anchor. Body call nodes use `<callable-id>` keyed by `line:col`.
+  `<app>` is the `--app-name` anchor. A body node is keyed by `line:col` in its callable's `body`
+  map and carries `id` = `<callable-id>@<key>` at every level, from `-a 1` on.
 - **`kind`** — `module` · `type` kinds `struct | interface | alias | defined` (collapses v1's
   `is_interface`) · `callable` kinds `function | method | lambda` · body `call`.
 - **`base_types: []`** (type, optional) — embedded type ids (struct/interface embedding — the
@@ -376,17 +378,25 @@ Key v2 schema properties:
 - **`span`** — `{start:[line,col], end:[line,col], bytes:[from,to]}`; `bytes` are **UTF-8 byte
   offsets** into the owning `module.source` (source is stored once per module, every node slices it).
 - **`source_file`** (callable, optional) — set when a method is declared in a *different file*
-  than its receiver type; the method stays nested under the type, and its `span.bytes` index
+  than its receiver type, and on every closure (nested ones too) inside such a method; the
+  callable stays nested under the type, and its `span.bytes` (and its body nodes' spans) index
   `symbol_table[source_file].source` instead of the nesting module's.
 - **`error_channel: []`** — populated from `error`-typed returns (the returns also stay in
   `return_type`). **Closures** nest as `callables{}` on the enclosing callable.
-- **`body` call nodes** — `callee` is the sanctioned `null → id` slot: `null` at L1 (and for
-  external/stdlib callees), a `can://` node id once resolved at L2. `is_goroutine` / `is_deferred`
+- **`body` call nodes** — `callee` is the sanctioned `null → id` slot: `null` at L1; at L2 a
+  project callable's `can://` id, or for a library (stdlib or dependency) callee its
+  `can://<app>/@external/<import-path>/<sig>` id, a key of `external_symbols`. It stays `null`
+  for conversions, builtins, calls through function values and unresolved sites. `is_goroutine` / `is_deferred`
   are boolean flags emitted **only when true** (a plain call omits them), for `go f()` / `defer f()`.
-- **`call_graph` edges** — `{src, dst, prov, weight}`; `src`/`dst` are `can://` node ids that
-  exist in the tree (not raw signatures), `prov` is resolver provenance, e.g. `["go/types"]`.
+- **`call_graph` edges** — `{src, dst, prov, weight}`; `src` is a callable id in the tree and
+  `dst` a callable id or an `external_symbols` key (never a raw signature); `prov` is resolver
+  provenance, e.g. `["go/types"]`.
+- **`external_symbols`** (application, L2, optional) — one entry per library callee, keyed by
+  its `@external` id: `{id, kind: "external", name, module, signature, parameters[], return_type}`
+  (parameters carry no span). Absent when no library call was resolved.
 - **L3 (`-a 3`)** — `body` gains `statement` / `branch` / `loop` / `switch` / `return` nodes
-  and the synthetic `@entry` / `@exit`. Every body node carries `id` (`<callable-id>@<key>`).
+  and the synthetic `@entry` / `@exit` (which have no `span`). Every body node carries `id`
+  (`<callable-id>@<key>`).
   A call nested in a statement carries `parent`, the statement's key. The callable gains
   `cfg[] {src, dst, kind}`, `cdg[] {src, dst}` and `ddg[] {src, dst, var, prov}`, whose
   endpoints are `body` keys. See `docs/design/specs/v2-schema-structure.md`.
@@ -414,8 +424,9 @@ Both paths are **scoped to one application**: every destructive statement is anc
 and never touches another app (or a sibling-language graph) in the same database. The projection is
 **deterministic** — a second emit is byte-identical.
 
-> **`--emit neo4j` is always full depth.** The graph is projected at the max implemented level (L2
-> today — symbol table + call graph) and canonical schema v2. Do **not** pass `-a`/`--analysis-level`
+> **`--emit neo4j` is always full depth.** The graph is projected at the max implemented level (L3
+> today — symbol table, call graph, and every callable's body nodes with `GO_CFG_NEXT` / `GO_CDG` /
+> `GO_DDG`) and canonical schema v2. Do **not** pass `-a`/`--analysis-level`
 > with it — an explicit level is a flag error (`--analysis-level does not apply to --emit neo4j`),
 > because there is no shallower graph to ask for.
 
