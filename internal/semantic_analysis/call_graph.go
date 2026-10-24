@@ -288,23 +288,15 @@ func (cg *CallGraphBuilder) recordExternal(fn *types.Func, fullSig string) {
 }
 
 // resolveCallSite resolves a single call site to its callee function by looking
-// its [start, end) position up in the package's call-site index. relPath is the
-// file declaring the enclosing callable (site columns are byte offsets within
-// that file). Returns nil when the site cannot be resolved (graceful fallback).
+// it up in the package's call-site index under the key L1 recorded it with:
+// relPath (the file declaring the enclosing callable) and the site's
+// directive-adjusted start and end line:col. Returns nil when the site cannot be
+// resolved (graceful fallback).
 func (cg *CallGraphBuilder) resolveCallSite(pkg *packages.Package, relPath string, site *schema.GoCallsite) *types.Func {
 	if pkg.TypesInfo == nil {
 		return nil
 	}
-	tf := cg.tokenFile(pkg, relPath)
-	if tf == nil ||
-		site.StartLine < 1 || site.StartLine > tf.LineCount() || site.StartColumn < 1 ||
-		site.EndLine < 1 || site.EndLine > tf.LineCount() || site.EndColumn < 1 {
-		return nil
-	}
-	key := callKey{
-		pos: tf.LineStart(site.StartLine) + token.Pos(site.StartColumn-1),
-		end: tf.LineStart(site.EndLine) + token.Pos(site.EndColumn-1),
-	}
+	key := callKey{relPath, site.StartLine, site.StartColumn, site.EndLine, site.EndColumn}
 	call, ok := cg.indexFor(pkg)[key]
 	if !ok {
 		return nil
@@ -317,21 +309,9 @@ func (cg *CallGraphBuilder) indexFor(pkg *packages.Package) callSiteIndex {
 	if idx, ok := cg.indexes[pkg]; ok {
 		return idx
 	}
-	idx := newCallSiteIndex(pkg)
+	idx := newCallSiteIndex(cg.projectDir, cg.fset, pkg)
 	cg.indexes[pkg] = idx
 	return idx
-}
-
-// tokenFile finds the token.File of pkg's syntax file whose project-relative
-// path is relPath.
-func (cg *CallGraphBuilder) tokenFile(pkg *packages.Package, relPath string) *token.File {
-	for _, f := range pkg.Syntax {
-		tf := cg.fset.File(f.Pos())
-		if tf != nil && utils.RelativePath(cg.projectDir, tf.Name()) == relPath {
-			return tf
-		}
-	}
-	return nil
 }
 
 // resolveCallExpr resolves a *ast.CallExpr to its callee *types.Func using

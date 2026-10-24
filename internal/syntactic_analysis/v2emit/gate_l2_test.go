@@ -489,3 +489,43 @@ func TestGateL2_VendoredCalleeIsExternal(t *testing.T) {
 		t.Errorf("no call_graph edge targets %s", ext)
 	}
 }
+
+// TestGateL2_LineDirectiveCallsResolve (I1): L1 records call sites through
+// fset.Position, which applies //line directives, so a site under a directive
+// names a virtual line:col (here line 900 of a 17-line file). The resolver
+// must find it by that same key and backfill its callee and edge.
+func TestGateL2_LineDirectiveCallsResolve(t *testing.T) {
+	out := buildDataflowL2Fresh(t)
+	fn := functionByName(t, mustModule(t, out, "linedir/linedir.go"), "Caller")
+	helper := functionByName(t, mustModule(t, out, "linedir/linedir.go"), "helper").ID
+	getenv := v2.ExternalID(out.Application.ID, "os", "Getenv")
+
+	callees := map[string]bool{}
+	for k, n := range fn.Body {
+		if n.Kind != "call" {
+			continue
+		}
+		if n.Callee == nil {
+			t.Errorf("call node %s has a null callee", k)
+			continue
+		}
+		callees[*n.Callee] = true
+	}
+	if _, virtual := fn.Body["900:2"]; !virtual {
+		t.Fatalf("no call node at the virtual 900:2; body %v", keys(fn.Body))
+	}
+	edges := map[string]bool{}
+	for _, e := range out.Application.CallGraph {
+		if e.Src == fn.ID {
+			edges[e.Dst] = true
+		}
+	}
+	for _, dst := range []string{helper, getenv} {
+		if !callees[dst] {
+			t.Errorf("no call node of Caller has callee %s", dst)
+		}
+		if !edges[dst] {
+			t.Errorf("missing call_graph edge %s -> %s", fn.ID, dst)
+		}
+	}
+}
