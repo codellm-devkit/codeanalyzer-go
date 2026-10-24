@@ -768,9 +768,11 @@ func gateOne(t *testing.T, name string, nodes []dataflow.Node, es []dataflow.Cfg
 	return chain
 }
 
-// gateCallKeys lists every call in body in the L1 recording order (pre-order;
-// a go statement's call only; no function literal bodies) with v2 keys.
-func gateCallKeys(fset *token.FileSet, body *ast.BlockStmt) []dataflow.CallKey {
+// gateCallKeys lists the key of every call in body in the L1 recording order
+// (pre-order; a go statement's call only; no function literal bodies), as
+// v2.CallBodyKeys assigns them from each call's (line-directive adjusted)
+// position.
+func gateCallKeys(fset *token.FileSet, body *ast.BlockStmt) []string {
 	var calls []*ast.CallExpr
 	ast.Inspect(body, func(n ast.Node) bool {
 		switch n := n.(type) {
@@ -789,12 +791,7 @@ func gateCallKeys(fset *token.FileSet, body *ast.BlockStmt) []dataflow.CallKey {
 		p := fset.Position(c.Pos())
 		pos[i] = [2]int{p.Line, p.Column}
 	}
-	keys := v2.CallBodyKeys(pos)
-	out := make([]dataflow.CallKey, len(calls))
-	for i, c := range calls {
-		out[i] = dataflow.CallKey{Pos: c.Pos(), Key: keys[i]}
-	}
-	return out
+	return v2.CallBodyKeys(pos)
 }
 
 // ---- canPanic rules (spec §4.3.2) ----

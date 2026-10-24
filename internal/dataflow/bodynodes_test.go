@@ -62,23 +62,18 @@ func loadFlow(t *testing.T) *flowFixture {
 	return fixture
 }
 
-// callKeys builds the L1 call-node list exactly as the driver does: keys from
-// v2.CallBodyKeys over the call sites' [line, col], positions mapped back to
-// token.Pos through the declaring file.
-func (fx *flowFixture) callKeys(t *testing.T, fn string) []dataflow.CallKey {
+// callKeys builds the L1 call-node keys exactly as the driver does: keys from
+// v2.CallBodyKeys over the call sites' [line, col], in recording order.
+// BuildNodes pairs them with the AST calls by index (ruling R5), never by
+// rebuilding a token.Pos.
+func (fx *flowFixture) callKeys(t *testing.T, fn string) []string {
 	t.Helper()
 	sites := fx.sites[fn]
 	pos := make([][2]int, len(sites))
 	for i, cs := range sites {
 		pos[i] = [2]int{cs.StartLine, cs.StartColumn}
 	}
-	keys := v2.CallBodyKeys(pos)
-	tf := fx.fset.File(fx.decl(t, fn).Pos())
-	out := make([]dataflow.CallKey, len(sites))
-	for i, cs := range sites {
-		out[i] = dataflow.CallKey{Pos: tf.LineStart(cs.StartLine) + token.Pos(cs.StartColumn-1), Key: keys[i]}
-	}
-	return out
+	return v2.CallBodyKeys(pos)
 }
 
 func (fx *flowFixture) decl(t *testing.T, fn string) *ast.FuncDecl {
@@ -227,8 +222,8 @@ func TestBodyNodes_KindsPerConstruct(t *testing.T) {
 func TestBodyNodes_BareCallSharesKey(t *testing.T) {
 	fx := loadFlow(t)
 	l1 := map[string]bool{}
-	for _, ck := range fx.callKeys(t, "EarlyReturnDefer") {
-		l1[ck.Key] = true
+	for _, k := range fx.callKeys(t, "EarlyReturnDefer") {
+		l1[k] = true
 	}
 	_, byKey, keyOf := build(t, "EarlyReturnDefer")
 	n := wantKind(t, "EarlyReturnDefer", byKey, "131:2", dataflow.KindCall)
@@ -355,9 +350,9 @@ func TestBodyNodes_CallKeysMatchL1(t *testing.T) {
 	fx := loadFlow(t)
 	for fn := range fx.decls {
 		_, byKey, _ := build(t, fn)
-		for _, ck := range fx.callKeys(t, fn) {
-			if n, ok := byKey[ck.Key]; !ok || n.Kind != dataflow.KindCall {
-				t.Errorf("%s: L1 call key %s has no call node", fn, ck.Key)
+		for _, k := range fx.callKeys(t, fn) {
+			if n, ok := byKey[k]; !ok || n.Kind != dataflow.KindCall {
+				t.Errorf("%s: L1 call key %s has no call node", fn, k)
 			}
 		}
 	}

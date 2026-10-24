@@ -9,15 +9,6 @@ import (
 	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
 )
 
-// CallKey is one L1 call node: the call expression's position and its body
-// key. The caller builds the list from the callable's L1 call sites with
-// v2.CallBodyKeys, in recording order, so L3 call keys are byte-identical to
-// the L1 ones; BuildNodes never derives a call key itself.
-type CallKey struct {
-	Pos token.Pos
-	Key string
-}
-
 // BuildNodes maps a callable body onto its L3 body nodes (spec §4.2) and
 // returns them with a map from AST node to node key.
 //
@@ -41,7 +32,14 @@ type CallKey struct {
 //     statement gets one only as a label target. Function literal bodies are
 //     skipped: closures are their own callables.
 //
-// Keys: call nodes take their CallKey.Key. Statement nodes take
+// calls holds the L1 call-node keys in L1 recording order (v2.CallBodyKeys
+// over the callable's call sites). They are paired with the body's call
+// expressions by recording index (ruling R5), never by position: under a
+// //line directive the recorded line:col does not name the call's token.Pos.
+// The caller checks len(calls) == RecordedCallCount(body); surplus keys are
+// ignored and calls past the end of the list get no call node.
+//
+// Keys: call nodes take their L1 key. Statement nodes take
 // v2.LocalID(line, col) of their anchor; a statement starting with a call
 // (`f().x = v`) would collide with the L1 call key, so it takes the next free
 // "/n" suffix instead and the L1 key is never moved.
@@ -56,7 +54,7 @@ type CallKey struct {
 // nodes folded into a node to that node's key: a bare or `go` call's
 // *ast.CallExpr, an if/for/switch init, a for post, a type switch guard, a comm
 // clause's statement, and a *ast.LabeledStmt (to its inner statement's node).
-func BuildNodes(fset *token.FileSet, body *ast.BlockStmt, calls []CallKey) ([]Node, map[ast.Node]string) {
+func BuildNodes(fset *token.FileSet, body *ast.BlockStmt, calls []string) ([]Node, map[ast.Node]string) {
 	if body == nil {
 		return []Node{}, map[ast.Node]string{}
 	}
@@ -66,48 +64,60 @@ func BuildNodes(fset *token.FileSet, body *ast.BlockStmt, calls []CallKey) ([]No
 		taken:   make(map[string]bool, len(calls)),
 		keyOf:   map[ast.Node]string{},
 	}
-	for _, c := range calls {
-		b.taken[c.Key] = true
+	for _, k := range calls {
+		b.taken[k] = true
 	}
 	b.stmtList(body.List)
 
 	sort.SliceStable(b.nodes, func(i, j int) bool { return b.nodes[i].Pos < b.nodes[j].Pos })
 	out := make([]Node, 0, len(b.nodes)+2)
 	out = append(out, Node{Key: EntryKey, Kind: KindEntry})
-	out = append(out, b.nodes...)
+	for _, n := range b.nodes {
+		p, e := fset.Position(n.Pos), fset.Position(n.End)
+		n.StartLC, n.EndLC = [2]int{p.Line, p.Column}, [2]int{e.Line, e.Column}
+		out = append(out, n)
+	}
 	out = append(out, Node{Key: ExitKey, Kind: KindExit})
 	return out, b.keyOf
 }
 
-// assignCallKeys pairs each call expression with its L1 key. It walks the body
-// in the L1 recording order (pre-order; a `go` statement's call only, not its
-// arguments; no function literal bodies) and takes, for each call, the next
-// unused key recorded at its position — so co-positioned chained calls get
-// "l:c", "l:c/2", … outermost first, exactly as L1 assigned them.
-func assignCallKeys(body *ast.BlockStmt, calls []CallKey) map[*ast.CallExpr]string {
-	byPos := map[token.Pos][]string{}
-	for _, c := range calls {
-		byPos[c.Pos] = append(byPos[c.Pos], c.Key)
-	}
-	out := map[*ast.CallExpr]string{}
-	take := func(call *ast.CallExpr) {
-		if q := byPos[call.Pos()]; len(q) > 0 {
-			out[call] = q[0]
-			byPos[call.Pos()] = q[1:]
-		}
-	}
+// recordedCalls lists body's call expressions in the L1 recording order of
+// buildCallSites (internal/syntactic_analysis): pre-order, a `go` statement's
+// call only (not the calls in its arguments), no function literal bodies.
+func recordedCalls(body *ast.BlockStmt) []*ast.CallExpr {
+	var out []*ast.CallExpr
 	ast.Inspect(body, func(n ast.Node) bool {
 		switch n := n.(type) {
 		case *ast.GoStmt:
-			take(n.Call)
+			out = append(out, n.Call)
 			return false
 		case *ast.FuncLit:
 			return false
 		case *ast.CallExpr:
-			take(n)
+			out = append(out, n)
 		}
 		return true
 	})
+	return out
+}
+
+// RecordedCallCount is the number of L1 call sites body records: the length
+// the calls argument of BuildNodes must have.
+func RecordedCallCount(body *ast.BlockStmt) int {
+	if body == nil {
+		return 0
+	}
+	return len(recordedCalls(body))
+}
+
+// assignCallKeys pairs the i-th recorded call with the i-th L1 key.
+func assignCallKeys(body *ast.BlockStmt, calls []string) map[*ast.CallExpr]string {
+	out := map[*ast.CallExpr]string{}
+	for i, call := range recordedCalls(body) {
+		if i < len(calls) {
+			out[call] = calls[i]
+		}
+	}
 	return out
 }
 
