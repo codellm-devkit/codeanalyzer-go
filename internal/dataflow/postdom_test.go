@@ -72,21 +72,20 @@ func checkCDGOrder(t *testing.T, fn string, got []dataflow.CdgEdge) {
 // Derivations below use the CFGs pinned in cfg_test.go. ipdom(n) is n's
 // immediate post-dominator; FOW adds a→x for each CFG edge a→b with b ≠
 // ipdom(a), for x on the post-dominator-tree path b … ipdom(a) (excluded).
-// Anchoring: every CFG node other than @entry with no controller — @exit
-// included — gets @entry→x.
+// Anchoring: every non-synthetic CFG node with no controller gets @entry→x;
+// @entry and @exit are never anchored (Python parity).
 
 func TestCDG_IfElse(t *testing.T) {
 	// ipdom: 17:3, 21:2 → @exit; 19:3 → 21:2; 16:2 → @exit; @entry → 16:2.
 	// 16:2→17:3: walk 17:3 (stop @exit). 16:2→19:3: walk 19:3, 21:2.
 	// The then-arm returns, so the statement after the if (21:2) runs only
 	// on the false path: it depends on the if, not on @entry.
-	// Anchored: 16:2, @exit.
+	// Anchored: 16:2.
 	wantCDG(t, "IfElse",
 		c(ieIf, ieThenRet),
 		c(ieIf, ieElseAsg),
 		c(ieIf, ieRet),
 		c(entry, ieIf),
-		c(entry, exit),
 	)
 }
 
@@ -94,13 +93,12 @@ func TestCDG_Loop(t *testing.T) {
 	// ForLoop. ipdom: 30:2 → @exit; 27:2 → 30:2; 28:3 → 27:2; 26:2 → 27:2.
 	// 27:2→28:3: walk 28:3, 27:2 (stop 30:2); 27:2→27:2 is a self-loop,
 	// skipped. 28:3→27:2 is ipdom(28:3): nothing. The header has no other
-	// controller, so it is anchored with 26:2, 30:2 and @exit.
+	// controller, so it is anchored with 26:2 and 30:2.
 	wantCDG(t, "ForLoop",
 		c(flFor, flBody),
 		c(entry, flInit),
 		c(entry, flFor),
 		c(entry, flRet),
-		c(entry, exit),
 	)
 	// Spin: two empty-body loops, i.e. CFG self-loops 294:2→294:2 and
 	// 296:2→296:2. ipdom: 294:2 → 296:2 → @exit. The only non-ipdom edges
@@ -109,7 +107,6 @@ func TestCDG_Loop(t *testing.T) {
 	wantCDG(t, "Spin",
 		c(entry, "294:2"),
 		c(entry, "296:2"),
-		c(entry, exit),
 	)
 }
 
@@ -119,13 +116,12 @@ func TestCDG_Infinite(t *testing.T) {
 	// 37:3 → @exit (35:2 and 38:4 meet at @exit); 38:4 → @exit.
 	// 35:2→36:3: walk 36:3, 37:3. 37:3→35:2: walk 35:2. 37:3→38:4: walk
 	// 38:4. The header is controlled by the if (the only way back into it),
-	// so it is not anchored; only @exit is.
+	// so it is not anchored: nothing is.
 	wantCDG(t, "Infinite",
 		c(infFor, infRecv),
 		c(infFor, infIf),
 		c(infIf, infFor),
 		c(infIf, infRet),
-		c(entry, exit),
 	)
 }
 
@@ -137,7 +133,7 @@ func TestCDG_DeferChain(t *testing.T) {
 	// 126:2 → 127:2. Parallel defer_resume/exception edges are one edge.
 	// 127:2→128:2 (exception twin to 127:8): walk 128:2. 128:2→129:3,
 	// 128:2→131:2, 131:2→132:2: one node each. Anchored: 126:2, 127:2, both
-	// deferred calls, @exit. The satellite g(a) at 127:13 is not a CFG
+	// deferred calls. The satellite g(a) at 127:13 is not a CFG
 	// node and gets no CDG edge.
 	wantCDG(t, "EarlyReturnDefer",
 		c(erdReg2, erdIf),
@@ -148,7 +144,6 @@ func TestCDG_DeferChain(t *testing.T) {
 		c(entry, erdD2),
 		c(entry, erdReg2),
 		c(entry, erdD1),
-		c(entry, exit),
 	)
 }
 
@@ -158,7 +153,7 @@ func TestCDG_Switch(t *testing.T) {
 	// 55:2→56:2: walk 56:2, 57:3, 58:3, 60:3. 55:2→59:2: walk 59:2, 60:3.
 	// 55:2→61:2: walk 61:2, 62:3. 60:3 (reached by case 1's fallthrough and
 	// case 2, not default) depends on the header. Anchored: 54:2, 55:2,
-	// 64:2, @exit.
+	// 64:2.
 	wantCDG(t, "Switch",
 		c(swHdr, swCase1),
 		c(swHdr, swAsg1),
@@ -170,7 +165,6 @@ func TestCDG_Switch(t *testing.T) {
 		c(entry, swInit),
 		c(entry, swHdr),
 		c(entry, swRet),
-		c(entry, exit),
 	)
 }
 
@@ -178,14 +172,13 @@ func TestCDG_Select(t *testing.T) {
 	// Select2. ipdom: 83:2 → 84:3; 82:2, 84:3, 85:2, 86:3 → @exit.
 	// 82:2→83:2: walk 83:2, 84:3. 82:2→85:2: walk 85:2. 85:2→86:3 (the
 	// send's exception edge goes to @exit, ipdom(85:2)): walk 86:3.
-	// Anchored: 82:2, @exit.
+	// Anchored: 82:2.
 	wantCDG(t, "Select2",
 		c(selHdr, selRecv),
 		c(selHdr, selRetX),
 		c(selHdr, selSend),
 		c(selSend, selRet0),
 		c(entry, selHdr),
-		c(entry, exit),
 	)
 }
 
@@ -224,7 +217,7 @@ func TestCDG_NoExitPath(t *testing.T) {
 		t.Errorf("ipdom = %v, want %v", ipdom, want)
 	}
 	got := dataflow.BuildCDG(nodes, es)
-	want := []dataflow.CdgEdge{c(entry, exit), c(entry, "a"), c(entry, "b"), c(entry, "c")} // "@" sorts before letters
+	want := []dataflow.CdgEdge{c(entry, "a"), c(entry, "b"), c(entry, "c")}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("cdg = %v, want %v", got, want)
 	}
@@ -240,23 +233,24 @@ func TestCDG_EmptyBody(t *testing.T) {
 	if got := dataflow.BuildCDG(nil, nil); got == nil || len(got) != 0 {
 		t.Errorf("BuildCDG(nil, nil) = %#v, want empty non-nil", got)
 	}
-	// Empty body: @entry → @exit only; @exit is anchored, never @entry→@entry.
+	// Empty body: @entry → @exit only. Neither synthetic node is anchored,
+	// so the CDG is empty: no @entry→@exit, no @entry→@entry.
 	got := dataflow.BuildCDG(
 		[]dataflow.Node{{Key: entry, Kind: dataflow.KindEntry}, {Key: exit, Kind: dataflow.KindExit}},
 		[]dataflow.CfgEdge{e(entry, exit, "return")},
 	)
-	if want := []dataflow.CdgEdge{c(entry, exit)}; !reflect.DeepEqual(got, want) {
-		t.Errorf("empty-body cdg = %v, want %v", got, want)
+	if got == nil || len(got) != 0 {
+		t.Errorf("empty-body cdg = %#v, want empty non-nil", got)
 	}
 }
 
 // TestCDG_Gate runs BuildCDG over every function and function literal body in
 // testdata/dataflow and testdata/chi. Gates: two builds deep-equal; the CDG is
 // independent of edge kinds (R10: every kind rewritten to one, plus a parallel
-// twin of every edge with another kind) and of input edge order; every CFG
-// node except @entry has an incoming CDG edge; every endpoint is a CFG node
-// key (never a satellite); no self-loop, no edge into @entry; sorted and
-// deduped; every node has a post-dominator chain ending at @exit.
+// twin of every edge with another kind) and of input edge order; every
+// non-synthetic CFG node has an incoming CDG edge; every endpoint is a CFG
+// node key (never a satellite); no self-loop, no edge into @entry or @exit;
+// sorted and deduped; every node has a post-dominator chain ending at @exit.
 func TestCDG_Gate(t *testing.T) {
 	_, thisFile, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(thisFile), "..", "..", "testdata")
@@ -306,13 +300,13 @@ func gateCDG(t *testing.T, name string, nodes []dataflow.Node, es []dataflow.Cfg
 		if g.Src == g.Dst {
 			t.Errorf("%s: cdg self-loop %v", name, g)
 		}
-		if g.Dst == entry {
-			t.Errorf("%s: cdg edge into @entry %v", name, g)
+		if g.Dst == entry || g.Dst == exit {
+			t.Errorf("%s: cdg edge into a synthetic node %v", name, g)
 		}
 		in[g.Dst] = true
 	}
 	for k := range cfgNode {
-		if k != entry && !in[k] {
+		if k != entry && k != exit && !in[k] {
 			t.Errorf("%s: node %s has no incoming cdg edge", name, k)
 		}
 	}

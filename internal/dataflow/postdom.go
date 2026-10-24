@@ -16,13 +16,13 @@ import "sort"
 // are one edge. Loops are not identified by loop_back; a back edge is just an
 // edge. Self-loops are skipped: x→x is never emitted.
 //
-// Anchoring: every CFG node except @entry that has no controller gets
-// @entry→x. That includes @exit and the deferred call nodes of the exit
-// chain, which post-dominate every statement and so are never controlled.
-// The one rule is "every node but @entry has a controller". (Python's
-// dominance.py anchors statements only and leaves @exit out.)
-// @entry→@entry is never added. When nodes holds no @entry, nothing is
-// anchored.
+// Anchoring: every non-synthetic CFG node that has no controller gets
+// @entry→x. That includes the deferred call nodes of the exit chain, which
+// post-dominate every statement and so are never controlled. @entry and
+// @exit are never anchored: no @entry→@entry, no @entry→@exit. This matches
+// Python (codeanalyzer-python dataflow/dominance.py control_dependence,
+// which skips entry and exit when anchoring). When nodes holds no @entry,
+// nothing is anchored.
 //
 // The CFG nodes are the nodes with no Parent; satellite call nodes are not
 // CFG steps and get no CDG edge. Edges with an endpoint outside that set are
@@ -67,7 +67,7 @@ func BuildCDG(nodes []Node, cfg []CfgEdge) []CdgEdge {
 			controlled[d[1]] = true
 		}
 		for x := range g.keys {
-			if x != entry && !controlled[x] {
+			if x != entry && x != g.exit && !controlled[x] {
 				deps[[2]int{entry, x}] = true
 			}
 		}
