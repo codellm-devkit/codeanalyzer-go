@@ -250,3 +250,38 @@ func TestRun_PanicInUnitIsContained(t *testing.T) {
 		}
 	}
 }
+
+// TestRun_TypeErrorsKeepDefs (I2): in a package that does not type-check
+// (testdata/typeerr imports a missing package), go/types records no field
+// selection on a value of the unresolved type and no object for an undeclared
+// name. The field write must still be a def that reaches the later read.
+func TestRun_TypeErrorsKeepDefs(t *testing.T) {
+	_, thisFile, _, _ := runtime.Caller(0)
+	dir := filepath.Join(filepath.Dir(thisFile), "..", "..", "testdata", "typeerr")
+	b := syntactic_analysis.NewSymbolTableBuilder(dir)
+	st, err := b.Build(nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := dataflow.Run(b.Fset(), b.L3Units(st), 3, 1)
+	for _, c := range []struct{ fn, def, use, v string }{
+		{"Forward", "11:2", "12:2", "req.Body"}, // unresolved type, resolved base
+		{"Undeclared", "18:2", "19:2", "undeclared.Body"},
+		{"Qualified", "24:2", "25:2", "example.com/typeerr/missing::Cfg.Body"},
+		{"Asserted", "30:2", "31:2", "x"}, // x.(*missing.Req).Body = src weak-defines x.*
+	} {
+		key := dataflow.L3Key{Path: "typeerr.go", Signature: "example.com/typeerr." + c.fn}
+		r, ok := out[key]
+		if !ok {
+			t.Errorf("no result for %v", key)
+			continue
+		}
+		found := false
+		for _, e := range r.Ddg {
+			found = found || (e.Src == c.def && e.Dst == c.use && e.Var == c.v)
+		}
+		if !found {
+			t.Errorf("%s: no ddg %s→%s on %q; have %v", c.fn, c.def, c.use, c.v, r.Ddg)
+		}
+	}
+}

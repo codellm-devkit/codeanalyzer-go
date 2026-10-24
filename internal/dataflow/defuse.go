@@ -307,21 +307,62 @@ func (c *collector) stmt(s ast.Node) {
 	// SelectStmt, BranchStmt, EmptyStmt, nil: nothing.
 }
 
-// assignTo records lhs as an assignment target.
+// assignTo records lhs as an assignment target. A target is never use-only
+// while it has a nameable root: one whose base is unresolved (type errors)
+// weak-defines root.*, and one pathOf cannot walk to its root variable (x.(*T).f
+// = v) weak-defines that root's x.*. Only `_` and a target rooted in a call or
+// a literal (`*f() = v`), which name no variable of this callable, define
+// nothing; their reads are still collected.
 func (c *collector) assignTo(lhs ast.Expr, compound bool) {
 	b, ok := pathOf(lhs, c.info)
 	if !ok {
-		c.use(lhs) // `_`, or a target rooted in a call: only its reads
+		c.use(lhs)
+		if r, ok := c.rootOf(lhs); ok {
+			c.addWeak(r.with(".*"))
+		}
 		return
 	}
 	c.targetReads(ast.Unparen(lhs))
 	if compound {
 		c.addUse(b)
 	}
+	if b.base == nil {
+		// An unresolved base: identity is the spelling alone, so the write
+		// is a may-write of the whole root and kills nothing.
+		c.addWeak(pathB{head: b.head}.with(".*"))
+		return
+	}
 	if c.weakOnly || b.weak(c.k) {
 		c.addWeak(b)
 	} else {
 		c.add(kindDef, b.limit(c.k))
+	}
+}
+
+// rootOf returns the base of the variable assignment target e is rooted in,
+// walking selectors, indexes, slices, dereferences, type assertions and
+// parentheses; false for `_` and a target rooted in a call or a literal.
+func (c *collector) rootOf(e ast.Expr) (pathB, bool) {
+	for {
+		switch x := ast.Unparen(e).(type) {
+		case *ast.Ident:
+			return baseOf(x, c.info)
+		case *ast.SelectorExpr:
+			if b, ok, qualified := qualifiedBase(x, c.info); qualified {
+				return b, ok
+			}
+			e = x.X
+		case *ast.IndexExpr:
+			e = x.X
+		case *ast.SliceExpr:
+			e = x.X
+		case *ast.StarExpr:
+			e = x.X
+		case *ast.TypeAssertExpr:
+			e = x.X
+		default:
+			return pathB{}, false
+		}
 	}
 }
 

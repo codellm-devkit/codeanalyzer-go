@@ -11,7 +11,9 @@ import (
 //   - Base is the path's identity: the *types.Var of a local, parameter,
 //     receiver, named result, capture or package-level variable. Shadowed
 //     variables are distinct bases even when spelled alike. nil for a
-//     pseudo-base such as "<defer>:12:8", whose identity is its spelling.
+//     pseudo-base such as "<defer>:12:8", and for an unresolved identifier
+//     (a name go/types recorded no object for, in a package with type
+//     errors); either's identity is its spelling.
 //   - Spell is the emitted spelling: the source name for a local
 //     ("p.f.g.*", "ch[*]"), "pkgpath::Name" for a package-level variable
 //     ("example.com/lib::V.F"), or the pseudo-base itself.
@@ -137,7 +139,12 @@ func (b pathB) limit(k int) Path {
 //   - an identifier naming a variable (not a struct field) is a base;
 //   - a field selector x.f appends ".f", spelling out implicit embedded
 //     fields (e.f promoted from an embedded T is "e.T.f"); a selector through
-//     a pointer reads as Go spells it: p.f and (*p).f are both "p.f";
+//     a pointer reads as Go spells it: p.f and (*p).f are both "p.f". When
+//     go/types recorded no selection (x has an invalid type, in a package with
+//     type errors), x.f is still x's path plus ".f";
+//   - an identifier go/types recorded nothing for (an undeclared name, in a
+//     package with type errors) is an unresolved base: nil Base, its name as
+//     spelling;
 //   - a qualified identifier pkg.V is that package-level variable's base;
 //   - x[i] (slice, array, map, string, array pointer) appends "[*]"; a
 //     generic instantiation is not a path;
@@ -160,13 +167,13 @@ func pathOf(e ast.Expr, info *types.Info) (pathB, bool) {
 		return baseOf(e, info)
 
 	case *ast.SelectorExpr:
-		if x, ok := e.X.(*ast.Ident); ok {
-			if _, ok := info.Uses[x].(*types.PkgName); ok {
-				return baseOf(e.Sel, info)
-			}
+		if b, ok, qualified := qualifiedBase(e, info); qualified {
+			return b, ok
 		}
-		sel, ok := info.Selections[e]
-		if !ok || sel.Kind() != types.FieldVal {
+		// No selection means type errors left X without a usable type: read
+		// .Sel as a field step anyway, so a write to it is not lost.
+		sel := info.Selections[e]
+		if sel != nil && sel.Kind() != types.FieldVal {
 			return pathB{}, false
 		}
 		x := ast.Unparen(e.X)
@@ -177,8 +184,10 @@ func pathOf(e ast.Expr, info *types.Info) (pathB, bool) {
 		if !ok {
 			return pathB{}, false
 		}
-		for _, name := range embeddedPath(sel) {
-			b = b.with("." + name)
+		if sel != nil {
+			for _, name := range embeddedPath(sel) {
+				b = b.with("." + name)
+			}
 		}
 		return b.with("." + e.Sel.Name), true
 
@@ -206,16 +215,51 @@ func pathOf(e ast.Expr, info *types.Info) (pathB, bool) {
 	return pathB{}, false
 }
 
-// baseOf is the base path of an identifier naming a variable.
+// baseOf is the base path of an identifier naming a variable, or the
+// unresolved base (nil, spelled by name) of an identifier go/types recorded
+// neither a definition nor a use of.
 func baseOf(id *ast.Ident, info *types.Info) (pathB, bool) {
 	if id.Name == "_" {
 		return pathB{}, false
+	}
+	if unresolved(id, info) {
+		return pathB{head: id.Name}, true
 	}
 	v, ok := info.ObjectOf(id).(*types.Var)
 	if !ok || v.IsField() {
 		return pathB{}, false
 	}
 	return pathB{base: v, head: baseSpell(v)}, true
+}
+
+// qualifiedBase is the base of qualified identifier pkg.Name (qualified
+// reports whether e is one). A member of a package that failed to import is
+// unresolved: nil base, spelled "pkgpath::Name" like a package-level variable.
+func qualifiedBase(e *ast.SelectorExpr, info *types.Info) (b pathB, ok, qualified bool) {
+	x, isIdent := e.X.(*ast.Ident)
+	if !isIdent {
+		return pathB{}, false, false
+	}
+	pn, isPkg := info.Uses[x].(*types.PkgName)
+	if !isPkg {
+		return pathB{}, false, false
+	}
+	if unresolved(e.Sel, info) {
+		return pathB{head: pn.Imported().Path() + "::" + e.Sel.Name}, true, true
+	}
+	b, ok = baseOf(e.Sel, info)
+	return b, ok, true
+}
+
+// unresolved reports whether go/types recorded nothing for id: not in Defs
+// (a type switch's symbolic variable is there, with a nil object) and not in
+// Uses. Only a package with type errors has such an identifier.
+func unresolved(id *ast.Ident, info *types.Info) bool {
+	if _, ok := info.Defs[id]; ok {
+		return false
+	}
+	_, ok := info.Uses[id]
+	return !ok
 }
 
 // baseSpell spells a base variable: "pkgpath::Name" at package level, else

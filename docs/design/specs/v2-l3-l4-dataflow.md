@@ -272,6 +272,13 @@ truncated). Match Java's `AccessPath` / Python's `access_paths` semantics:
   rule.
 - **Maps/slices:** `m[k] = v` weak-defines `m[*]`; `m[k]` reads `m[*]`; `append(s, v)` uses `s`, `v`
   and its result flows to the LHS (it is a builtin; treat as library pass-through).
+- **Type errors (partial types):** a package that does not type-check still gets its defs. A field
+  selector with no recorded selection (its operand has an invalid type, e.g. `var req missing.Req`)
+  is still a field step (`req.Body`); an identifier go/types recorded nothing for (undeclared, or a
+  member of a package that failed to import) is an unresolved base identified by its spelling, and a
+  write through it weak-defines its root `x.*`. An assignment target is never demoted to use-only
+  while it has a variable root: a target `pathOf` cannot walk (`x.(*T).f = v`) weak-defines its
+  root `x.*`.
 - **Use matching:** a use links to a reaching def if the paths interfere — equal, either a prefix of
   the other, or a wildcard covers it.
 - **Edge attrs:** `{src, dst, var, prov:["ssa"]}`. `prov` value is `"ssa"` for **parity with Python
