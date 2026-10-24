@@ -463,3 +463,15 @@ func AfterPanic(a int) int {
 	defer work(a)
 	return a
 }
+
+// Guard returns r, which depends on c only through control: a backward slice
+// from the return reaches the if header by the CDG alone.
+func Guard(c, a int) int {
+	r := 0
+	d := a + 1
+	if c > 0 {
+		r = a
+	}
+	_ = d
+	return r
+}

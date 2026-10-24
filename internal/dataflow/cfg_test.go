@@ -1008,6 +1008,7 @@ type diffCase struct {
 	name string
 	body *ast.BlockStmt
 	info *types.Info
+	fn   ast.Node // the *ast.FuncDecl or *ast.FuncLit owning body
 }
 
 func loadDiffCases(t *testing.T, dir string) (*token.FileSet, []diffCase) {
@@ -1035,11 +1036,11 @@ func loadDiffCases(t *testing.T, dir string) (*token.FileSet, []diffCase) {
 						if n.Recv != nil && len(n.Recv.List) > 0 {
 							name = types.ExprString(n.Recv.List[0].Type) + "." + name
 						}
-						out = append(out, diffCase{p.PkgPath + "." + name, n.Body, p.TypesInfo})
+						out = append(out, diffCase{p.PkgPath + "." + name, n.Body, p.TypesInfo, n})
 					}
 				case *ast.FuncLit:
 					pos := fset.Position(n.Pos())
-					out = append(out, diffCase{fmt.Sprintf("%s.func@%d:%d", p.PkgPath, pos.Line, pos.Column), n.Body, p.TypesInfo})
+					out = append(out, diffCase{fmt.Sprintf("%s.func@%d:%d", p.PkgPath, pos.Line, pos.Column), n.Body, p.TypesInfo, n})
 				}
 				return true
 			})
