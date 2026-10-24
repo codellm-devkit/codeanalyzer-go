@@ -256,8 +256,10 @@ truncated). Match Java's `AccessPath` / Python's `access_paths` semantics:
   of `p.*` (deref collapses to `.*`, kills nothing). Compound assignment and `++`/`--` def+use.
 - **Calls:** a call uses all its argument expressions and the receiver; it **weak-defines `a.*` for
   every argument `a` that is pointer-, slice-, map-, chan-, func- or interface-typed, and the
-  receiver if it is a pointer receiver or pointer-typed** (the callee may write through it; Python's
-  suffixed-weak-def precedent). Value-typed struct arguments are not weak-defined (copy semantics).
+  receiver if it is a pointer receiver or reference-typed** (pointer, slice, map, chan, func or
+  interface — e.g. `hs.Write(b)` on an interface, `h.Set(k, v)` on a map-typed `http.Header`; the
+  callee may write through it; Python's suffixed-weak-def precedent). Value-typed struct arguments and
+  receivers are not weak-defined (copy semantics).
 - **Channels (goal 4, coarse):** `ch <- v` weak-defines `ch[*]` and uses `v`, `ch`; `v := <-ch` /
   `v, ok := <-ch` / `range ch` / recv in a comm clause uses `ch[*]` and defines `v`. Cross-goroutine
   flow then rides parameter/capture/field paths — a channel passed to a goroutine is an argument, so

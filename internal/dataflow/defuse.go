@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"sort"
 )
 
 // DefUse is the def/use summary of one body node (spec §4.5).
@@ -19,7 +20,7 @@ import (
 // dereference or past k is weak), so a kill never removes more than the
 // written path covers. The `<defer>:` pseudo path (nil Base) appears only as
 // a registration's weak def and its deferred call node's use. Each list is
-// deduplicated, in first-seen AST order (deterministic).
+// deduplicated and sorted by (Spell, base position).
 type DefUse struct {
 	Defs, WeakDefs, Uses []Path
 }
@@ -47,6 +48,10 @@ const DeferPrefix = "<defer>:"
 //     body (R8): if Init+Cond; for Init+Cond+Post; range Key/Value (defs) and
 //     X (use); switch Init+Tag; type switch Init+Assign (defining each
 //     clause's implicit variable); case List; comm clause Comm; select none.
+//     A for header runs on entry and on every back edge, so only a variable
+//     both Init and Post strong-define stays strong; other folded defs are
+//     weak. Range Key/Value are weak with `=` (zero iterations leave them),
+//     strong with `:=`. If and switch inits run once per header: strong.
 //   - A bare call node (*ast.ExprStmt, `panic(x)` included) and a `go` node
 //     (*ast.GoStmt) apply the call rule below to their call — for `go`, that
 //     covers the calls nested in its arguments, which have no node of their
@@ -76,7 +81,7 @@ const DeferPrefix = "<defer>:"
 // rule: a call uses its function value / receiver and arguments; it
 // weak-defines a.* for each argument of pointer, slice, map, chan, func or
 // interface type (`&x` gives x.*) and recv.* for a receiver that is
-// pointer-typed or bound to a pointer-receiver method. A value-typed struct
+// reference-typed (the same kinds) or bound to a pointer-receiver method. A value-typed struct
 // argument is not weak-defined. Conversions write nothing; builtins write
 // nothing except copy(dst, …), delete(m, …) and clear(x), which weak-define
 // dst[*], m[*], x[*]; append's result flows to the assignment's LHS.
@@ -106,6 +111,9 @@ func DefUseOf(n Node, info *types.Info, k int, entryBases []types.Object, fn ast
 		c.keyOf = keyOf
 		c.stmt(n.Stmt)
 	}
+	sortPaths(c.du.Defs)
+	sortPaths(c.du.WeakDefs)
+	sortPaths(c.du.Uses)
 	return c.du
 }
 
@@ -121,12 +129,53 @@ const (
 )
 
 type collector struct {
-	info  *types.Info
-	k     int
-	fn    ast.Node
-	keyOf map[ast.Node]string
-	du    DefUse
-	seen  map[pathKind]bool
+	info     *types.Info
+	k        int
+	fn       ast.Node
+	keyOf    map[ast.Node]string
+	du       DefUse
+	seen     map[pathKind]bool
+	weakOnly bool // record every def as weak (a range with `=`)
+}
+
+// fork returns an empty collector with c's settings.
+func (c *collector) fork() *collector {
+	return &collector{info: c.info, k: c.k, fn: c.fn, keyOf: c.keyOf, seen: map[pathKind]bool{}}
+}
+
+// mergeLoop adds a's facts to c, keeping a strong def strong only when other
+// strong-defines the same path too.
+func (c *collector) mergeLoop(a, other *collector) {
+	for _, p := range a.du.Defs {
+		if other.seen[pathKind{p, kindDef}] {
+			c.add(kindDef, p)
+		} else {
+			c.add(kindWeak, p)
+		}
+	}
+	for _, p := range a.du.WeakDefs {
+		c.add(kindWeak, p)
+	}
+	for _, p := range a.du.Uses {
+		c.add(kindUse, p)
+	}
+}
+
+// sortPaths orders ps by spelling, then base position (shadowed variables
+// share a spelling), so DefUse lists are sorted, not just deterministic.
+func sortPaths(ps []Path) {
+	pos := func(p Path) token.Pos {
+		if p.Base == nil {
+			return token.NoPos
+		}
+		return p.Base.Pos()
+	}
+	sort.SliceStable(ps, func(i, j int) bool {
+		if ps[i].Spell != ps[j].Spell {
+			return ps[i].Spell < ps[j].Spell
+		}
+		return pos(ps[i]) < pos(ps[j])
+	})
 }
 
 func (c *collector) add(kind int, p Path) {
@@ -209,15 +258,26 @@ func (c *collector) stmt(s ast.Node) {
 		c.stmt(s.Init)
 		c.use(s.Cond)
 	case *ast.ForStmt:
-		c.stmt(s.Init)
+		// The header node runs on loop entry (where Init runs) and on every
+		// back edge (where Post runs), so a strong def here would kill on the
+		// path where its statement does not run: only a variable both Init
+		// and Post define is strong; every other folded def is weak.
+		init, post := c.fork(), c.fork()
+		init.stmt(s.Init)
+		post.stmt(s.Post)
 		c.use(s.Cond)
-		c.stmt(s.Post)
+		c.mergeLoop(init, post)
+		c.mergeLoop(post, init)
 	case *ast.RangeStmt:
+		// `for k, v = range x` may run zero times, and then leaves k, v
+		// untouched: weak. `:=` declares fresh objects per loop: strong.
+		c.weakOnly = s.Tok == token.ASSIGN
 		for _, x := range []ast.Expr{s.Key, s.Value} {
 			if x != nil {
 				c.assignTo(x, false)
 			}
 		}
+		c.weakOnly = false
 		if isChan(c.info.TypeOf(s.X)) {
 			c.recv(s.X)
 		} else {
@@ -255,7 +315,7 @@ func (c *collector) assignTo(lhs ast.Expr, compound bool) {
 	if compound {
 		c.addUse(b)
 	}
-	if b.weak(c.k) {
+	if c.weakOnly || b.weak(c.k) {
 		c.addWeak(b)
 	} else {
 		c.add(kindDef, b.limit(c.k))

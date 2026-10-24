@@ -348,11 +348,56 @@ func TestDefUse_Invariants(t *testing.T) {
 			if n.Deferred && len(du.Defs) != 0 {
 				t.Errorf("%s %s: deferred call strong-defines %v (R11)", fn, n.Key, spells(du.Defs))
 			}
+			for what, ps := range map[string][]dataflow.Path{"Defs": du.Defs, "WeakDefs": du.WeakDefs, "Uses": du.Uses} {
+				if !sort.SliceIsSorted(ps, func(i, j int) bool { return ps[i].Spell < ps[j].Spell }) {
+					t.Errorf("%s %s: %s not sorted by spelling: %v", fn, n.Key, what, ps)
+				}
+			}
 			for _, p := range du.Defs {
 				if strings.Contains(p.Spell, "*") {
 					t.Errorf("%s %s: strong def %q has a wildcard", fn, n.Key, p.Spell)
 				}
 			}
 		}
+	}
+}
+
+// TestDefUse_FoldedLoopDefsAreWeak locks the for/range header rule: the
+// header node runs on loop entry and on every back edge, so only a variable
+// defined by both Init and Post is a strong def there; a range with `=` may
+// run zero times, so its Key/Value are weak.
+func TestDefUse_FoldedLoopDefsAreWeak(t *testing.T) {
+	fx := loadDU(t)
+	du, _ := fx.du(t, "ForPost", "for i2 := 0", 0)
+	wantDU(t, "ForPost header", du, ss("i2"), ss("x"), ss("i2"))
+	du, _ = fx.du(t, "ForInit", "for i, v := 0, 0", 0)
+	wantDU(t, "ForInit header", du, ss("i"), ss("v"), ss("i", "n"))
+	du, _ = fx.du(t, "RangeAssign", "for _, last = range a", 0)
+	wantDU(t, "RangeAssign header", du, nil, ss("last"), ss("a"))
+	// Both Init and Post define i: strong (flow fixture).
+	wantDU(t, "Bump 147:2", flowDU(t, "Bump", "147:2"), ss("i"), nil, ss("i", "n"))
+}
+
+func TestDefUse_ReferenceTypedReceiverIsWeakDefined(t *testing.T) {
+	fx := loadDU(t)
+	du, _ := fx.du(t, "Recv", "w.Write(data)", 0)
+	wantDU(t, "w.Write(data)", du, nil, ss("data.*", "w.*"), ss("data", "w"))
+	du, _ = fx.du(t, "Recv", "h.Set(", 0)
+	wantDU(t, "h.Set(...)", du, nil, ss("h.*"), ss("h"))
+	du, _ = fx.du(t, "Recv", "\tt.Val()\n}\n\nfunc IfShadow", 1)
+	wantDU(t, "t.Val() value struct", du, nil, nil, ss("t"))
+}
+
+func TestDefUse_IfInitShadows(t *testing.T) {
+	fx := loadDU(t)
+	du, _ := fx.du(t, "IfShadow", "if x := id(x)", 0)
+	wantDU(t, "IfShadow header", du, ss("x"), nil, ss("x", "x"))
+	param := fx.info.Defs[fx.decls["IfShadow"].Type.Params.List[0].Names[0]]
+	if du.Defs[0].Base == param {
+		t.Errorf("if-init x has the parameter's base")
+	}
+	// Uses are sorted by (spelling, base position): the parameter first.
+	if du.Uses[0].Base != param || du.Uses[1].Base != du.Defs[0].Base {
+		t.Errorf("IfShadow header uses: want [param x, init x], got bases %v, %v", du.Uses[0].Base, du.Uses[1].Base)
 	}
 }

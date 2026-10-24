@@ -154,6 +154,48 @@ func Mixed(a int) int {
 	b, a := 1, 2
 	return a + b
 }
+
+func src() int { return 0 }
+
+func ForPost(n int) int {
+	x := 1
+	for i2 := 0; i2 < 3; i2, x = i2+1, src() {
+	}
+	return x
+}
+
+func ForInit(n int) {
+	for i, v := 0, 0; i < n; i++ {
+		sink(v)
+		v = src()
+	}
+}
+
+func RangeAssign(a []int) int {
+	last := 0
+	for _, last = range a {
+	}
+	return last
+}
+
+type Hm map[string]string
+
+func (h Hm) Set(k, v string) { h[k] = v }
+
+type Writer interface{ Write(p []byte) }
+
+func Recv(w Writer, h Hm, t T, data []byte) {
+	w.Write(data)
+	h.Set("a", "b")
+	t.Val()
+}
+
+func IfShadow(x int) int {
+	if x := id(x); x > 0 {
+		return x
+	}
+	return x
+}
 `
 
 type mapImporter map[string]*types.Package
@@ -316,6 +358,8 @@ func TestPath_Covers(t *testing.T) {
 		{P(x, "x.f.*"), P(x, "x.f.g"), true},    // wildcard
 		{P(x, "x.f.*"), P(x, "x.f.g.h"), true},  // wildcard, any remaining suffix
 		{P(x, "x.f.*"), P(x, "x.f"), false},     // a wildcard stands for ≥1 step
+		{P(x, "x.f"), P(x, "x.*"), false},       // kill direction: a field def does not kill x.*
+		{P(x, "x.f.g"), P(x, "x.f.*"), false},   // kill direction: nor a deeper one x.f.*
 		{P(x, "x.*"), P(x, "x[*]"), true},       // wildcard
 		{P(x, "x.*"), P(x, "x[*].f.g"), true},   // wildcard
 		{P(m, "m[*]"), P(m, "m[*].f"), true},    // prefix

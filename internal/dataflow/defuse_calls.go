@@ -31,7 +31,7 @@ func (c *collector) callReads(call *ast.CallExpr, captures bool) {
 }
 
 // callWrites collects the weak defs of call itself: a.* for each
-// reference-typed argument (&x gives x.*), recv.* for a pointer-typed
+// reference-typed argument (&x gives x.*), recv.* for a reference-typed
 // receiver or a pointer-receiver method, and the element writes of copy,
 // delete and clear. Conversions and other builtins write nothing.
 func (c *collector) callWrites(call *ast.CallExpr) {
@@ -51,7 +51,7 @@ func (c *collector) callWrites(call *ast.CallExpr) {
 	}
 	if sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr); ok {
 		if s := c.info.Selections[sel]; s != nil && s.Kind() == types.MethodVal {
-			if ptrRecv(s.Obj()) || isPointer(c.info.TypeOf(sel.X)) {
+			if ptrRecv(s.Obj()) || refTyped(c.info.TypeOf(sel.X)) {
 				c.writeThrough(sel.X)
 			}
 		}
