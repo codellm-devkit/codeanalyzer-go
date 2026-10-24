@@ -39,6 +39,8 @@ type Unit struct {
 // own result slot and no id is minted here, so the map is the same for any
 // jobs value and its iteration order never reaches the output.
 //
+// A unit that panics in any stage is skipped the same way (runOne).
+//
 // A unit whose L1 call-key count differs from its body's recorded call count
 // gets no result and a warning on stderr: pairing by index would mis-key its
 // call nodes, so its body stays at L1 rather than being silently wrong.
@@ -73,7 +75,16 @@ func Run(fset *token.FileSet, units []Unit, k, jobs int) map[L3Key]Result {
 	return out
 }
 
-func runOne(fset *token.FileSet, u Unit, k int) *Result {
+// runOne builds one unit's result. A panic in any stage (a latent bug in the
+// CFG, def-use or DDG builders) is recovered: that callable stays at L1 with a
+// warning, and the rest of the run — and the L1/L2 output — is unaffected.
+func runOne(fset *token.FileSet, u Unit, k int) (res *Result) {
+	defer func() {
+		if r := recover(); r != nil {
+			utils.Warn("L3 skipped for %s (%s): %v", u.Key.Signature, u.Key.Path, r)
+			res = nil
+		}
+	}()
 	body := funcBody(u.Fn)
 	if body == nil {
 		return nil

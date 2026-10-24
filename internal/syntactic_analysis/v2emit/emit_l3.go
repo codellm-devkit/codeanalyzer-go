@@ -17,9 +17,6 @@ func newL3Overlay(maxLevel int, res map[dataflow.L3Key]dataflow.Result) l3Overla
 	return l3Overlay{on: maxLevel >= 3, res: res}
 }
 
-// ssaProv is the provenance of every L3 DDG edge (spec §4.5).
-var ssaProv = []string{"ssa"}
-
 // apply completes c's body from the result keyed by key (the callable's
 // declaring file and signature) and copies its edges. li is the declaring
 // file's lineIndex, so every span indexes the file c's own span indexes.
@@ -57,7 +54,7 @@ func (o l3Overlay) apply(c *v2.Callable, li *lineIndex, key dataflow.L3Key) {
 		}
 		c.Ddg = make([]v2.DdgEdge, len(r.Ddg))
 		for i, e := range r.Ddg {
-			c.Ddg[i] = v2.DdgEdge{Src: e.Src, Dst: e.Dst, Var: e.Var, Prov: ssaProv}
+			c.Ddg[i] = v2.DdgEdge{Src: e.Src, Dst: e.Dst, Var: e.Var, Prov: []string{"ssa"}} // own slice per edge: no aliasing
 		}
 	}
 	for k, bn := range c.Body {

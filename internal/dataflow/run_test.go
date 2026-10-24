@@ -217,3 +217,36 @@ func TestRun_ResultContract(t *testing.T) {
 		}
 	}
 }
+
+// TestRun_PanicInUnitIsContained: a unit whose body makes a builder panic
+// (a switch body holding a non-case statement, which BuildNodes asserts
+// against) gets no result; the run completes and the other units are built.
+func TestRun_PanicInUnitIsContained(t *testing.T) {
+	fset, f, info := parseCheck(t, lineDirectiveSrc)
+	bad := &ast.FuncDecl{
+		Name: ast.NewIdent("bad"),
+		Type: &ast.FuncType{Params: &ast.FieldList{}},
+		Body: &ast.BlockStmt{List: []ast.Stmt{
+			&ast.SwitchStmt{Body: &ast.BlockStmt{List: []ast.Stmt{&ast.ExprStmt{X: ast.NewIdent("x")}}}},
+		}},
+	}
+	badKey := dataflow.L3Key{Path: "p.go", Signature: "p.bad"}
+	goodF := dataflow.L3Key{Path: "p.go", Signature: "p.f"}
+	goodG := dataflow.L3Key{Path: "p.go", Signature: "p.g"}
+	g := funcDecl(t, f, "g")
+	for _, jobs := range []int{1, 4} {
+		out := dataflow.Run(fset, []dataflow.Unit{
+			{Key: goodF, Fn: funcDecl(t, f, "f"), Info: info},
+			{Key: badKey, Fn: bad, Info: info},
+			{Key: goodG, Fn: g, Info: info, Calls: gateCallKeys(fset, g.Body)},
+		}, 3, jobs)
+		if _, ok := out[badKey]; ok {
+			t.Errorf("-j %d: panicking unit produced a result", jobs)
+		}
+		for _, k := range []dataflow.L3Key{goodF, goodG} {
+			if r, ok := out[k]; !ok || len(r.Cfg) == 0 {
+				t.Errorf("-j %d: %v result = %+v, %v; want a CFG", jobs, k, r, ok)
+			}
+		}
+	}
+}
