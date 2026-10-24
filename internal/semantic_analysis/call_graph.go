@@ -17,6 +17,7 @@ import (
 	"go/types"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
@@ -48,14 +49,17 @@ func (cg *CallGraphBuilder) Externals() map[string]schema.GoExternalCallee { ret
 // and skips the edge while leaving callee_signature nil.
 func (cg *CallGraphBuilder) Build(symbolTable map[string]schema.GoFile) []schema.GoCallEdge {
 	var edges []schema.GoCallEdge
-	seen := map[[2]string]bool{}
+	seen := map[edgeKey]bool{}
 	cg.externals = nil
 
 	// Build the known-sig set once. It separates in-project callees from library
 	// callees, which are recorded in cg.externals rather than dropped.
 	knownSigs := buildKnownSigs(symbolTable)
 
-	for fileKey, goFile := range symbolTable {
+	// Visit files, types and callables in sorted key order so the edge list and
+	// the first-writer content of cg.externals never depend on map iteration.
+	for _, fileKey := range sortedKeys(symbolTable) {
+		goFile := symbolTable[fileKey]
 		// Find the package for this file.
 		pkg := cg.packageForFile(fileKey)
 		if pkg == nil || pkg.TypesInfo == nil {
@@ -63,9 +67,10 @@ func (cg *CallGraphBuilder) Build(symbolTable map[string]schema.GoFile) []schema
 		}
 
 		// Resolve methods on types.
-		for typeSig, goType := range goFile.Types {
-			for methSig, callable := range goType.Methods {
-				newCallable, newEdges := cg.resolveCallable(pkg, callable, seen, knownSigs)
+		for _, typeSig := range sortedKeys(goFile.Types) {
+			goType := goFile.Types[typeSig]
+			for _, methSig := range sortedKeys(goType.Methods) {
+				newCallable, newEdges := cg.resolveCallable(pkg, goType.Methods[methSig], seen, knownSigs)
 				goType.Methods[methSig] = newCallable
 				edges = append(edges, newEdges...)
 			}
@@ -73,8 +78,8 @@ func (cg *CallGraphBuilder) Build(symbolTable map[string]schema.GoFile) []schema
 		}
 
 		// Resolve package-level functions.
-		for fnSig, callable := range goFile.Functions {
-			newCallable, newEdges := cg.resolveCallable(pkg, callable, seen, knownSigs)
+		for _, fnSig := range sortedKeys(goFile.Functions) {
+			newCallable, newEdges := cg.resolveCallable(pkg, goFile.Functions[fnSig], seen, knownSigs)
 			goFile.Functions[fnSig] = newCallable
 			edges = append(edges, newEdges...)
 		}
@@ -83,6 +88,20 @@ func (cg *CallGraphBuilder) Build(symbolTable map[string]schema.GoFile) []schema
 	}
 
 	return edges
+}
+
+// edgeKey dedups call edges per source callable. The declaring file is part of
+// the key because a signature is not unique: every file of a package may declare
+// its own func init(), and all of them share the signature "<pkg>.init".
+type edgeKey struct{ path, src, dst string }
+
+func sortedKeys[V any](m map[string]V) []string {
+	ks := make([]string, 0, len(m))
+	for k := range m {
+		ks = append(ks, k)
+	}
+	sort.Strings(ks)
+	return ks
 }
 
 // buildKnownSigs returns the set of all callable signatures present in the symbol table.
@@ -111,7 +130,7 @@ func buildKnownSigs(symbolTable map[string]schema.GoFile) map[string]bool {
 func (cg *CallGraphBuilder) resolveCallable(
 	pkg *packages.Package,
 	callable schema.GoCallable,
-	seen map[[2]string]bool,
+	seen map[edgeKey]bool,
 	knownSigs map[string]bool,
 ) (schema.GoCallable, []schema.GoCallEdge) {
 	var edges []schema.GoCallEdge
@@ -141,7 +160,7 @@ func (cg *CallGraphBuilder) resolveCallable(
 			cg.recordExternal(fn, calleeSig)
 		}
 
-		key := [2]string{callable.Signature, calleeSig}
+		key := edgeKey{callable.Path, callable.Signature, calleeSig}
 		if seen[key] {
 			continue
 		}
