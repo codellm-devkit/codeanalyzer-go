@@ -10,7 +10,7 @@ A schema **major**: move the Go analyzer off the v1 keystone
 booleans, `signature` as id) onto the v2 canonical schema (additive tree, `can://` ids,
 `span` with byte offsets, `source` per module, typed edge lists). The SDK moves in
 lockstep as a coordinated major release. **Reach for this train: L1 + L2 to parity.**
-L3/L4 deferred (see Not now).
+L3 shipped in release A (below); L4 remains deferred (see Not now).
 
 Golden rule carried from `schema-migration.md`: keep everything that *computes* facts
 (parser, resolver, call-graph builder); replace only what *serializes* them.
@@ -51,7 +51,7 @@ C (edge shape)      ─┴─► L2 emission (call_graph rename @ application sc
                           │
 A/B/C ─► D (Neo4j relabel) ─► SDK v2 model remap ─► pin SDK→analyzer (once BOTH cut)
                                                        │
-                          (later train) L3 ─► L4 ──────┘   reuse A & C unchanged
+                          L3 (release A) ─► L4 (deferred) ┘   reuse A & C unchanged
 ```
 
 ## Release trains
@@ -62,14 +62,21 @@ A/B/C ─► D (Neo4j relabel) ─► SDK v2 model remap ─► pin SDK→analyz
   analyzer version in the SDK *only once both are released* — until then the SDK's old
   models won't parse v2 output. Superset gate: v2 output must contain every fact v1 did,
   modulo the sanctioned drops (`code`, `is_*` booleans folded into `kind`).
-- **Train 2+ (deferred).** L3 (CFG/CDG/DDG, AST-only, per-callable parallel — net-new for
-  Go) then L4 (SDG `param_in`/`param_out`/`summary`, needs a points-to oracle). Both reuse
-  group A & C vocabulary; no new schema-major coordination beyond what Train 1 establishes.
+- **Release A — v2 with L3 (`-a 3`).** L3 is no longer deferred. Ships the new `can://` id
+  grammar, L2 library calls (`external_symbols`, `@external` call-graph endpoints), and
+  per-callable L3 CFG/CDG/DDG (AST-only, intraprocedural, `--graph-field-depth` k-limit),
+  with the Neo4j `GO_CFG_NEXT`/`GO_CDG`/`GO_DDG` projection.
+  Real-app evaluation: `docs/design/notes/l3-eval-2026-10.md`, which records one open
+  determinism finding (L2 call-graph dedup on repeated `<pkg>.init` signatures) to fix
+  before the tag. The release tag is the user's decision.
+- **Later (deferred).** L4 (SDG `param_in`/`param_out`/`summary`, needs a points-to oracle).
+  Reuses group A & C vocabulary; no new schema-major coordination beyond what Train 1
+  establishes.
 
 ## Not now (considered, deliberately excluded)
 
-- **L3 / L4 dataflow** — deferred by decision this session; net-new heavy construction, not
-  required for v2 parity. Revisit as Train 2.
+- **L4 dataflow (SDG)** — deferred; needs a points-to oracle and interprocedural
+  construction. (L3 is in release A.)
 - **Points-to oracle** — L4 prerequisite; parked with L4.
 - **`--materialize-expressions` / `--materialize-basic-blocks`** — optional body node kinds;
   out of scope for the parity migration.
