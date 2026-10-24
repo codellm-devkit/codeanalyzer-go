@@ -66,9 +66,10 @@ A/B/C ─► D (Neo4j relabel) ─► SDK v2 model remap ─► pin SDK→analyz
   grammar, L2 library calls (`external_symbols`, `@external` call-graph endpoints), and
   per-callable L3 CFG/CDG/DDG (AST-only, intraprocedural, `--graph-field-depth` k-limit),
   with the Neo4j `GO_CFG_NEXT`/`GO_CDG`/`GO_DDG` projection.
-  Real-app evaluation: `docs/design/notes/l3-eval-2026-10.md`, which records one open
-  determinism finding (L2 call-graph dedup on repeated `<pkg>.init` signatures) to fix
-  before the tag. The release tag is the user's decision.
+  Real-app evaluation: `docs/design/notes/l3-eval-2026-10.md`. It and the live Neo4j run
+  found two issues, both fixed before release: L2 call-graph dedup on repeated `<pkg>.init`
+  signatures (nondeterministic, dropped edges) and the Neo4j `--eager` purge failing on
+  Neo4j 5.x. The release tag is the user's decision.
 - **Later (deferred).** L4 (SDG `param_in`/`param_out`/`summary`, needs a points-to oracle).
   Reuses group A & C vocabulary; no new schema-major coordination beyond what Train 1
   establishes.
