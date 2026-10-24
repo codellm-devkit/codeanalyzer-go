@@ -97,7 +97,7 @@ func emitModule(appID, modRel string, file schema.GoFile, idx sigIndex, srcs *so
 		mod.Types[name] = emitType(modID, modRel, t, idx, srcs, flow)
 	}
 	for sig, fn := range file.Functions {
-		mod.Functions[sig] = emitCallable(modID, modRel, li, fn, idx, srcs, flow)
+		mod.Functions[sig] = emitCallable(modID, modRel, modRel, li, fn, idx, srcs, flow)
 	}
 	return mod
 }
@@ -128,7 +128,7 @@ func emitType(modID, modRel string, t schema.GoType, idx sigIndex, srcs *sourceC
 		}
 	}
 	for sig, m := range t.Methods {
-		out.Callables[sig] = emitCallable(typeID, modRel, li, m, idx, srcs, flow)
+		out.Callables[sig] = emitCallable(typeID, modRel, modRel, li, m, idx, srcs, flow)
 	}
 	return out
 }
@@ -136,26 +136,37 @@ func emitType(modID, modRel string, t schema.GoType, idx sigIndex, srcs *sourceC
 // emitCallable maps a v1 GoCallable to a v2 callable node, including its body
 // (call nodes) and nested closures.
 //
-// modRel and modLI are the nesting module's path and lineIndex. When the
-// callable's declaring file (c.Path) differs — a method whose receiver type is
-// in another file — its span is computed against its OWN file's lineIndex and
-// source_file records that file, per CLAUDE.md § Schema decisions. Nested
-// closures share their enclosing callable's file (Go has no cross-file
-// closures), so they carry the resolved file down unchanged.
+// modRel is the CONTAINING module's path: the module this callable nests
+// under by containment (a method's receiver-type module, and for a closure the
+// module its outermost enclosing callable nests under). declRel and declLI are
+// the file the callable's positions are relative to and its lineIndex: the
+// nesting file for a top-level callable, the enclosing callable's declaring
+// file for a closure (Go has no cross-file closures; v1 closures carry no
+// Path). A callable's own c.Path, when set, is its declaring file.
+//
+// When the declaring file differs from the containing module — a method whose
+// receiver type is in another file, and every closure (nested ones included)
+// inside such a method — the callable records it as source_file, per CLAUDE.md
+// § Schema decisions, and its spans index that file's source. Under the SDK's
+// text-recovery rule (symbol_table[source_file].source when present, else the
+// containing module's source) each of these nodes then slices the right file.
 //
 // At L3 the callable's dataflow result, looked up by (declaring file,
 // signature), completes its body and adds cfg/cdg/ddg (emit_l3.go). Its spans
-// use the same resolved lineIndex, so a cross-file method's statement spans
-// index its declaring file's source, like its own span.
-func emitCallable(parentID, modRel string, modLI *lineIndex, c schema.GoCallable, idx sigIndex, srcs *sourceCache, flow l3Overlay) v2.Callable {
+// use the same declaring-file lineIndex, so a cross-file callable's statement
+// spans index its declaring file's source, like its own span.
+func emitCallable(parentID, modRel, declRel string, declLI *lineIndex, c schema.GoCallable, idx sigIndex, srcs *sourceCache, flow l3Overlay) v2.Callable {
 	callID := v2.CallableID(parentID, c.Signature)
 
 	// Resolve the file this callable's positions are relative to.
-	li := modLI
-	sourceFile := ""
-	if c.Path != "" && c.Path != modRel {
+	li := declLI
+	if c.Path != "" && c.Path != declRel {
 		li = srcs.index(c.Path)
-		sourceFile = c.Path
+		declRel = c.Path
+	}
+	sourceFile := ""
+	if declRel != modRel {
+		sourceFile = declRel
 	}
 
 	out := v2.Callable{
@@ -176,21 +187,13 @@ func emitCallable(parentID, modRel string, modLI *lineIndex, c schema.GoCallable
 	}
 	if len(c.InnerCallables) > 0 {
 		out.Callables = make(map[string]v2.Callable, len(c.InnerCallables))
-		// Closures live in the same file as their enclosing callable, so the
-		// resolved file (modRel-or-c.Path) becomes their nesting file.
-		enclRel := modRel
-		if sourceFile != "" {
-			enclRel = sourceFile
-		}
+		// Closures nest in the same containing module and are declared in the
+		// same file as their enclosing callable.
 		for sig, inner := range c.InnerCallables {
-			out.Callables[sig] = emitCallable(callID, enclRel, li, inner, idx, srcs, flow)
+			out.Callables[sig] = emitCallable(callID, modRel, declRel, li, inner, idx, srcs, flow)
 		}
 	}
-	declFile := modRel
-	if sourceFile != "" {
-		declFile = sourceFile
-	}
-	flow.apply(&out, li, dataflow.L3Key{Path: declFile, Signature: c.Signature})
+	flow.apply(&out, li, dataflow.L3Key{Path: declRel, Signature: c.Signature})
 	return out
 }
 

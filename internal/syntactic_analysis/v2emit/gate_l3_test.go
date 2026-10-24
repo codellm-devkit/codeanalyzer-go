@@ -373,3 +373,71 @@ func TestEmitL3_NoOrphanSideTableEntries(t *testing.T) {
 		t.Errorf("only %d side-table entries", len(fx.res))
 	}
 }
+
+// TestGateL3_CrossFileClosureSourceFile (R19): a closure nests under its
+// method, which nests under the receiver type's module (xfile/a.go), but its
+// positions are in the method's declaring file (xfile/b.go). Every callable
+// whose declaring file differs from its containing module carries
+// source_file — closures and nested closures included — so the SDK's text
+// recovery (symbol_table[source_file].source) slices the right file for the
+// closure and for every body node inside it.
+func TestGateL3_CrossFileClosureSourceFile(t *testing.T) {
+	fx := buildL3(t, "dataflow")
+	for _, out := range []*v2.Analysis{fx.l2, fx.l3} {
+		mod := mustModule(t, out, "xfile/a.go")
+		run, ok := mod.Types["T"].Callables["example.com/dataflow/xfile.T.Run"]
+		if !ok {
+			t.Fatalf("T.Run missing; types %v", keys(mod.Types))
+		}
+		add, ok := run.Callables["closure_1"]
+		if !ok {
+			t.Fatalf("closure_1 missing; have %v", keys(run.Callables))
+		}
+		inc, ok := add.Callables["closure_1"]
+		if !ok {
+			t.Fatalf("nested closure missing; have %v", keys(add.Callables))
+		}
+		src := mustModule(t, out, "xfile/b.go").Source
+		for _, c := range []v2.Callable{run, add, inc} {
+			if c.SourceFile != "xfile/b.go" {
+				t.Errorf("L%d %s source_file = %q, want xfile/b.go", out.MaxLevel, c.ID, c.SourceFile)
+			}
+		}
+		// Callable spans are line-level (v1 records closure lines only), so
+		// the slice starts at the line's first column: it holds the closure's
+		// func literal from its opening to its closing brace.
+		for _, w := range []struct {
+			c    v2.Callable
+			head string
+		}{{add, "add := func(d int) int {"}, {inc, "inc := func() {"}} {
+			text := strings.TrimSpace(w.c.Span.Slice(src))
+			if !strings.HasPrefix(text, w.head) || !strings.HasSuffix(text, "}") {
+				t.Errorf("L%d %s span over b.go slices to %q, want %q…}", out.MaxLevel, w.c.ID, text, w.head)
+			}
+		}
+		if out.MaxLevel < 3 {
+			continue
+		}
+		for _, w := range []struct {
+			c    v2.Callable
+			key  string
+			text string
+		}{{add, "6:3", "t.n += d"}, {add, "11:3", "return t.n"}, {inc, "8:4", "t.n++"}} {
+			n, ok := w.c.Body[w.key]
+			if !ok {
+				t.Errorf("%s: no body node %s; have %v", w.c.ID, w.key, keys(w.c.Body))
+				continue
+			}
+			if got := n.Span.Slice(src); !strings.HasPrefix(got, w.text) {
+				t.Errorf("%s body %s over b.go slices to %q, want %q…", w.c.ID, w.key, got, w.text)
+			}
+		}
+	}
+	// The negative: a closure of a same-file function carries no source_file.
+	fn := functionByName(t, mustModule(t, fx.l3, "flow/flow.go"), "Closure")
+	for _, in := range fn.Callables {
+		if in.SourceFile != "" {
+			t.Errorf("%s: same-file closure carries source_file %q", in.ID, in.SourceFile)
+		}
+	}
+}

@@ -174,7 +174,8 @@ type Callable struct {
 	Signature string `json:"signature"`
 	// SourceFile names the callable's declaring file (a symbol_table key) when it
 	// differs from the module this callable is nested under — the Go case where a
-	// method is declared in a different file than its receiver type. When set,
+	// method is declared in a different file than its receiver type, and every
+	// closure (nested closures included) inside such a method. When set,
 	// Span.Bytes index symbol_table[SourceFile].source, NOT the nesting module's
 	// source; text = symbol_table[SourceFile].source[Span.Bytes]. Absent (the
 	// common case) means the declaring file is the nesting module. See CLAUDE.md

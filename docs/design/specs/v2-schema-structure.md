@@ -70,9 +70,12 @@ The same shape whether it sits under a type's `callables` (methods), a module's
 ├─ id
 ├─ kind                               # function | method | lambda
 ├─ signature
-├─ source_file                        # optional: set only for a method declared in a
-│                                     #   different file than its receiver type; its
-│                                     #   span.bytes then index symbol_table[source_file].source
+├─ source_file                        # optional: set only when the declaring file differs
+│                                     #   from the containing module — a method declared in
+│                                     #   a different file than its receiver type, and every
+│                                     #   closure (nested ones too) inside such a method; its
+│                                     #   span.bytes, and its body nodes' spans, then index
+│                                     #   symbol_table[source_file].source
 ├─ span { start, end, bytes }
 ├─ parameters[]  { name, type, span, is_variadic? }
 ├─ return_type                        # optional
@@ -121,8 +124,10 @@ The same shape whether it sits under a type's `callables` (methods), a module's
   (`base(.field|[*])*`, past `k` → `.*`). `var` is the source spelling of the path, and
   `prov` is always `["ssa"]` at L3. Sorted by `(src, dst, var)`.
 - **Spans.** A statement node's span is its AST node's range, and a clause head ends at its
-  colon. For a method declared apart from its receiver type (`source_file`), body spans
-  index `symbol_table[source_file].source`, as the method's own span does.
+  colon. For a callable with `source_file` (a method declared apart from its receiver type,
+  or a closure inside one), body spans index `symbol_table[source_file].source`, as the
+  callable's own span does. A closure never inherits `source_file` implicitly: each callable
+  carries its own.
 
 ## `span`
 

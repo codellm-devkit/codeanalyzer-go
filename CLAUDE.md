@@ -45,7 +45,10 @@ committed spec is the full transcript: `docs/design/specs/v2-l1-emission.md`.
   the declaring file ≠ the nesting module, the callable carries `source_file` = that
   file's path (a `symbol_table` key). **Text recovery:** a node's text =
   `symbol_table[source_file].source[span.bytes]` if `source_file` present, else the
-  nesting module's `source`. Emitted only when it differs (absent = same file). This is
+  nesting module's `source`. Emitted only when it differs (absent = same file). It applies
+  to **every callable** whose declaring file differs from its containing module, so
+  **closures and nested closures** inside a cross-file method carry `source_file` too (no
+  implicit inheritance; text recovery holds as written for them and their body nodes). This is
   the leaf-level fix for the cross-file-method empty-span collision the real-app eval
   surfaced. Cross-language parity (C# partial classes, Rust `impl`, Ruby reopened
   classes, TS declaration merging) is **deferred** — promote `source_file` into the
