@@ -7,7 +7,7 @@ Usage:
 Prints one JSON object per input: structure counts, body-node and cfg-edge kind breakdowns,
 switch / select / type-switch fan-out, defer-chain and exception-edge shape, the per-callable
 DDG distribution and its top callables, `var` classes (wildcard, `<defer>:` pseudo path), DDG
-volume by generated-file class, approximate bytes per section, and the internal-consistency
+volume by generated-file class and by callable name (e.g. protobuf `Marshal*` / `Unmarshal`), approximate bytes per section, and the internal-consistency
 checks. The figures in docs/design/notes/l3-dataflow-metrics.md come from this script. It loads
 each file whole: a 1.1 GB analysis.json needs about 11 GB of RAM.
 """
@@ -47,7 +47,8 @@ def file_class(path):
         return "protobuf"
     if path.endswith(".eg.go"):
         return "execgen"
-    if "easyjson" in path or path.endswith("_gen.go") or "/gen/" in path:
+    if ("easyjson" in path or path.endswith("_gen.go") or "/gen/" in path
+            or os.path.basename(path).startswith("zz_generated")):
         return "other-generated"
     return "hand-written"
 
@@ -118,6 +119,9 @@ def analyze(label, path):
         for sec in ("body", "cfg", "cdg", "ddg"):
             C["bytes_" + sec] += len(json.dumps(c.get(sec), separators=(",", ":"), ensure_ascii=False).encode())
         C["bytes_body_node_ids"] += sum(len(n.get("id", "")) + 7 for n in body.values())  # "id":"…",
+        # Call nodes exist (with their id) from L1; the other kinds are added by L3.
+        C["bytes_body_node_ids_l3_added"] += sum(len(n.get("id", "")) + 7 for n in body.values()
+                                                  if n.get("kind") != "call")
         if (sum(1 for n in body.values() if n.get("kind") == "entry") != 1
                 or sum(1 for n in body.values() if n.get("kind") == "exit") != 1
                 or "@entry" not in body or "@exit" not in body):
@@ -213,6 +217,13 @@ def analyze(label, path):
                 C["ddg_def_at_or_after_use"] += ps >= pt
             K["ddg_src_kind"][body.get(s, {}).get("kind")] += 1
         K["ddg_by_file_class"][fc] += len(ddg)
+        K["body_by_file_class"][fc] += len(body)
+        K["callables_by_file_class"][fc] += 1
+        # Group by the callable's own name (last signature segment, parameters dropped), e.g.
+        # MarshalToSizedBuffer / Unmarshal / Size for generated protobuf methods.
+        nm = (c.get("signature") or "").split("(", 1)[0].rsplit(".", 1)[-1]
+        K["ddg_by_name"][nm] += len(ddg)
+        K["callables_by_name"][nm] += 1
         C["ddg"] += len(ddg)
         ddg_per.append(len(ddg))
         if len(ddg) > 1000:
@@ -245,7 +256,10 @@ def analyze(label, path):
         "callables": sum(K["callables_by_kind"].values()),
         "body_nodes": sum(K["node_kinds"].values()),
         "cfg": sum(K["cfg_kinds"].values()),
-        **dict(C), **{k: dict(v) for k, v in K.items()},
+        **dict(C), **{k: dict(v) for k, v in K.items()
+                      if k not in ("ddg_by_name", "callables_by_name")},
+        "ddg_by_name_top": [[nm, n, K["callables_by_name"][nm]]
+                            for nm, n in K["ddg_by_name"].most_common(10)],
         "switch_fanout": {w: {"n": len(v), "mean": round(sum(v) / len(v), 2), "max": max(v)}
                           for w, v in fanout.items()},
         "ddg_per_callable": {"median": pct(ddg_per, .5), "p90": pct(ddg_per, .9),
