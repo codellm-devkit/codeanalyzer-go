@@ -173,7 +173,9 @@ func (p *projector) projectCallable(parentRef NodeRef, module string, c v2.Calla
 }
 
 func (p *projector) projectBodyNode(callableRef NodeRef, module, callableID, local string, bn v2.BodyNode) {
-	id := callableID + "@" + local
+	// GlobalOrdinal, not callableID+"@"+local: synthetic keys ("@entry") already
+	// carry the "@", and the JSON body node id uses the same rule.
+	id := v2.GlobalOrdinal(callableID, local)
 	bRef := p.b.Node(
 		[]string{LabelBodyNode, MarkerLabel},
 		"id", id,
@@ -181,7 +183,7 @@ func (p *projector) projectBodyNode(callableRef NodeRef, module, callableID, loc
 			"kind":         bn.Kind,
 			"is_goroutine": boolOrNil(bn.IsGoroutine),
 			"is_deferred":  boolOrNil(bn.IsDeferred),
-			"span_json":    spanJSON(bn.Span),
+			"span_json":    bodySpanJSON(bn.Span),
 		},
 		module,
 	)
@@ -360,4 +362,13 @@ func lastSegment(id string) string {
 		}
 	}
 	return last
+}
+
+// bodySpanJSON is spanJSON for a body node, nil for the span-less synthetic
+// @entry / @exit (L3), whose JSON node has no span either.
+func bodySpanJSON(s v2.Span) Value {
+	if s == (v2.Span{}) {
+		return nil
+	}
+	return spanJSON(s)
 }

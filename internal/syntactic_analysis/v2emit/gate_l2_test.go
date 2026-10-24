@@ -42,7 +42,7 @@ func buildMultipackageL2(t *testing.T) *v2.Analysis {
 	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 	edges := cg.Build(st) // mutates st in place: backfills callee_signature
 	app := &schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}
-	return Emit(app, "multipackage", dir, 2, "gate-test")
+	return Emit(app, "multipackage", dir, 2, "gate-test", 0, nil)
 }
 
 // allCallableIDs collects every callable/type id in the emitted tree.
@@ -189,12 +189,12 @@ func TestGateL2_SupersetOfL1(t *testing.T) {
 		t.Fatalf("symbol table build failed: %v", err)
 	}
 	// L1 snapshot BEFORE the resolver mutates call sites.
-	l1 := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: nil}, "multipackage", dir, 1, "gate-test")
+	l1 := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: nil}, "multipackage", dir, 1, "gate-test", 0, nil)
 
 	// Now run the resolver (mutates st) and emit L2.
 	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 	edges := cg.Build(st)
-	l2 := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges}, "multipackage", dir, 2, "gate-test")
+	l2 := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges}, "multipackage", dir, 2, "gate-test", 0, nil)
 
 	if len(l1.Application.SymbolTable) != len(l2.Application.SymbolTable) {
 		t.Fatalf("module count changed L1->L2: %d vs %d",
@@ -390,7 +390,7 @@ func emitTemp(t *testing.T, src string) *v2.Analysis {
 	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 	edges := cg.Build(st)
 	app := &schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}
-	return Emit(app, "p", dir, 2, "gate-test")
+	return Emit(app, "p", dir, 2, "gate-test", 0, nil)
 }
 
 // TestGateL2_ExternalParamsHaveNoSpan locks that external parameters serialize
@@ -422,7 +422,7 @@ func TestGateL2_GenericLibraryMethodUsesDeclaredSignature(t *testing.T) {
 		}
 		cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 		edges := cg.Build(st)
-		out := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}, "dataflow", dir, 2, "gate-test")
+		out := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}, "dataflow", dir, 2, "gate-test", 0, nil)
 		ext := v2.ExternalID(out.Application.ID, "sync/atomic", "Pointer.Store")
 		sym, ok := out.Application.ExternalSymbols[ext]
 		if !ok {
@@ -446,7 +446,7 @@ func TestGateL2_IncrementalModeKeepsProjectCalleesInternal(t *testing.T) {
 	}
 	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 	edges := cg.Build(st)
-	out := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}, "multipackage", dir, 2, "gate-test")
+	out := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}, "multipackage", dir, 2, "gate-test", 0, nil)
 
 	const projectModule = "example.com/multipackage"
 	for id, sym := range out.Application.ExternalSymbols {
@@ -472,7 +472,7 @@ func TestGateL2_VendoredCalleeIsExternal(t *testing.T) {
 	}
 	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 	edges := cg.Build(st)
-	out := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}, "dataflow", dir, 2, "gate-test")
+	out := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}, "dataflow", dir, 2, "gate-test", 0, nil)
 
 	ext := v2.ExternalID(out.Application.ID, "example.com/vlib", "F")
 	sym, ok := out.Application.ExternalSymbols[ext]

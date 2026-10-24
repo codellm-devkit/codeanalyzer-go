@@ -34,7 +34,7 @@ func buildMultipackageL2(t *testing.T) *v2.Analysis {
 	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 	edges := cg.Build(st)
 	app := &schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}
-	return v2emit.Emit(app, "multipackage", dir, 2, "neo4j-gate")
+	return v2emit.Emit(app, "multipackage", dir, 2, "neo4j-gate", 0, nil)
 }
 
 func TestProject_NoDanglingEndpoints(t *testing.T) {

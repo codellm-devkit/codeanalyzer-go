@@ -138,12 +138,13 @@ Aliases:
   cango, codeanalyzer-go
 
 Flags:
-  -a, --analysis-level int      Analysis level: 1=symbol table only, 2=+resolver call graph (default 1)
+  -a, --analysis-level int      Analysis level: 1=symbol table, 2=+call graph, 3=+intraprocedural cfg/cdg/ddg (default 1)
       --app-name string         Application anchor name for can:// ids and Neo4j :Application (default: input dir name)
   -c, --cache-dir string        Cache directory (default: ~/.cldk/go-cache)
       --eager                   Force clean rebuild (ignore cache)
       --emit string             Output projection: json|neo4j|schema (default "json")
   -f, --format string           Output format: json|msgpack (default "json")
+      --graph-field-depth int   Field-path depth bound for L3 dataflow nodes (k limit; applies at -a 3 only) (default 3)
   -h, --help                    help for cango
   -i, --input string            Project root to analyze (required)
   -j, --jobs int                Worker parallelism (default: CPU cores)
@@ -249,8 +250,20 @@ are build artifacts, not project source), so only your own declarations are emit
 |-------|------|-----------|--------|
 | 1 | `-a 1` (default) | Symbol table only — types, functions, call sites | Implemented |
 | 2 | `-a 2` | Level 1 + resolver-based call graph via `go/types` | Implemented |
+| 3 | `-a 3` | Level 2 + per-callable statement nodes and `cfg` / `cdg` / `ddg` | Implemented |
+| 4 | `-a 4` | Level 3 + interprocedural parameter edges | Not implemented (rejected) |
 
 **Level 1** loads each package with `packages.NeedSyntax | NeedTypes | NeedTypesInfo` and walks the AST file by file. Call sites are recorded with `callee_signature = null` at this stage.
+
+**Level 3** completes every callable's `body` with its statement, control (`branch`, `loop`,
+`switch`, `return`) and synthetic (`@entry`, `@exit`) nodes around the L1 call nodes, and adds
+three intra-callable edge lists: `cfg` (control flow, including the `defer` chain and panic
+`exception` edges), `cdg` (control dependence from post-dominators) and `ddg` (syntactic
+reaching definitions over k-limited access paths, `prov: ["ssa"]`). `--graph-field-depth <k>`
+(default 3, minimum 1) bounds the access paths (`x.f.g.h` → `x.f.g.*` at k = 3) and is
+recorded in the envelope as `k_limit`. It is a flag error below `-a 3` and with
+`--emit neo4j`. Callables are analyzed in parallel (`-j`), and the output is byte-identical
+for every `-j`. L3 only adds to the L2 output: every L2 fact stays as it is.
 
 **Level 2** adds a resolver pass: for each call site, `go/types` resolves the callee to its full import-path signature (`pkgImportPath.TypeName.MethodName`). Only project-internal edges (both endpoints present in the symbol table) are emitted. `callee_signature` is backfilled on all successfully resolved sites.
 
@@ -329,8 +342,9 @@ node carries a `can://<app>/…` `id`, a `kind`, and a `span`:
 ```
 
 Key v2 schema properties:
-- **Envelope** — `schema_version` (`"2.0.0"`), `language` (`"go"`), `max_level` (1 or 2),
-  and `analyzer{name,version}` wrap a single `application` node.
+- **Envelope** — `schema_version` (`"2.0.0"`), `language` (`"go"`), `max_level` (1, 2 or 3),
+  `k_limit` (L3 only: the `--graph-field-depth` value) and `analyzer{name,version}` wrap a
+  single `application` node.
 - **One containment tree** — `application → module → type → callable → body`, keyed as
   `symbol_table` (modules, by **project-relative file path**), `types`, `callables`, `body`.
 - **`id`** — every node carries a durable `can://<app>/go/<file>/<type>/<signature>` id;
@@ -351,6 +365,11 @@ Key v2 schema properties:
   are boolean flags emitted **only when true** (a plain call omits them), for `go f()` / `defer f()`.
 - **`call_graph` edges** — `{src, dst, prov, weight}`; `src`/`dst` are `can://` node ids that
   exist in the tree (not raw signatures), `prov` is resolver provenance, e.g. `["go/types"]`.
+- **L3 (`-a 3`)** — `body` gains `statement` / `branch` / `loop` / `switch` / `return` nodes
+  and the synthetic `@entry` / `@exit`. Every body node carries `id` (`<callable-id>@<key>`).
+  A call nested in a statement carries `parent`, the statement's key. The callable gains
+  `cfg[] {src, dst, kind}`, `cdg[] {src, dst}` and `ddg[] {src, dst, var, prov}`, whose
+  endpoints are `body` keys. See `docs/design/specs/v2-schema-structure.md`.
 
 ## Neo4j projection (`--emit neo4j`)
 
@@ -498,8 +517,10 @@ methods above, including `pip install codeanalyzer-go`). See
 | Type resolver | `golang.org/x/tools/go/packages` | Single API for both AST + full type resolution; handles modules natively |
 | Build/dep materialization | `go mod download` | Required before `packages.Load` so the module cache is warm; result cached by `go.sum` hash |
 | Packaging | Native binary (`go build`) | Zero-runtime-dep distribution; matches Rust/C++ analyzers |
-| Analysis depth | Level 1 (rapid) | Symbol table + resolver call graph |
+| Analysis depth | Levels 1–3 | Symbol table, resolver call graph, intraprocedural cfg/cdg/ddg |
 | Call-graph dispatch | Declared-type resolution via `go/types.Selections` | CHA-equivalent; sufficient for cross-package reachability at Level 1 |
+| CFG (L3) | Hand-built from `go/ast` (`internal/dataflow`) | Adds what `go/cfg` does not model as edges: panic `exception` edges and the `defer` chain (`defer_resume`). A differential test checks reachability against `golang.org/x/tools/go/cfg` on every fixture body |
+| Def-use / DDG (L3) | Syntactic reaching definitions over k-limited access paths | `go/types` objects as bases (shadowing-safe); weak defs through reference arguments; `prov: ["ssa"]` for parity with the Java and Python L3 |
 
 ### Package structure
 
@@ -512,6 +533,7 @@ codeanalyzer-go/
 │   ├── options/              # AnalysisOptions + AnalysisLevel constants
 │   ├── syntactic_analysis/   # SymbolTableBuilder (packages.Load → AST walk)
 │   ├── semantic_analysis/    # CallGraphBuilder (go/types resolver)
+│   ├── dataflow/             # L3: body nodes, CFG, CDG, def-use, DDG; Run fans out per callable
 │   ├── analysis/             # Pluggable pass interface + registry (topo-ordered pipeline)
 │   ├── frameworks/           # BaseEntrypointFinder — extension seam for framework passes
 │   └── utils/                # DiscoverGoFiles, IsVendored, IsTestFile, logging

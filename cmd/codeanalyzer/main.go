@@ -160,10 +160,7 @@ via CLDK(language="go").analysis(project_path=...).`,
 			// JSON path emits) and project it. --neo4j-uri set → live Bolt push;
 			// absent → a graph.cypher snapshot in the output dir.
 			if emitTarget == options.EmitNeo4j {
-				payload := v2emit.Emit(app, opts.AppName, opts.InputPath, int(opts.Level), opts.AnalyzerVersion)
-				if opts.Level >= options.LevelDataflow {
-					payload.KLimit = opts.FieldDepth
-				}
+				payload := v2emit.Emit(app, opts.AppName, opts.InputPath, int(opts.Level), opts.AnalyzerVersion, core.KLimit(opts), analyzer.L3())
 				boltCfg := neo4j.BoltConfig{
 					URI:      opts.Neo4jURI,
 					User:     opts.Neo4jUser,
@@ -184,14 +181,14 @@ via CLDK(language="go").analysis(project_path=...).`,
 			// writer so tests can capture it via cmd.SetOut. Both paths render
 			// through core so the v1/v2 schema selection stays in one place.
 			if outputDir == "" {
-				data, err := core.RenderJSON(app, opts)
+				data, err := core.RenderJSON(app, analyzer.L3(), opts)
 				if err != nil {
 					return err
 				}
 				_, err = cmd.OutOrStdout().Write(data)
 				return err
 			}
-			return core.WriteOutput(app, opts)
+			return core.WriteOutput(app, analyzer.L3(), opts)
 		},
 	}
 

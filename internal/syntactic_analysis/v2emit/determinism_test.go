@@ -41,7 +41,7 @@ func TestDeterminism_CallGraphStableAcrossEmits(t *testing.T) {
 	// edges slice without a stable sort, repeated marshals still match (same
 	// slice), so to actually exercise order-independence we marshal a shuffled
 	// copy of the edge slice too.
-	first := mustMarshalCallGraph(t, Emit(app, "multipackage", dir, 2, "det-test"))
+	first := mustMarshalCallGraph(t, Emit(app, "multipackage", dir, 2, "det-test", 0, nil))
 
 	// Reverse the input edge order and re-emit: a correct emitter sorts, so the
 	// serialized call_graph must be unchanged.
@@ -50,7 +50,7 @@ func TestDeterminism_CallGraphStableAcrossEmits(t *testing.T) {
 		rev[len(edges)-1-i] = e
 	}
 	appRev := &schema.GoApplication{SymbolTable: st, CallGraph: rev}
-	second := mustMarshalCallGraph(t, Emit(appRev, "multipackage", dir, 2, "det-test"))
+	second := mustMarshalCallGraph(t, Emit(appRev, "multipackage", dir, 2, "det-test", 0, nil))
 
 	if first != second {
 		t.Errorf("call_graph not order-independent: emitCallGraph must sort edges to a total order\nfirst=%s\nsecond=%s", first, second)

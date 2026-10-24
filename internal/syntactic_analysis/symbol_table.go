@@ -541,22 +541,7 @@ func (b *SymbolTableBuilder) buildCallable(
 	pos := b.fset.Position(decl.Pos())
 	end := b.fset.Position(decl.End())
 
-	var sig string
-	if pkg.TypesInfo != nil {
-		if obj, ok := pkg.TypesInfo.Defs[decl.Name]; ok && obj != nil {
-			sig = signatureOf(obj)
-		}
-	}
-	if sig == "" {
-		if decl.Recv != nil {
-			if recvName := b.receiverTypeName(decl.Recv); recvName != "" {
-				sig = pkg.Types.Path() + "." + recvName + "." + name
-			}
-		}
-		if sig == "" {
-			sig = pkg.Types.Path() + "." + name
-		}
-	}
+	sig := b.declSignature(pkg, decl)
 
 	var recvType, recvName string
 	if decl.Recv != nil && len(decl.Recv.List) > 0 {
@@ -602,6 +587,24 @@ func (b *SymbolTableBuilder) buildCallable(
 	}
 
 	return callable
+}
+
+// declSignature is a FuncDecl's callable signature: signatureOf its object,
+// or, without type info, <pkgpath>[.<Recv>].<Name>.
+func (b *SymbolTableBuilder) declSignature(pkg *packages.Package, decl *ast.FuncDecl) string {
+	if pkg.TypesInfo != nil {
+		if obj, ok := pkg.TypesInfo.Defs[decl.Name]; ok && obj != nil {
+			if sig := signatureOf(obj); sig != "" {
+				return sig
+			}
+		}
+	}
+	if decl.Recv != nil {
+		if recvName := b.receiverTypeName(decl.Recv); recvName != "" {
+			return pkg.Types.Path() + "." + recvName + "." + decl.Name.Name
+		}
+	}
+	return pkg.Types.Path() + "." + decl.Name.Name
 }
 
 // ─── Parameters ───────────────────────────────────────────────────────────────

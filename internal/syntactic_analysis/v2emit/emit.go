@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/codellm-devkit/codeanalyzer-go/internal/dataflow"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/schema"
 	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
 )
@@ -13,12 +14,17 @@ import (
 // Emit transforms the v1 GoApplication into the v2 Analysis payload. appName is
 // the application anchor (--app-name); projectDir is the absolute input root,
 // used to read each module's source for span slicing. maxLevel records how
-// deeply the tree was populated (1 = symbol table, 2 = + call_graph);
-// analyzerVersion is stamped into the manifest's analyzer{} tag.
+// deeply the tree was populated (1 = symbol table, 2 = + call_graph, 3 = +
+// cfg/cdg/ddg); analyzerVersion is stamped into the manifest's analyzer{} tag.
 //
-// This is a pure re-serialization: every fact comes from the v1 model, except
-// span byte offsets, which are derived from source via lineIndex.
-func Emit(app *schema.GoApplication, appName, projectDir string, maxLevel int, analyzerVersion string) *v2.Analysis {
+// kLimit is the L3 access-path bound (--graph-field-depth), written as the
+// envelope's k_limit at maxLevel >= 3 only. l3 is dataflow.Run's side table,
+// nil below L3; see emit_l3.go for how it merges into each callable.
+//
+// This is a pure re-serialization: every fact comes from the v1 model and the
+// L3 side table, except span byte offsets, which are derived from source via
+// lineIndex.
+func Emit(app *schema.GoApplication, appName, projectDir string, maxLevel int, analyzerVersion string, kLimit int, l3 map[dataflow.L3Key]dataflow.Result) *v2.Analysis {
 	appID := v2.AppID(appName)
 
 	// The signature→can:// id index translates v1 identity (signature strings)
@@ -33,6 +39,7 @@ func Emit(app *schema.GoApplication, appName, projectDir string, maxLevel int, a
 	// decisions → callable.source_file); the cache lets emitCallable reach any
 	// file's index without re-reading it per callable.
 	srcs := newSourceCache(projectDir)
+	flow := newL3Overlay(maxLevel, l3)
 
 	out := &v2.Analysis{
 		SchemaVersion: v2.SchemaVersion,
@@ -47,12 +54,15 @@ func Emit(app *schema.GoApplication, appName, projectDir string, maxLevel int, a
 		},
 	}
 	out.Application.ExternalSymbols = emitExternalSymbols(appID, app.Externals)
+	if flow.on {
+		out.KLimit = kLimit
+	}
 
 	// Deterministic module order does not affect the JSON map, but iterating
 	// sorted keeps any incidental ordering (and logs) stable across runs.
 	for _, relPath := range sortedFileKeys(app.SymbolTable) {
 		file := app.SymbolTable[relPath]
-		out.Application.SymbolTable[relPath] = emitModule(appID, relPath, file, idx, srcs)
+		out.Application.SymbolTable[relPath] = emitModule(appID, relPath, file, idx, srcs, flow)
 	}
 	return out
 }
@@ -64,7 +74,7 @@ func Emit(app *schema.GoApplication, appName, projectDir string, maxLevel int, a
 // modRel is this module's own file path (a symbol_table key). It is threaded to
 // callables so a method declared in another file can be detected and given a
 // span against its own source plus a source_file pointer.
-func emitModule(appID, modRel string, file schema.GoFile, idx sigIndex, srcs *sourceCache) v2.Module {
+func emitModule(appID, modRel string, file schema.GoFile, idx sigIndex, srcs *sourceCache, flow l3Overlay) v2.Module {
 	li := srcs.index(modRel)
 	source := li.source
 	modID := v2.ModuleID(appID, modRel)
@@ -84,10 +94,10 @@ func emitModule(appID, modRel string, file schema.GoFile, idx sigIndex, srcs *so
 	}
 
 	for name, t := range file.Types {
-		mod.Types[name] = emitType(modID, modRel, t, idx, srcs)
+		mod.Types[name] = emitType(modID, modRel, t, idx, srcs, flow)
 	}
 	for sig, fn := range file.Functions {
-		mod.Functions[sig] = emitCallable(modID, modRel, li, fn, idx, srcs)
+		mod.Functions[sig] = emitCallable(modID, modRel, li, fn, idx, srcs, flow)
 	}
 	return mod
 }
@@ -96,7 +106,7 @@ func emitModule(appID, modRel string, file schema.GoFile, idx sigIndex, srcs *so
 // kind and splitting embedding (base_types) from computed satisfaction. Methods
 // resolve into the type's callables{}. modRel is the module the type lives in;
 // its methods may be declared in other files (handled in emitCallable).
-func emitType(modID, modRel string, t schema.GoType, idx sigIndex, srcs *sourceCache) v2.Type {
+func emitType(modID, modRel string, t schema.GoType, idx sigIndex, srcs *sourceCache, flow l3Overlay) v2.Type {
 	li := srcs.index(modRel)
 	typeID := v2.TypeID(modID, t.Signature)
 	out := v2.Type{
@@ -118,7 +128,7 @@ func emitType(modID, modRel string, t schema.GoType, idx sigIndex, srcs *sourceC
 		}
 	}
 	for sig, m := range t.Methods {
-		out.Callables[sig] = emitCallable(typeID, modRel, li, m, idx, srcs)
+		out.Callables[sig] = emitCallable(typeID, modRel, li, m, idx, srcs, flow)
 	}
 	return out
 }
@@ -132,7 +142,12 @@ func emitType(modID, modRel string, t schema.GoType, idx sigIndex, srcs *sourceC
 // source_file records that file, per CLAUDE.md § Schema decisions. Nested
 // closures share their enclosing callable's file (Go has no cross-file
 // closures), so they carry the resolved file down unchanged.
-func emitCallable(parentID, modRel string, modLI *lineIndex, c schema.GoCallable, idx sigIndex, srcs *sourceCache) v2.Callable {
+//
+// At L3 the callable's dataflow result, looked up by (declaring file,
+// signature), completes its body and adds cfg/cdg/ddg (emit_l3.go). Its spans
+// use the same resolved lineIndex, so a cross-file method's statement spans
+// index its declaring file's source, like its own span.
+func emitCallable(parentID, modRel string, modLI *lineIndex, c schema.GoCallable, idx sigIndex, srcs *sourceCache, flow l3Overlay) v2.Callable {
 	callID := v2.CallableID(parentID, c.Signature)
 
 	// Resolve the file this callable's positions are relative to.
@@ -168,9 +183,14 @@ func emitCallable(parentID, modRel string, modLI *lineIndex, c schema.GoCallable
 			enclRel = sourceFile
 		}
 		for sig, inner := range c.InnerCallables {
-			out.Callables[sig] = emitCallable(callID, enclRel, li, inner, idx, srcs)
+			out.Callables[sig] = emitCallable(callID, enclRel, li, inner, idx, srcs, flow)
 		}
 	}
+	declFile := modRel
+	if sourceFile != "" {
+		declFile = sourceFile
+	}
+	flow.apply(&out, li, dataflow.L3Key{Path: declFile, Signature: c.Signature})
 	return out
 }
 

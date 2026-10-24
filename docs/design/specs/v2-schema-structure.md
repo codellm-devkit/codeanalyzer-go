@@ -11,7 +11,8 @@ the JSON tags from that file.
 ```
 ├─ schema_version                     # "2.0.0"
 ├─ language                           # "go"
-├─ max_level                          # 1 (symbol table) | 2 (+ call graph)
+├─ max_level                          # 1 (symbol table) | 2 (+ call graph) | 3 (+ cfg/cdg/ddg)
+├─ k_limit                            # L3+ only: access-path bound (--graph-field-depth, default 3)
 ├─ analyzer
 │  ├─ name                            # "codeanalyzer-go"
 │  └─ version
@@ -78,14 +79,50 @@ The same shape whether it sits under a type's `callables` (methods), a module's
 ├─ error_channel[]                    # optional: error-typed returns
 ├─ metrics                            # optional: { cyclomatic: N }
 ├─ callables                          # optional: nested closures (same shape)
-└─ body                               # { "<line:col>": call node }
-   └─ <call>
-      ├─ kind                         # "call"
-      ├─ span { start, end, bytes }
-      ├─ callee                       # null | can:// id  (key always present)
-      ├─ is_goroutine                 # optional: present only when true
-      └─ is_deferred                  # optional: present only when true
+├─ body                               # { "<key>": body node }; key = "<line:col>[/n]" | "@entry" | "@exit"
+│  ├─ <call>                          # L1+
+│  │  ├─ kind                         # "call"
+│  │  ├─ id                           # L3+: <callable-id>@<key>
+│  │  ├─ span { start, end, bytes }   # the call expression (unchanged at L3)
+│  │  ├─ parent                       # L3+, optional: key of the statement a nested call sits in
+│  │  ├─ callee                       # null | can:// id  (key always present)
+│  │  ├─ is_goroutine                 # optional: present only when true
+│  │  └─ is_deferred                  # optional: present only when true
+│  └─ <statement node>                # L3+
+│     ├─ kind                         # statement | branch | loop | switch | return | entry | exit
+│     ├─ id                           # <callable-id>@<key>  (@entry → <callable-id>@entry)
+│     └─ span { start, end, bytes }   # the statement; absent on entry / exit
+├─ cfg[]                              # L3+, optional: { src, dst, kind } — local body keys
+├─ cdg[]                              # L3+, optional: { src, dst }
+└─ ddg[]                              # L3+, optional: { src, dst, var, prov }  (prov = ["ssa"])
 ```
+
+### L3 body nodes and edges
+
+- **Kinds** (shared vocabulary, no Go-specific kinds): `if` → `branch`; `for` / `for … range` →
+  `loop`; `switch` / type `switch` / `select` → `switch`; `return` → `return`; every other
+  statement (assignment, `:=`, `var`, inc/dec, send, `go`, `defer`, `break` / `continue` /
+  `goto` / `fallthrough`) and each `case` / `default` / comm-clause head → `statement`;
+  `@entry` / `@exit` → `entry` / `exit`.
+- **Call nodes.** A bare call statement and a `go` statement *are* their call node (kind
+  `call`, the L1 key, the CFG step). A call nested in a statement keeps its L1 key and span
+  and carries `parent` = that statement's key. It is not a CFG step and has no edges.
+  `defer f(x)` is two nodes: a `statement` at the `defer` keyword, and the `call` node
+  (`is_deferred`) placed in the exit chain. An L1 call node in unreachable code is still
+  emitted, but it has no edges.
+- **Keys.** A statement that starts at the same position as an L1 call (`f().x = v`) takes
+  the next free `/n` suffix, so the L1 call key never moves.
+- **`cfg` kinds:** `fallthrough`, `true`, `false`, `loop_back`, `switch_case`, `break`,
+  `continue`, `return`, `exception`, and the Go add `defer_resume`. Sorted by
+  `(src, dst, kind)`.
+- **`cdg`** is control dependence from post-dominators. A node with no controller gets an
+  edge from `@entry`. Sorted by `(src, dst)`.
+- **`ddg`** comes from syntactic reaching definitions over k-limited access paths
+  (`base(.field|[*])*`, past `k` → `.*`). `var` is the source spelling of the path, and
+  `prov` is always `["ssa"]` at L3. Sorted by `(src, dst, var)`.
+- **Spans.** A statement node's span is its AST node's range, and a clause head ends at its
+  colon. For a method declared apart from its receiver type (`source_file`), body spans
+  index `symbol_table[source_file].source`, as the method's own span does.
 
 ## `span`
 
@@ -98,9 +135,14 @@ span
 
 ## Presence rules
 
-- **Always present:** every `id`, `kind`, `span`; the envelope fields; `symbol_table`,
-  `types`, `callables`, `functions`, `body` maps (may be empty `{}`); `call_graph` (empty
-  `[]` at L1); a body node's `callee` key (value `null` when unresolved/external).
+- **Always present:** every `id`, `kind`, `span` (except: a body node's `id` is L3+ only,
+  and `@entry` / `@exit` have no `span`); the envelope fields; `symbol_table`, `types`,
+  `callables`, `functions`, `body` maps (may be empty `{}`); `call_graph` (empty `[]` at L1);
+  a call node's `callee` key (value `null` when unresolved/external). Non-call body nodes
+  have no `callee`.
+- **L3+ only:** `k_limit`; body node `id` and `parent`; non-call body nodes; a callable's
+  `cfg` / `cdg` / `ddg`. These are omitted for a callable with no body. Each is a pure
+  addition: the `-a 2` document is a subset of the `-a 3` one.
 - **`omitempty` — emitted only when non-empty:** `content_hash`, `imports[].alias`,
   `base_types`, `interfaces`, `fields`, `source_file`, `return_type`, `error_channel`,
   `metrics`, a callable's nested `callables`, `parameters[].is_variadic`, edge `prov` /
@@ -119,5 +161,7 @@ type          can://<app>/go/<rel/path.go>/<type-signature>
 callable      can://<app>/go/<rel/path.go>/<type-signature>/<callable-signature>
               (functions omit the <type-signature> segment)
 external      can://<app>/@external/<import-path>/<sig>   (language-neutral)
-body call     keyed by "<line>:<col>" within the callable's body map
+body node     keyed by "<line>:<col>" (co-positioned: "<line>:<col>/<n>") or "@entry" / "@exit"
+              within the callable's body map; its id (L3+) is <callable-id>@<key>
+              (a synthetic key already carries the "@": <callable-id>@entry)
 ```

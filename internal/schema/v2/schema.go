@@ -5,8 +5,9 @@
 //
 // The model is ONE additive containment tree
 // (application → module → type → callable → body) with typed edge overlays
-// laid over it (a Code Property Graph). This package declares the L1 tree plus
-// the L2 refinement/edge slots; L3/L4 fields (cfg/cdg/ddg/param_*) are not
+// laid over it (a Code Property Graph). This package declares the L1 tree, the
+// L2 refinement/edge slots and the L3 body completion (statement nodes, body
+// node id/parent, the callable's cfg/cdg/ddg). L4 fields (param_*) are not
 // declared here — they arrive in their own train and reuse these ids/spans
 // unchanged.
 //
@@ -18,6 +19,8 @@
 //     L2). Absence is the "no fact" encoding — `omitempty` on optional fields.
 //   - open-vocabulary fields (prov, tags) are plain strings.
 package v2
+
+import "encoding/json"
 
 // SchemaVersion is the canonical schema major this package targets.
 const SchemaVersion = "2.0.0"
@@ -188,6 +191,11 @@ type Callable struct {
 	Metrics map[string]int `json:"metrics,omitempty"`
 	// Body holds call nodes at L1 (keyed by local id), completing at L3.
 	Body map[string]BodyNode `json:"body"`
+	// Cfg, Cdg and Ddg are the L3 intra-callable edge lists; endpoints are
+	// local body keys. Absent below L3 and for a callable with no body.
+	Cfg []CfgEdge `json:"cfg,omitempty"`
+	Cdg []CdgEdge `json:"cdg,omitempty"`
+	Ddg []DdgEdge `json:"ddg,omitempty"`
 	// Callables are nested closures / function literals, each with its own
 	// can:// id (replaces v1 InnerCallables).
 	Callables map[string]Callable `json:"callables,omitempty"`
@@ -204,11 +212,21 @@ type Parameter struct {
 // ─── body nodes ────────────────────────────────────────────────────────────────
 
 // BodyNode is a node inside a callable's body, keyed by its local id
-// (line:col for real nodes). At L1 the only kind emitted is "call"; L3 adds the
-// remaining statement kinds.
+// (line:col for real nodes, "@entry"/"@exit" for the synthetic ones). At L1
+// the only kind emitted is "call"; L3 adds statement | branch | loop | switch
+// | return | entry | exit.
 type BodyNode struct {
 	Kind string `json:"kind"` // "call" at L1
-	Span Span   `json:"span"`
+	// ID is the node's global ordinal id, v2.GlobalOrdinal(callable id, key).
+	// Emitted at L3+ only (additive), on every body node.
+	ID string `json:"id,omitempty"`
+	// Span is the node's source range. Absent (zero) only on the synthetic
+	// entry/exit nodes, which have no source.
+	Span Span `json:"span,omitzero"`
+	// Parent is, at L3+, the local key of the statement a satellite call
+	// node is nested in (the sanctioned parent refinement). Absent on CFG
+	// nodes.
+	Parent string `json:"parent,omitempty"`
 	// Callee is the sanctioned null→id refinement slot on a call node: null at
 	// L1, backfilled to a callable id at L2. A pointer with NO omitempty so it
 	// always serializes — as JSON null at L1 (the one place null is allowed),
@@ -220,7 +238,45 @@ type BodyNode struct {
 	IsDeferred bool `json:"is_deferred,omitempty"`
 }
 
+// MarshalJSON writes the callee key on call nodes only: it is the call
+// node's refinement slot (always present there, null until resolved), and a
+// statement / control / synthetic node has no callee fact to carry.
+func (n BodyNode) MarshalJSON() ([]byte, error) {
+	type plain BodyNode
+	if n.Kind == "call" {
+		return json.Marshal(plain(n))
+	}
+	return json.Marshal(struct {
+		plain
+		Callee *string `json:"callee,omitempty"`
+	}{plain: plain(n)})
+}
+
 // ─── edges ─────────────────────────────────────────────────────────────────────
+
+// CfgEdge is an L3 control-flow edge between two local body keys. Kind is a
+// shared CFG edge kind or the Go add "defer_resume".
+type CfgEdge struct {
+	Src  string `json:"src"`
+	Dst  string `json:"dst"`
+	Kind string `json:"kind"`
+}
+
+// CdgEdge is an L3 control-dependence edge between two local body keys.
+type CdgEdge struct {
+	Src string `json:"src"`
+	Dst string `json:"dst"`
+}
+
+// DdgEdge is a data-dependence edge between two local body keys on the
+// k-limited access path Var. Prov is ["ssa"] at L3 (syntactic reaching
+// definitions; the keystone's token, shared with the siblings).
+type DdgEdge struct {
+	Src  string   `json:"src"`
+	Dst  string   `json:"dst"`
+	Var  string   `json:"var"`
+	Prov []string `json:"prov"`
+}
 
 // Edge is a typed edge overlay record. The list it lives in IS its type (there
 // is no `type` field). src/dst are node ids; no dangling endpoints.
