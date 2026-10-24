@@ -35,6 +35,7 @@ The binary is fully self-contained: a single static executable with no runtime d
   - [Install via Homebrew](#install-via-homebrew)
   - [Install via pip (PyPI)](#install-via-pip-pypi)
   - [Build from source](#build-from-source)
+  - [Toolchain](#toolchain)
 - [Usage](#usage)
   - [Command-line options](#command-line-options)
   - [Examples](#examples)
@@ -72,7 +73,8 @@ The binary is fully self-contained: a single static executable with no runtime d
 
 Running a prebuilt `cango` binary requires **nothing** — it is fully self-contained. To *analyze* a
 project, that project should be a normal Go module (contain a `go.mod`) so the type checker can
-resolve imports. Building `cango` from source requires [Go 1.25+](https://go.dev/dl/).
+resolve imports. Building `cango` from source requires [Go 1.25+](https://go.dev/dl/), and the
+latest Go release is recommended — see [Toolchain](#toolchain).
 
 ### Install via shell script
 
@@ -119,6 +121,24 @@ analyzer directly from source without compiling:
 ```sh
 go run ./cmd/codeanalyzer -i /path/to/project -a 2
 ```
+
+### Toolchain
+
+`cango` type-checks the projects it analyzes with the `go/types` package compiled into the
+binary, so **the Go that builds `cango` must be at least as new as the newest `go` line of the
+projects it analyzes**. Build with the latest Go release (the release binaries are). `go.mod`'s
+`go 1.25.0` is only the minimum that compiles the analyzer.
+
+With a binary built by an older Go, every package that needs a newer Go type-checks only
+partially, yet the run still exits 0: callees go unresolved, call edges and L3 defs are lost,
+and nothing else looks wrong. `cango` prints one warning when this happens, naming the Go it was
+built with, the highest version required and the number of affected packages:
+
+```
+[codeanalyzer-go WARN] 12 packages require a newer Go version (highest go1.27) than this analyzer was built with (go1.26.4); …
+```
+
+Rebuild `cango` with that Go version or newer. (`-vv` lists the affected packages.)
 
 ## Usage
 

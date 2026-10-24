@@ -73,16 +73,22 @@ func (b *SymbolTableBuilder) Build(targetFiles []string, skipTests bool) (map[st
 	}
 
 	// Collect packages, warn on errors but don't abort (graceful partial analysis).
+	var tooNew toolchainGap
 	for _, pkg := range pkgList {
-		if len(pkg.Errors) > 0 {
-			for _, e := range pkg.Errors {
-				utils.Warn("package %s: %v", pkg.PkgPath, e)
+		for _, e := range pkg.Errors {
+			if tooNew.record(pkg.PkgPath, e.Msg) {
+				// Summarized once below; one line per package is noise on a
+				// large module and hides the cause.
+				utils.Debug("package %s: %v", pkg.PkgPath, e)
+				continue
 			}
+			utils.Warn("package %s: %v", pkg.PkgPath, e)
 		}
 		if pkg.Types != nil {
 			b.pkgs[pkg.PkgPath] = pkg
 		}
 	}
+	tooNew.warn()
 
 	symbolTable := map[string]schema.GoFile{}
 
