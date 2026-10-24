@@ -194,11 +194,15 @@ func TestGateL3_BodyNodeIDsAreGlobalOrdinals(t *testing.T) {
 			}
 		}
 	}
-	// Below L3 the body nodes carry no id (additive at L3).
+	// Below L3 every body node carries the same id (R15, Python parity:
+	// stamp_body_ids runs at L1); parent is still L3+ only.
 	for _, e := range pairCallables(fx.st, fx.l2) {
 		for k, n := range e.v2.Body {
-			if n.ID != "" || n.Parent != "" {
-				t.Errorf("L2 %s body %s carries id/parent %q/%q", e.v2.ID, k, n.ID, n.Parent)
+			if want := v2.GlobalOrdinal(e.v2.ID, k); n.ID != want {
+				t.Errorf("L2 %s body %s id = %q, want %q", e.v2.ID, k, n.ID, want)
+			}
+			if n.Parent != "" {
+				t.Errorf("L2 %s body %s carries parent %q", e.v2.ID, k, n.Parent)
 			}
 		}
 	}
@@ -209,8 +213,10 @@ func TestGateL3_BodyNodeIDsAreGlobalOrdinals(t *testing.T) {
 
 // TestGateL3_SupersetOfL2 is the monotonicity gate: everything in the -a 2
 // JSON is present and equal in the -a 3 JSON. The only sanctioned additions
-// are new body nodes, cfg/cdg/ddg on a callable, id/parent on a body node and
-// the envelope's k_limit; max_level is the level marker itself.
+// are new body nodes, cfg/cdg/ddg on a callable, parent on a body node and
+// the envelope's k_limit; max_level is the level marker itself. A body node's
+// id is emitted from L1 (R15), so an L1 node's id must be present and equal
+// at L3 — it is no longer an allowed addition.
 func TestGateL3_SupersetOfL2(t *testing.T) {
 	for _, name := range []string{"dataflow", "multipackage"} {
 		fx := buildL3(t, name)
@@ -243,9 +249,9 @@ func toAny(t *testing.T, a *v2.Analysis) map[string]any {
 
 // subset records where a (the lower level) is not contained in b. parentKey
 // is the map key a and b sit under, which tells the sanctioned additions
-// apart: any new key in a "body" map, id/parent in a body node (an object
-// under a body map), cfg/cdg/ddg in a callable (an object with a body),
-// k_limit at the root.
+// apart: any new key in a "body" map, parent in a body node (an object under
+// a body map), cfg/cdg/ddg in a callable (an object with a body), k_limit at
+// the root.
 func subset(path, parentKey string, a, b any, errs *[]string) {
 	switch av := a.(type) {
 	case map[string]any:
@@ -271,7 +277,7 @@ func subset(path, parentKey string, a, b any, errs *[]string) {
 			case parentKey == "body":
 			case path == "$" && k == "k_limit":
 			case isCallable && (k == "cfg" || k == "cdg" || k == "ddg"):
-			case (k == "id" || k == "parent") && strings.Contains(path, ".body."):
+			case k == "parent" && strings.Contains(path, ".body."):
 			default:
 				*errs = append(*errs, fmt.Sprintf("%s.%s: unsanctioned addition", path, k))
 			}

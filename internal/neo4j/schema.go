@@ -208,8 +208,9 @@ var Nodes = []NodeSpec{
 	{
 		Label: LabelBodyNode, MergeLabel: LabelBodyNode, Key: "id", CanNode: true,
 		// kind "call" at L1, statement|branch|loop|switch|return|entry|exit at L3;
-		// is_goroutine/is_deferred pruned when false. call_node = global id of the
-		// enclosing statement (JSON `parent`); var = JSON `of` (L4 — absent at L3).
+		// is_goroutine/is_deferred pruned when false. call_node = the enclosing
+		// statement's LOCAL key (JSON `parent` verbatim, resolved against the
+		// owning callable; Python parity); var = JSON `of` (L4 — absent at L3).
 		// span_json absent on the synthetic entry/exit nodes.
 		Props: []string{"kind", "is_goroutine", "is_deferred", "span_json", "call_node", "var"},
 	},

@@ -534,3 +534,39 @@ func TestGateL2_CoPositionedCallsResolveSeparately(t *testing.T) {
 		t.Errorf("Chain edges = %v, want {A, B} = %v", dsts, want)
 	}
 }
+
+// TestGateL1_BodyNodeIDs (R15): from L1 on, every body node carries its global
+// id, v2.GlobalOrdinal(callable id, local key) — Python parity (its
+// stamp_body_ids runs at L1) — and no parent (an L3 refinement).
+func TestGateL1_BodyNodeIDs(t *testing.T) {
+	out := buildDataflowL1V2(t)
+	checked := 0
+	var walk func(c v2.Callable)
+	walk = func(c v2.Callable) {
+		for k, n := range c.Body {
+			if want := v2.GlobalOrdinal(c.ID, k); n.ID != want {
+				t.Errorf("%s body %s id = %q, want %q", c.ID, k, n.ID, want)
+			}
+			if n.Parent != "" {
+				t.Errorf("%s body %s carries parent %q at L1", c.ID, k, n.Parent)
+			}
+			checked++
+		}
+		for _, in := range c.Callables {
+			walk(in)
+		}
+	}
+	for _, m := range out.Application.SymbolTable {
+		for _, f := range m.Functions {
+			walk(f)
+		}
+		for _, ty := range m.Types {
+			for _, c := range ty.Callables {
+				walk(c)
+			}
+		}
+	}
+	if checked < 30 {
+		t.Errorf("only %d L1 body nodes checked", checked)
+	}
+}

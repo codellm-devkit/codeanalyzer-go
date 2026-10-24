@@ -448,13 +448,53 @@ func TestProject_BodyNodeCallNodeAndVar(t *testing.T) {
 		if hasVar {
 			t.Errorf("%s carries var at L3", n.Value)
 		}
+		// call_node is the LOCAL key of the parent statement (JSON `parent`
+		// verbatim), as codeanalyzer-python projects it and python-sdk's
+		// reconstruct maps it back (I6).
 		cn, hasCall := n.Props["call_node"]
 		if n.Value == fn+"@4:3" {
-			if cn != fn+"@3:2" {
-				t.Errorf("call_node = %v, want %s@3:2", cn, fn)
+			if cn != "3:2" {
+				t.Errorf("call_node = %v, want the local key 3:2", cn)
 			}
 		} else if hasCall {
 			t.Errorf("%s has unexpected call_node", n.Value)
 		}
+	}
+}
+
+// TestProject_CallNodeResolvesWithinOwner (I6): on the real -a 3 fixture every
+// call_node is a local key that, resolved against the owning callable (the
+// GO_HAS_BODY_NODE source) with v2.GlobalOrdinal, names a projected body node
+// of that same callable — no dangling call_node.
+func TestProject_CallNodeResolvesWithinOwner(t *testing.T) {
+	rows := Project(buildDataflowL3(t))
+	owner := map[string]string{} // body id -> owning callable id
+	for _, e := range rows.Edges {
+		if e.Type == RelHasBodyNode {
+			owner[e.To.Value] = e.From.Value
+		}
+	}
+	checked := 0
+	for _, n := range rows.Nodes {
+		if n.Labels[0] != LabelBodyNode {
+			continue
+		}
+		cn, ok := n.Props["call_node"]
+		if !ok {
+			continue
+		}
+		local, isStr := cn.(string)
+		if !isStr || strings.HasPrefix(local, "can://") {
+			t.Errorf("%s: call_node %v is not a local key", n.Value, cn)
+			continue
+		}
+		parent := v2.GlobalOrdinal(owner[n.Value], local)
+		if owner[parent] != owner[n.Value] || owner[n.Value] == "" {
+			t.Errorf("%s: call_node %q resolves to %s, not a body node of %s", n.Value, local, parent, owner[n.Value])
+		}
+		checked++
+	}
+	if checked < 10 {
+		t.Errorf("only %d call_node props checked", checked)
 	}
 }

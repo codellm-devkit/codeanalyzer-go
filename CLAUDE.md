@@ -126,6 +126,13 @@ shared neutral vocabulary verbatim; never rename a sibling's shared name). Spec:
 - **`is_goroutine` / `is_deferred`** → boolean props on the call `:GoBodyNode` (pruned when
   false, matching JSON `omitempty`), not labels, not edge discriminants (the fact lives on
   the call site even when the callee is unresolved and no edge exists).
+- **`:GoBodyNode.id`** = the JSON body node's `id` (`<callable-id>@<key>`), which the JSON
+  carries **from `-a 1` on** (not L3+ only) — Python parity: codeanalyzer-python stamps body
+  ids at L1 (`stamp_body_ids`), so JSON and graph join on the same id at every level.
+- **`call_node`** on a satellite call `:GoBodyNode` = the enclosing statement's **local** key
+  (JSON `parent` verbatim), resolved against the owning callable (the `GO_HAS_BODY_NODE`
+  source) — not a global id. Python parity: codeanalyzer-python projects `node.parent`
+  unchanged and python-sdk's `reconstruct` maps `call_node` back to `parent`.
 - **`source_file`** (cross-file method, § callable above) → scalar prop on `:GoCallable`;
   text recovery joins to the declaring `:GoModule` by that path. Present only when it
   differs from the nesting module.

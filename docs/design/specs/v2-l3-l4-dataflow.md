@@ -129,7 +129,10 @@ separately from the `can://<app>/` descendant prefix).
 
 Body node ids are positional `line:col` local keys, global id `<callable-id>@<local>`
 (`global_ordinal` rule: synthetic `@…` keys concatenate as-is). Every body node carries its global
-`id` field (Python #176 precedent, which the SDK reads).
+`id` field (Python #176 precedent, which the SDK reads) **at every level, from `-a 1` on** — the
+L1 call nodes included. Python parity: codeanalyzer-python runs `stamp_body_ids` at L1, so a
+consumer reads `id` off an L1 document the same way in both languages. (Supersedes the earlier
+"id at L3+ only" ruling; additive at L1/L2.) `parent` stays an L3 refinement.
 
 **Kinds — shared vocabulary only, no Go-specific kinds:**
 
@@ -468,7 +471,10 @@ without schema change (`prov` stays `points-to`).
 Fill the reserved overlay, no contract renames:
 
 - `:GoBodyNode` for every body node incl. synthetic vertices; props add `of` → **`var`** and
-  `parent` → **`call_node`** (global id) — Python's projection names, which the SDK's Cypher reads
+  `parent` → **`call_node`** (the **local** parent key, JSON `parent` verbatim, resolved against
+  the owning callable — Python parity: codeanalyzer-python's `project.py` stores `node.parent` and
+  python-sdk's `reconstruct.py` maps `call_node` straight back to `parent`; a global id would not
+  round-trip) — Python's projection names, which the SDK's Cypher reads
   (`projection` includes `n.var`). Keep `kind`, `is_goroutine`, `is_deferred`, `span_json`; add the
   flat span props siblings use if the SDK backend needs them (builder confirms against
   `PyNeo4jBackend`).

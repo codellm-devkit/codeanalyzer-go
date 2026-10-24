@@ -7,7 +7,7 @@ import (
 
 // l3Overlay merges dataflow.Run's side table into the emitted tree. on is
 // maxLevel >= 3; below that the overlay is inert and the tree is exactly the
-// L1/L2 one (no id, no parent, no edge lists).
+// L1/L2 one (call nodes with their ids, no parent, no edge lists).
 type l3Overlay struct {
 	on  bool
 	res map[dataflow.L3Key]dataflow.Result
@@ -22,15 +22,15 @@ func newL3Overlay(maxLevel int, res map[dataflow.L3Key]dataflow.Result) l3Overla
 // file's lineIndex, so every span indexes the file c's own span indexes.
 //
 // The merge is additive over the L1 body:
-//   - every L1 call node is kept unchanged — kind, span (the CallExpr's, R7),
-//     callee, flags — even one the CFG pruned as unreachable (it simply has
-//     no edges); a result node on an L1 key only contributes its Parent;
+//   - every L1 call node is kept unchanged — kind, id, span (the CallExpr's,
+//     R7), callee, flags — even one the CFG pruned as unreachable (it simply
+//     has no edges); a result node on an L1 key only contributes its Parent;
 //   - every other result node (the pruned set's statement, control and
-//     synthetic nodes) is added with its span from Pos/End;
-//   - at L3 every body node gets ID = v2.GlobalOrdinal(c.ID, key), whether or
-//     not a result exists, so the id field is uniform at L3.
+//     synthetic nodes) is added with its span from Pos/End and its ID =
+//     v2.GlobalOrdinal(c.ID, key), the rule emitBody applies to the L1 nodes
+//     (R15), so the id field is uniform at every level.
 //
-// No id is minted before this point: Run works on local keys only.
+// Run works on local keys only; ids are minted here and in emitBody.
 func (o l3Overlay) apply(c *v2.Callable, li *lineIndex, key dataflow.L3Key) {
 	if !o.on {
 		return
@@ -42,7 +42,9 @@ func (o l3Overlay) apply(c *v2.Callable, li *lineIndex, key dataflow.L3Key) {
 				c.Body[n.Key] = bn
 				continue
 			}
-			c.Body[n.Key] = l3BodyNode(n, li)
+			bn := l3BodyNode(n, li)
+			bn.ID = v2.GlobalOrdinal(c.ID, n.Key)
+			c.Body[n.Key] = bn
 		}
 		c.Cfg = make([]v2.CfgEdge, len(r.Cfg))
 		for i, e := range r.Cfg {
@@ -56,10 +58,6 @@ func (o l3Overlay) apply(c *v2.Callable, li *lineIndex, key dataflow.L3Key) {
 		for i, e := range r.Ddg {
 			c.Ddg[i] = v2.DdgEdge{Src: e.Src, Dst: e.Dst, Var: e.Var, Prov: []string{"ssa"}} // own slice per edge: no aliasing
 		}
-	}
-	for k, bn := range c.Body {
-		bn.ID = v2.GlobalOrdinal(c.ID, k)
-		c.Body[k] = bn
 	}
 }
 

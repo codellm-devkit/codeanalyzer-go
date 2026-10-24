@@ -218,7 +218,8 @@ type Parameter struct {
 type BodyNode struct {
 	Kind string `json:"kind"` // "call" at L1
 	// ID is the node's global ordinal id, v2.GlobalOrdinal(callable id, key).
-	// Emitted at L3+ only (additive), on every body node.
+	// Emitted at every level (from L1, R15 — Python parity), on every body
+	// node.
 	ID string `json:"id,omitempty"`
 	// Span is the node's source range. Absent (zero) only on the synthetic
 	// entry/exit nodes, which have no source.

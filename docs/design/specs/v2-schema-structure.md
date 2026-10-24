@@ -82,7 +82,7 @@ The same shape whether it sits under a type's `callables` (methods), a module's
 ├─ body                               # { "<key>": body node }; key = "<line:col>[/n]" | "@entry" | "@exit"
 │  ├─ <call>                          # L1+
 │  │  ├─ kind                         # "call"
-│  │  ├─ id                           # L3+: <callable-id>@<key>
+│  │  ├─ id                           # L1+: <callable-id>@<key>
 │  │  ├─ span { start, end, bytes }   # the call expression (unchanged at L3)
 │  │  ├─ parent                       # L3+, optional: key of the statement a nested call sits in
 │  │  ├─ callee                       # null | can:// id  (key always present)
@@ -135,12 +135,13 @@ span
 
 ## Presence rules
 
-- **Always present:** every `id`, `kind`, `span` (except: a body node's `id` is L3+ only,
-  and `@entry` / `@exit` have no `span`); the envelope fields; `symbol_table`, `types`,
+- **Always present:** every `id` (body nodes included, from L1 on — parity with
+  codeanalyzer-python, which stamps body ids at L1), `kind`, `span` (except: `@entry` /
+  `@exit` have no `span`); the envelope fields; `symbol_table`, `types`,
   `callables`, `functions`, `body` maps (may be empty `{}`); `call_graph` (empty `[]` at L1);
   a call node's `callee` key (value `null` when unresolved/external). Non-call body nodes
   have no `callee`.
-- **L3+ only:** `k_limit`; body node `id` and `parent`; non-call body nodes; a callable's
+- **L3+ only:** `k_limit`; body node `parent`; non-call body nodes; a callable's
   `cfg` / `cdg` / `ddg`. These are omitted for a callable with no body. Each is a pure
   addition: the `-a 2` document is a subset of the `-a 3` one.
 - **`omitempty` — emitted only when non-empty:** `content_hash`, `imports[].alias`,
@@ -162,6 +163,6 @@ callable      can://<app>/go/<rel/path.go>/<type-signature>/<callable-signature>
               (functions omit the <type-signature> segment)
 external      can://<app>/@external/<import-path>/<sig>   (language-neutral)
 body node     keyed by "<line>:<col>" (co-positioned: "<line>:<col>/<n>") or "@entry" / "@exit"
-              within the callable's body map; its id (L3+) is <callable-id>@<key>
+              within the callable's body map; its id (every level) is <callable-id>@<key>
               (a synthetic key already carries the "@": <callable-id>@entry)
 ```

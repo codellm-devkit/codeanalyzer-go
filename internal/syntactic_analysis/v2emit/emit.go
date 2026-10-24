@@ -196,6 +196,8 @@ func emitCallable(parentID, modRel string, modLI *lineIndex, c schema.GoCallable
 
 // emitBody builds the body map: one `call` node per call site, keyed by its
 // line:col local id, carrying the sanctioned callee null->id refinement slot.
+// Every node carries its global id, v2.GlobalOrdinal(callable id, key), from L1
+// on (R15; Python parity: codeanalyzer-python stamps body ids at L1).
 //
 // callee resolution:
 //   - L1: the v1 site has no backfilled signature, so callee stays null.
@@ -211,6 +213,7 @@ func emitBody(callableID string, li *lineIndex, sites []schema.GoCallsite, idx s
 		local := keys[i]
 		body[local] = v2.BodyNode{
 			Kind:        "call",
+			ID:          v2.GlobalOrdinal(callableID, local),
 			Span:        colSpan(li, cs.StartLine, cs.StartColumn, cs.EndLine, cs.EndColumn),
 			Callee:      calleeID(cs.CalleeSignature, idx),
 			IsGoroutine: cs.IsGoroutine,

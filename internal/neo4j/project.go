@@ -178,9 +178,13 @@ func (p *projector) projectBodyNode(callableRef NodeRef, module, callableID, loc
 	// GlobalOrdinal, not callableID+"@"+local: synthetic keys ("@entry") already
 	// carry the "@", and the JSON body node id uses the same rule.
 	id := v2.GlobalOrdinal(callableID, local)
+	// call_node is the parent statement's LOCAL key (JSON `parent` verbatim),
+	// resolved against the owning callable — Python parity: codeanalyzer-python
+	// projects node.parent unchanged and python-sdk's reconstruct maps call_node
+	// straight back to parent (I6).
 	var callNode Value
 	if bn.Parent != "" {
-		callNode = v2.GlobalOrdinal(callableID, bn.Parent)
+		callNode = bn.Parent
 	}
 	bRef := p.b.Node(
 		[]string{LabelBodyNode, MarkerLabel},
