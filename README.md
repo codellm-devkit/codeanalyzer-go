@@ -75,7 +75,7 @@ The binary is fully self-contained: a single static executable with no runtime d
 
 Running a prebuilt `cango` binary requires **nothing** — it is fully self-contained. To *analyze* a
 project, that project should be a normal Go module (contain a `go.mod`) so the type checker can
-resolve imports. Building `cango` from source requires [Go 1.25+](https://go.dev/dl/), and the
+resolve imports. Building `cango` from source requires [Go 1.26+](https://go.dev/dl/), and the
 latest Go release is recommended — see [Toolchain](#toolchain).
 
 ### Install via shell script
@@ -129,7 +129,8 @@ go run ./cmd/codeanalyzer -i /path/to/project -a 2
 `cango` type-checks the projects it analyzes with the `go/types` package compiled into the
 binary, so **the Go that builds `cango` must be at least as new as the newest `go` line of the
 projects it analyzes**. Build with the latest Go release (the release binaries are). `go.mod`'s
-`go 1.25.0` is only the minimum that compiles the analyzer.
+`go 1.26.0` is only the minimum that compiles the analyzer (set by `golang.org/x/tools`, whose
+recent releases require Go 1.26).
 
 With a binary built by an older Go, every package that needs a newer Go type-checks only
 partially, yet the run still exits 0: callees go unresolved, call edges and L3 defs are lost,
