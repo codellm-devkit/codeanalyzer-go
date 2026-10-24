@@ -90,7 +90,7 @@ type ExternalSymbol struct {
 	// Module is the package import path the symbol lives in.
 	Module string `json:"module"`
 	// Signature is the id's last segment: [Type.]Name, no import-path prefix.
-	Signature  string      `json:"signature"`
+	Signature  string              `json:"signature"`
 	Parameters []ExternalParameter `json:"parameters"`
 	ReturnType string              `json:"return_type,omitempty"`
 }

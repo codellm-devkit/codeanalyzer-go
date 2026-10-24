@@ -19,8 +19,8 @@ var (
 	sharedGreeterL2      *schema.GoApplication // greeter, full call-graph
 	sharedMultipackageL1 *schema.GoApplication // multipackage, symbol-table only
 	sharedMultipackageL2 *schema.GoApplication // multipackage, full call-graph
-	sharedGenericsL1  *schema.GoApplication // generics, symbol-table only
-	sharedChiL2       *schema.GoApplication // chi (external dep), full call-graph
+	sharedGenericsL1     *schema.GoApplication // generics, symbol-table only
+	sharedChiL2          *schema.GoApplication // chi (external dep), full call-graph
 )
 
 func TestMain(m *testing.M) {
@@ -97,4 +97,3 @@ func testdataDir() string {
 	abs, _ := filepath.Abs(filepath.Join(filepath.Dir(thisFile), "..", "..", "testdata"))
 	return abs
 }
-

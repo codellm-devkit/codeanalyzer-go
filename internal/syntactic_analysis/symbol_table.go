@@ -360,16 +360,16 @@ func (b *SymbolTableBuilder) buildType(
 	end := b.fset.Position(spec.End())
 
 	gt := &schema.GoType{
-		Name:        typeName,
-		Signature:   typSig,
-		Comments:    b.docComments(decl.Doc),
-		IsExported:  isExported,
-		Fields:      []schema.GoField{},
-		Methods:     map[string]schema.GoCallable{},
-		BaseTypes:   []string{},
-		InnerTypes:  map[string]schema.GoType{},
-		StartLine:   pos.Line,
-		EndLine:     end.Line,
+		Name:       typeName,
+		Signature:  typSig,
+		Comments:   b.docComments(decl.Doc),
+		IsExported: isExported,
+		Fields:     []schema.GoField{},
+		Methods:    map[string]schema.GoCallable{},
+		BaseTypes:  []string{},
+		InnerTypes: map[string]schema.GoType{},
+		StartLine:  pos.Line,
+		EndLine:    end.Line,
 	}
 
 	gt.TypeKind = b.typeKindOf(pkg, spec)
@@ -499,18 +499,18 @@ func (b *SymbolTableBuilder) collectInterfaceMethods(pkg *packages.Package, it *
 
 			sig := pkg.Types.Path() + "." + gt.Name + "." + name.Name
 			callable := schema.GoCallable{
-				Name:          name.Name,
-				Path:          "",
-				Signature:     sig,
-				Parameters:    b.buildFuncTypeParams(pkg, method.Type),
-				ReturnType:    retType,
-				ReturnTypes:   retTypes,
-				IsExported:    unicode.IsUpper(rune(name.Name[0])),
-				ReceiverType:  gt.Signature,
-				CallSites:     []schema.GoCallsite{},
+				Name:           name.Name,
+				Path:           "",
+				Signature:      sig,
+				Parameters:     b.buildFuncTypeParams(pkg, method.Type),
+				ReturnType:     retType,
+				ReturnTypes:    retTypes,
+				IsExported:     unicode.IsUpper(rune(name.Name[0])),
+				ReceiverType:   gt.Signature,
+				CallSites:      []schema.GoCallsite{},
 				InnerCallables: map[string]schema.GoCallable{},
-				StartLine:     pos.Line,
-				EndLine:       end.Line,
+				StartLine:      pos.Line,
+				EndLine:        end.Line,
 			}
 			gt.Methods[sig] = callable
 		}
@@ -559,23 +559,23 @@ func (b *SymbolTableBuilder) buildCallable(
 	}
 
 	callable := &schema.GoCallable{
-		Name:               name,
-		Path:               utils.RelativePath(b.projectDir, b.fset.File(decl.Pos()).Name()),
-		Signature:          sig,
-		Comments:           b.docComments(decl.Doc),
-		Parameters:         b.buildParams(pkg, decl.Type),
-		ReturnType:         retType,
-		ReturnTypes:        retTypes,
-		IsExported:         isExported,
-		ReceiverType:       recvType,
-		ReceiverName:       recvName,
-		CallSites:          []schema.GoCallsite{},
-		InnerCallables:     map[string]schema.GoCallable{},
-		LocalVariables:     []schema.GoVariableDeclaration{},
-		AccessedSymbols:    []schema.GoSymbol{},
-		StartLine:          pos.Line,
-		EndLine:            end.Line,
-		CodeStartLine:      bodyStart,
+		Name:                 name,
+		Path:                 utils.RelativePath(b.projectDir, b.fset.File(decl.Pos()).Name()),
+		Signature:            sig,
+		Comments:             b.docComments(decl.Doc),
+		Parameters:           b.buildParams(pkg, decl.Type),
+		ReturnType:           retType,
+		ReturnTypes:          retTypes,
+		IsExported:           isExported,
+		ReceiverType:         recvType,
+		ReceiverName:         recvName,
+		CallSites:            []schema.GoCallsite{},
+		InnerCallables:       map[string]schema.GoCallable{},
+		LocalVariables:       []schema.GoVariableDeclaration{},
+		AccessedSymbols:      []schema.GoSymbol{},
+		StartLine:            pos.Line,
+		EndLine:              end.Line,
+		CodeStartLine:        bodyStart,
 		CyclomaticComplexity: b.cyclomaticComplexity(decl),
 	}
 
