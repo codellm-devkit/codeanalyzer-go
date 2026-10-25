@@ -437,6 +437,8 @@ What a re-emit replaces depends on the path:
   database. For L3 this includes `:GoBodyNode`s and their `GO_CFG_NEXT` / `GO_CDG` / `GO_DDG`
   edges, whose ids are keyed on `line:col`: once lines shift, the old body nodes and their edges
   remain beside the new ones. Pass `--eager` when you push an L3 graph after editing source.
+  The purge needs a full run: with `--target-files` it is skipped, because the push carries only
+  the targeted packages.
 
 > **`--emit neo4j` is always full depth.** The graph is projected at the max implemented level (L3
 > today — symbol table, call graph, and every callable's body nodes with `GO_CFG_NEXT` / `GO_CDG` /
@@ -564,7 +566,16 @@ check the following.
   from `-a 1` on, not only at `-a 3`.
 - **L2 includes library calls.** The call graph now has edges to library (stdlib and dependency)
   callees, and `application.external_symbols` describes them. A library call's `callee` is its
-  external id instead of `null`. Type conversions are no longer calls.
+  external id instead of `null`. A type conversion is still a call node, but its `callee` stays
+  `null`; it is no longer resolved to a `<Type>.__new__` pseudo-callee.
+- **L1 records more.**
+  - A type's `kind` can now be `alias` or `defined`, not only `struct` or `interface`.
+  - Deferred calls carry `is_deferred: true`.
+  - Chained calls that start at the same position, such as `s.A().B()`, are now separate call
+    nodes keyed `l:c` and `l:c/2`. Previously the inner call was dropped. Do not parse body keys
+    as plain `line:col`.
+  - Calls inside `go` statement arguments, such as `g()` in `go f(g())`, are now call sites.
+  - Consumers that count call nodes will see more of them.
 - **Neo4j:**
   - `--emit neo4j` projects L3, adding `GO_CFG_NEXT`, `GO_CDG` and `GO_DDG`.
   - `:GoBodyNode.call_node` is the enclosing statement's local key (the JSON `parent`), not a

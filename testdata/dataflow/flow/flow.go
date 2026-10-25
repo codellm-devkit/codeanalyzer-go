@@ -548,9 +548,9 @@ func wrapErr(err error) error { return err }
 func observe(err error) { _ = err }
 
 // DeferWrap has a deferred closure that rewrites the named result err (R11).
-// The chain runs the rewrite first, then the observer, then @exit: the
-// rewrite is a may-write, so the earlier def of err still reaches the
-// observer through it.
+// The chain runs the rewrite, then the observer, then @exit. Deferred nodes
+// never strong-define, and L3 records no def for the closure's write to its
+// captured err, so the earlier def of err still reaches the observer.
 func DeferWrap() (err error) {
 	err = wrapErr(nil)
 	defer func() { observe(err) }()
