@@ -1,6 +1,11 @@
 package v2emit
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"iter"
 	"os"
 	"path/filepath"
 	"sort"
@@ -25,46 +30,166 @@ import (
 // L3 side table, except span byte offsets, which are derived from source via
 // lineIndex.
 func Emit(app *schema.GoApplication, appName, projectDir string, maxLevel int, analyzerVersion string, kLimit int, l3 map[dataflow.L3Key]dataflow.Result) *v2.Analysis {
-	appID := v2.AppID(appName)
+	e := newEmitter(app, appName, projectDir, maxLevel, l3)
+	out := e.envelope(app, maxLevel, analyzerVersion, kLimit)
+	out.Application.SymbolTable = make(map[string]v2.Module, len(app.SymbolTable))
+	for _, relPath := range sortedFileKeys(app.SymbolTable) {
+		out.Application.SymbolTable[relPath] = e.module(relPath, app.SymbolTable[relPath])
+	}
+	return out
+}
 
-	// The signature→can:// id index translates v1 identity (signature strings)
-	// into v2 node ids. It is what the L2 refinement uses to backfill body
-	// callees and to map call_graph edge endpoints onto real callable ids.
+// EmitTo writes the analysis.json bytes of Emit's payload to w — the same bytes
+// json.Marshal(Emit(...)) produces — without building the whole tree: each
+// module is emitted, marshalled and dropped in symbol_table key order, so peak
+// memory is the envelope plus the largest module, not the document.
+func EmitTo(w io.Writer, app *schema.GoApplication, appName, projectDir string, maxLevel int, analyzerVersion string, kLimit int, l3 map[dataflow.L3Key]dataflow.Result) error {
+	e := newEmitter(app, appName, projectDir, maxLevel, l3)
+	out := e.envelope(app, maxLevel, analyzerVersion, kLimit)
+	return encode(w, out, func(yield func(string, v2.Module) bool) {
+		for _, relPath := range sortedFileKeys(app.SymbolTable) {
+			if !yield(relPath, e.module(relPath, app.SymbolTable[relPath])) {
+				return
+			}
+		}
+	})
+}
+
+// Encode writes a to w as the exact bytes json.Marshal(a) produces (no
+// trailing newline), streaming symbol_table one module at a time so the whole
+// document never exists as one []byte.
+func Encode(w io.Writer, a *v2.Analysis) error {
+	st := a.Application.SymbolTable
+	if st == nil { // json.Marshal writes null; nothing to stream
+		data, err := json.Marshal(a)
+		if err != nil {
+			return err
+		}
+		_, err = w.Write(data)
+		return err
+	}
+	keys := make([]string, 0, len(st))
+	for k := range st {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	env := *a
+	env.Application.SymbolTable = nil
+	return encode(w, &env, func(yield func(string, v2.Module) bool) {
+		for _, k := range keys {
+			if !yield(k, st[k]) {
+				return
+			}
+		}
+	})
+}
+
+// symbolTableHole is the envelope's symbol_table as json.Marshal writes it
+// when the map is empty. Every field before it is a number or a JSON string;
+// inside a string every '"' is written as \", and the needle's second '"'
+// follows 'e', so its first match is the field itself.
+const symbolTableHole = `"symbol_table":{}`
+
+// encode writes env (its SymbolTable ignored) with symbol_table filled from
+// modules, which must yield keys in sort.Strings order — the order
+// json.Marshal writes a map[string] in. Keys are marshalled as JSON strings,
+// which is how encoding/json writes a string map key (same escaping).
+func encode(w io.Writer, env *v2.Analysis, modules iter.Seq2[string, v2.Module]) error {
+	shell := *env
+	shell.Application.SymbolTable = map[string]v2.Module{}
+	data, err := json.Marshal(&shell)
+	if err != nil {
+		return err
+	}
+	i := bytes.Index(data, []byte(symbolTableHole))
+	if i < 0 {
+		return fmt.Errorf("v2emit: no %s in the envelope", symbolTableHole)
+	}
+	split := i + len(symbolTableHole) - 1 // at the closing '}'
+	if _, err := w.Write(data[:split]); err != nil {
+		return err
+	}
+	first := true
+	for k, m := range modules {
+		if err := writeEntry(w, k, m, first); err != nil {
+			return err
+		}
+		first = false
+	}
+	_, err = w.Write(data[split:])
+	return err
+}
+
+func writeEntry(w io.Writer, key string, m v2.Module, first bool) error {
+	k, err := json.Marshal(key)
+	if err != nil {
+		return err
+	}
+	v, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	buf := make([]byte, 0, len(k)+len(v)+2)
+	if !first {
+		buf = append(buf, ',')
+	}
+	buf = append(buf, k...)
+	buf = append(buf, ':')
+	if _, err := w.Write(buf); err != nil {
+		return err
+	}
+	_, err = w.Write(v)
+	return err
+}
+
+// emitter is the per-run state Emit and EmitTo share.
+//
+// The signature→can:// id index (idx) translates v1 identity (signature
+// strings) into v2 node ids. It is what the L2 refinement uses to backfill
+// body callees and to map call_graph edge endpoints onto real callable ids.
+//
+// srcs holds one lineIndex per source file, read once and shared. A method
+// whose receiver type lives in a different file is nested under that type's
+// module but must have its span computed against ITS OWN file (CLAUDE.md §
+// Schema decisions → callable.source_file); the cache lets emitCallable reach
+// any file's index without re-reading it per callable.
+type emitter struct {
+	appID string
+	idx   sigIndex
+	srcs  *sourceCache
+	flow  l3Overlay
+}
+
+func newEmitter(app *schema.GoApplication, appName, projectDir string, maxLevel int, l3 map[dataflow.L3Key]dataflow.Result) *emitter {
+	appID := v2.AppID(appName)
 	idx := buildSigIndex(appID, app.SymbolTable)
 	idx.externals = externalIDs(appID, app.Externals)
+	return &emitter{appID: appID, idx: idx, srcs: newSourceCache(projectDir), flow: newL3Overlay(maxLevel, l3)}
+}
 
-	// One lineIndex per source file, read once and shared. A method whose
-	// receiver type lives in a different file is nested under that type's module
-	// but must have its span computed against ITS OWN file (CLAUDE.md § Schema
-	// decisions → callable.source_file); the cache lets emitCallable reach any
-	// file's index without re-reading it per callable.
-	srcs := newSourceCache(projectDir)
-	flow := newL3Overlay(maxLevel, l3)
-
+// envelope is the payload without its symbol_table (nil): the manifest, the
+// call graph and the external symbols.
+func (e *emitter) envelope(app *schema.GoApplication, maxLevel int, analyzerVersion string, kLimit int) *v2.Analysis {
 	out := &v2.Analysis{
 		SchemaVersion: v2.SchemaVersion,
 		Language:      v2.Language,
 		MaxLevel:      maxLevel,
 		Analyzer:      v2.AnalyzerTag{Name: "codeanalyzer-go", Version: analyzerVersion},
 		Application: v2.Application{
-			ID:          appID,
-			Kind:        "application",
-			SymbolTable: make(map[string]v2.Module, len(app.SymbolTable)),
-			CallGraph:   emitCallGraph(app.CallGraph, idx),
+			ID:        e.appID,
+			Kind:      "application",
+			CallGraph: emitCallGraph(app.CallGraph, e.idx),
 		},
 	}
-	out.Application.ExternalSymbols = emitExternalSymbols(appID, app.Externals)
-	if flow.on {
+	out.Application.ExternalSymbols = emitExternalSymbols(e.appID, app.Externals)
+	if e.flow.on {
 		out.KLimit = kLimit
 	}
-
-	// Deterministic module order does not affect the JSON map, but iterating
-	// sorted keeps any incidental ordering (and logs) stable across runs.
-	for _, relPath := range sortedFileKeys(app.SymbolTable) {
-		file := app.SymbolTable[relPath]
-		out.Application.SymbolTable[relPath] = emitModule(appID, relPath, file, idx, srcs, flow)
-	}
 	return out
+}
+
+func (e *emitter) module(relPath string, file schema.GoFile) v2.Module {
+	return emitModule(e.appID, relPath, file, e.idx, e.srcs, e.flow)
 }
 
 // emitModule builds a v2 module from a v1 GoFile, reading the file's source so

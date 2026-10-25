@@ -1,6 +1,7 @@
 package core_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -180,6 +181,52 @@ func TestWriteOutput_UnknownFormatErrors(t *testing.T) {
 	outDir := t.TempDir()
 	if err := core.WriteOutput(sharedGreeterL1, nil, options.AnalysisOptions{OutputDir: outDir, Format: "csv"}); err == nil {
 		t.Fatal("expected error for unknown format, got nil")
+	}
+}
+
+// TestWriteOutput_StreamsRenderJSONBytes: the streamed file and writer paths
+// write exactly RenderJSON's bytes at -a 3, and Analyze has already released
+// every L3 node's AST reference (#27).
+func TestWriteOutput_StreamsRenderJSONBytes(t *testing.T) {
+	opts := options.AnalysisOptions{
+		InputPath: filepath.Join(testdataDir(), "dataflow"), AppName: "dataflow", Level: options.LevelDataflow,
+		SkipTests: true, CacheDir: t.TempDir(), OutputDir: t.TempDir(),
+	}
+	a := core.New(opts)
+	app, err := a.Analyze()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, r := range a.L3() {
+		for _, n := range r.Nodes {
+			if n.Stmt != nil {
+				t.Fatalf("%v: node %s still holds its AST after Analyze", key, n.Key)
+			}
+		}
+	}
+	want, err := core.RenderJSON(app, a.L3(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := core.StreamJSON(&buf, app, a.L3(), opts); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(buf.Bytes(), want) {
+		t.Error("StreamJSON bytes differ from RenderJSON")
+	}
+	if err := core.WriteOutput(app, a.L3(), opts); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(opts.OutputDir, "analysis.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Error("analysis.json differs from RenderJSON")
+	}
+	if ents, _ := os.ReadDir(opts.OutputDir); len(ents) != 1 {
+		t.Errorf("output dir holds %d entries, want only analysis.json", len(ents))
 	}
 }
 

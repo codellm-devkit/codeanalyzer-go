@@ -130,3 +130,14 @@ func funcBody(fn ast.Node) *ast.BlockStmt {
 	}
 	return nil
 }
+
+// Release drops the result's references into the AST (each Node.Stmt), so a
+// finished run no longer keeps the parsed packages reachable. Every other
+// field (keys, spans, edges) stays: they are all the emitter reads. Call it
+// once the last consumer of Stmt is done; Run's own stages are the only one
+// today.
+func (r Result) Release() {
+	for i := range r.Nodes {
+		r.Nodes[i].Stmt = nil
+	}
+}

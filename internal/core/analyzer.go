@@ -13,8 +13,10 @@
 package core
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -114,6 +116,13 @@ func (a *Analyzer) Analyze() (*schema.GoApplication, error) {
 	if a.opts.Level >= options.LevelDataflow {
 		a.l3 = dataflow.Run(builder.Fset(), builder.L3Units(symbolTable), KLimit(a.opts), a.opts.Jobs)
 		utils.Info("dataflow: %d callables", len(a.l3))
+		// Run was the last reader of Node.Stmt (the emitters read keys, spans
+		// and edges only), so drop the AST references now: the parsed
+		// packages are then unreachable once Analyze returns, before the
+		// cache write and the emission. (#27)
+		for _, r := range a.l3 {
+			r.Release()
+		}
 	}
 
 	return a.finalizeAndCache(app)
@@ -176,44 +185,78 @@ func (a *Analyzer) saveCache(app *schema.GoApplication) error {
 	return os.WriteFile(cachePath, data, 0o644)
 }
 
+// checkFormat rejects every output format but json (the default when empty)
+// with an explicit error rather than silently falling back.
+func checkFormat(opts options.AnalysisOptions) error {
+	switch opts.Format {
+	case "", "json":
+		return nil
+	case "msgpack":
+		return fmt.Errorf("msgpack output is not yet implemented; use --format json")
+	default:
+		return fmt.Errorf("unsupported output format %q; supported: json", opts.Format)
+	}
+}
+
 // RenderJSON serializes the analysis to JSON as the canonical v2 containment
-// tree via the v2emit emitter. This is the single serialization point, so both
-// the stdout and file output paths agree. Only "json" is supported; other
-// formats return an explicit error rather than silently falling back.
+// tree via the v2emit emitter, as one []byte. It is the reference the
+// streaming StreamJSON / WriteOutput paths are byte-identical to; the CLI
+// streams instead, so the document never exists in memory at once.
 //
 // l3 is the Analyzer's L3() side table (nil below level 3). At level 3 the
 // envelope carries k_limit = KLimit(opts) whether or not l3 is set.
 func RenderJSON(app *schema.GoApplication, l3 map[dataflow.L3Key]dataflow.Result, opts options.AnalysisOptions) ([]byte, error) {
-	format := opts.Format
-	if format == "" {
-		format = "json"
+	if err := checkFormat(opts); err != nil {
+		return nil, err
 	}
-	switch format {
-	case "json":
-		// only supported format
-	case "msgpack":
-		return nil, fmt.Errorf("msgpack output is not yet implemented; use --format json")
-	default:
-		return nil, fmt.Errorf("unsupported output format %q; supported: json", format)
-	}
-
 	payload := v2emit.Emit(app, opts.AppName, opts.InputPath, int(opts.Level), opts.AnalyzerVersion, KLimit(opts), l3)
 	return json.Marshal(payload)
 }
 
-// WriteOutput serializes the analysis (in the selected schema) and writes it to
-// outputDir/analysis.json, or to stdout when outputDir is empty.
+// StreamJSON writes the bytes RenderJSON returns to w, emitting and encoding
+// one module at a time (v2emit.EmitTo) through a buffered writer.
+func StreamJSON(w io.Writer, app *schema.GoApplication, l3 map[dataflow.L3Key]dataflow.Result, opts options.AnalysisOptions) error {
+	if err := checkFormat(opts); err != nil {
+		return err
+	}
+	bw := bufio.NewWriterSize(w, 1<<20)
+	if err := v2emit.EmitTo(bw, app, opts.AppName, opts.InputPath, int(opts.Level), opts.AnalyzerVersion, KLimit(opts), l3); err != nil {
+		return err
+	}
+	return bw.Flush()
+}
+
+// WriteOutput streams the analysis to outputDir/analysis.json, or to stdout
+// when outputDir is empty. The file is written beside its destination and
+// renamed into place, so a failed run never leaves a truncated analysis.json.
 func WriteOutput(app *schema.GoApplication, l3 map[dataflow.L3Key]dataflow.Result, opts options.AnalysisOptions) error {
-	data, err := RenderJSON(app, l3, opts)
-	if err != nil {
+	if err := checkFormat(opts); err != nil {
 		return err
 	}
 	if opts.OutputDir == "" {
-		_, err = os.Stdout.Write(data)
-		return err
+		return StreamJSON(os.Stdout, app, l3, opts)
 	}
 	if err := utils.EnsureDir(opts.OutputDir); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(opts.OutputDir, "analysis.json"), data, 0o644)
+	dst := filepath.Join(opts.OutputDir, "analysis.json")
+	f, err := os.CreateTemp(opts.OutputDir, ".analysis.json.*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	err = StreamJSON(f, app, l3, opts)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Chmod(tmp, 0o644)
+	}
+	if err == nil {
+		err = os.Rename(tmp, dst)
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+	}
+	return err
 }

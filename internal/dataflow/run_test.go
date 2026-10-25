@@ -388,3 +388,53 @@ func TestRun_FlowFixtureHasNoCallCountMismatch(t *testing.T) {
 		t.Errorf("%d results for %d units", len(out), len(units))
 	}
 }
+
+// TestResult_ReleaseDropsASTs: Release nils every Node.Stmt, and the -a 3
+// JSON emitted after it is byte-identical to the JSON emitted before it (no
+// emitter reads Stmt).
+func TestResult_ReleaseDropsASTs(t *testing.T) {
+	_, thisFile, _, _ := runtime.Caller(0)
+	dir, err := filepath.Abs(filepath.Join(filepath.Dir(thisFile), "..", "..", "testdata", "dataflow"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := syntactic_analysis.NewSymbolTableBuilder(dir)
+	st, err := b.Build(nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
+	edges := cg.Build(st)
+	app := &schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}
+	out := dataflow.Run(b.Fset(), b.L3Units(st), 3, 4)
+	emit := func() []byte {
+		data, err := json.Marshal(v2emit.Emit(app, "dataflow", dir, 3, "rel", 3, out))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	before := emit()
+	stmts := 0
+	for _, r := range out {
+		for _, n := range r.Nodes {
+			if n.Stmt != nil {
+				stmts++
+			}
+		}
+		r.Release()
+	}
+	if stmts == 0 {
+		t.Fatal("no node had a Stmt before Release")
+	}
+	for key, r := range out {
+		for _, n := range r.Nodes {
+			if n.Stmt != nil {
+				t.Errorf("%v: node %s keeps its Stmt after Release", key, n.Key)
+			}
+		}
+	}
+	if !bytes.Equal(before, emit()) {
+		t.Error("-a 3 JSON changed after Release")
+	}
+}
