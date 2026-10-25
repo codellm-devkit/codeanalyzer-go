@@ -47,6 +47,7 @@ The binary is fully self-contained: a single static executable with no runtime d
   - [Load and query](#load-and-query)
   - [Query reference](#query-reference)
 - [Python SDK (CLDK) integration](#python-sdk-cldk-integration)
+- [Upgrading](#upgrading)
 - [Architecture & Tooling](#architecture--tooling)
 - [Development](#development)
 - [License](#license)
@@ -423,9 +424,19 @@ There are two output paths, chosen by whether `--neo4j-uri` is set:
 | **Use for** | Review, diffing, loading on your own schedule, CI | A DB you already have running |
 
 Both paths are **scoped to one application**: every destructive statement is anchored on
-`:GoCanNode` and the `can://<app>/` id prefix, so re-emitting replaces exactly that app's subgraph
-and never touches another app (or a sibling-language graph) in the same database. The projection is
-**deterministic** — a second emit is byte-identical.
+`:GoCanNode` and the `can://<app>/` id prefix, so it never touches another app (or a
+sibling-language graph) in the same database. The projection is **deterministic** — a second emit
+is byte-identical.
+
+What a re-emit replaces depends on the path:
+
+- **`graph.cypher` snapshot** and **`--eager` Bolt push**: the app's subgraph is purged and
+  rebuilt, so re-emitting replaces exactly that app's subgraph.
+- **Default (lazy) Bolt push**: purely additive. Changed modules are MERGE-upserted and nothing is
+  deleted. After source edits, nodes and edges that the new analysis no longer emits stay in the
+  database. For L3 this includes `:GoBodyNode`s and their `GO_CFG_NEXT` / `GO_CDG` / `GO_DDG`
+  edges, whose ids are keyed on `line:col`: once lines shift, the old body nodes and their edges
+  remain beside the new ones. Pass `--eager` when you push an L3 graph after editing source.
 
 > **`--emit neo4j` is always full depth.** The graph is projected at the max implemented level (L3
 > today — symbol table, call graph, and every callable's body nodes with `GO_CFG_NEXT` / `GO_CDG` /
@@ -541,6 +552,26 @@ for file_path, go_file in analysis.get_symbol_table().items():
 The SDK locates the analyzer via the `codeanalyzer-go` command on `PATH` (installed by any of the
 methods above, including `pip install codeanalyzer-go`). See
 [python-sdk](https://github.com/codellm-devkit/python-sdk) for full API documentation.
+
+## Upgrading
+
+This release changes the output contract. If you consume `analysis.json` or the Neo4j graph,
+check the following.
+
+- **Ids are app-outermost.** `can://go/<app>/<file>/…` is now `can://<app>/go/<file>/…`. Library
+  callees are `can://<app>/@external/<import-path>/<sig>`.
+- **Body nodes carry `id` at every level.** Each body node has `id` = `<callable-id>@<local-key>`,
+  from `-a 1` on, not only at `-a 3`.
+- **L2 includes library calls.** The call graph now has edges to library (stdlib and dependency)
+  callees, and `application.external_symbols` describes them. A library call's `callee` is its
+  external id instead of `null`. Type conversions are no longer calls.
+- **Neo4j:**
+  - `--emit neo4j` projects L3, adding `GO_CFG_NEXT`, `GO_CDG` and `GO_DDG`.
+  - `:GoBodyNode.call_node` is the enclosing statement's local key (the JSON `parent`), not a
+    global id.
+  - `--eager` now works on Neo4j 5.x.
+- **Build.** Building from source needs Go 1.26 or newer. Release binaries are built with the
+  latest Go (see [Toolchain](#toolchain)).
 
 ## Architecture & Tooling
 
