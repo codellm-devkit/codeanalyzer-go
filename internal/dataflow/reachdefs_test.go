@@ -430,3 +430,16 @@ func TestDDG_DeferredCallReadsStateAtExit(t *testing.T) {
 func TestDDG_AppendWritesDstBackingArray(t *testing.T) {
 	hasDDG(t, "AppendReuse", dd("541:2", "542:2", "dst[*]"))
 }
+
+// TestDDG_DeferredNamedResultWriteNeverKills (R11): in DeferWrap the exit
+// chain is return 558:2 → 557:8 (err = wrapErr(err)) → 556:8 (observe(err))
+// → @exit. A deferred call node never strong-defines, so err = wrapErr(nil)
+// (555:2) reaches the return, the rewriting closure and, through it, the
+// observer at the end of the chain.
+func TestDDG_DeferredNamedResultWriteNeverKills(t *testing.T) {
+	hasDDG(t, "DeferWrap",
+		dd("555:2", "558:2", "err"), // the bare return reads the named result
+		dd("555:2", "557:8", "err"), // the rewriting closure reads it at exit
+		dd("555:2", "556:8", "err"), // and the def survives past it
+	)
+}

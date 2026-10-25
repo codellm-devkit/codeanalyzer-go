@@ -529,3 +529,35 @@ func TestGateL2_LineDirectiveCallsResolve(t *testing.T) {
 		}
 	}
 }
+
+// TestGateL2_ExternalUnnamedParamsArePositional: a library callee's unnamed
+// or blank parameters are named by position, _<i>, in external_symbols
+// (vlib.G(int, string), vlib.H(_ int, n string)).
+func TestGateL2_ExternalUnnamedParamsArePositional(t *testing.T) {
+	_, thisFile, _, _ := runtime.Caller(0)
+	dir := filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "testdata", "dataflow")
+	b := syntactic_analysis.NewSymbolTableBuilder(dir)
+	st, err := b.Build(nil, true)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
+	edges := cg.Build(st)
+	out := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}, "dataflow", dir, 2, "gate-test", 0, nil)
+
+	for sig, want := range map[string][]string{"G": {"_0", "_1"}, "H": {"_0", "n"}} {
+		ext := v2.ExternalID(out.Application.ID, "example.com/vlib", sig)
+		sym, ok := out.Application.ExternalSymbols[ext]
+		if !ok {
+			t.Errorf("external_symbols missing %s", ext)
+			continue
+		}
+		var got []string
+		for _, p := range sym.Parameters {
+			got = append(got, p.Name)
+		}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("%s parameter names = %v, want %v", sig, got, want)
+		}
+	}
+}

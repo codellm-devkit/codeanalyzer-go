@@ -542,3 +542,18 @@ func AppendReuse(dst []int, x int) []int {
 	_ = dst[0]
 	return out
 }
+
+func wrapErr(err error) error { return err }
+
+func observe(err error) { _ = err }
+
+// DeferWrap has a deferred closure that rewrites the named result err (R11).
+// The chain runs the rewrite first, then the observer, then @exit: the
+// rewrite is a may-write, so the earlier def of err still reaches the
+// observer through it.
+func DeferWrap() (err error) {
+	err = wrapErr(nil)
+	defer func() { observe(err) }()
+	defer func() { err = wrapErr(err) }()
+	return
+}
