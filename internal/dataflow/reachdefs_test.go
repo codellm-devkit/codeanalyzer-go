@@ -424,3 +424,9 @@ func TestDDG_DeferredCallReadsStateAtExit(t *testing.T) {
 		dd("525:2", "523:8", "b[*]"), // b[0] = 1 → deferred fill(b[1:])
 	)
 }
+
+// TestDDG_AppendWritesDstBackingArray: append(dst[:0], x) writes x into dst's
+// backing array, so it weak-defines dst[*], which reaches a later dst[0].
+func TestDDG_AppendWritesDstBackingArray(t *testing.T) {
+	hasDDG(t, "AppendReuse", dd("541:2", "542:2", "dst[*]"))
+}

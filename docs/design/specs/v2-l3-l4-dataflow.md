@@ -274,7 +274,9 @@ truncated). Match Java's `AccessPath` / Python's `access_paths` semantics:
   its `[*]` contents flow via the port wiring (§4.7) and the "weak-def through reference arguments"
   rule.
 - **Maps/slices:** `m[k] = v` weak-defines `m[*]`; `m[k]` reads `m[*]`; `append(s, v)` uses `s`, `v`
-  and its result flows to the LHS (it is a builtin; treat as library pass-through).
+  and its result flows to the LHS; it also weak-defines `s[*]` (`append(dst[:0], v)` gives
+  `dst[*]`), since it may write into the destination's backing array (spare capacity, or a
+  re-sliced `dst[:0]`).
 - **Type errors (partial types):** a package that does not type-check still gets its defs. A field
   selector with no recorded selection (its operand has an invalid type, e.g. `var req missing.Req`)
   is still a field step (`req.Body`); an identifier go/types recorded nothing for (undeclared, or a
@@ -315,9 +317,6 @@ a `ddg` path does not prove the absence of a flow. It does not model:
   registration reaches it. The paths are keyed on the *variable* at exit, not on the value
   bound at registration, so a reassignment after the `defer` (`defer fill(b); …; b = o`) can
   add a spurious edge, and can kill an earlier def on the normal path.
-- **Appends that write into the destination's backing array.** `append(dst[:0], …)`, and
-  `append(dst, …)` with spare capacity, write into `dst`'s backing array, but L3 records no
-  `dst[*]` weak def: `append` is modelled as pass-through.
 
 The first two are addressed at **L4**: capture formals (`@formal_in`/`@formal_out` for captured
 variables, §4.6 closures rule) carry closure writes back to the enclosing callable, and the

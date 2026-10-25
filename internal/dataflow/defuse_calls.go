@@ -32,15 +32,17 @@ func (c *collector) callReads(call *ast.CallExpr, captures bool) {
 
 // callWrites collects the weak defs of call itself: a.* for each
 // reference-typed argument (&x gives x.*), recv.* for a reference-typed
-// receiver or a pointer-receiver method, and the element writes of copy,
-// delete and clear. Conversions and other builtins write nothing.
+// receiver or a pointer-receiver method, and the element writes of append,
+// copy, delete and clear. append(dst, …) may write into dst's backing array
+// (spare capacity, or dst[:0]), so it weak-defines dst[*] besides its result
+// flowing to the assignment. Conversions and other builtins write nothing.
 func (c *collector) callWrites(call *ast.CallExpr) {
 	if isType(call.Fun, c.info) {
 		return
 	}
 	if name, ok := builtinName(call.Fun, c.info); ok {
 		switch name {
-		case "copy", "delete", "clear":
+		case "append", "copy", "delete", "clear":
 			if len(call.Args) > 0 {
 				x, _ := sliceBase(call.Args[0])
 				if b, ok := pathOf(x, c.info); ok {

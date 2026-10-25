@@ -173,7 +173,8 @@ func TestDefUse_CallWeakDefsRefArgs(t *testing.T) {
 	du, _ = fx.du(t, "Calls", "n := len(s)", 0)
 	wantDU(t, "n := len(s)", du, ss("n"), nil, ss("s"))
 	du, _ = fx.du(t, "Calls", "s = append(s, n)", 0)
-	wantDU(t, "s = append(s, n)", du, ss("s"), nil, ss("n", "s"))
+	// append may write into s's spare capacity: s[*] weak, besides the s def.
+	wantDU(t, "s = append(s, n)", du, ss("s"), ss("s[*]"), ss("n", "s"))
 	du, _ = fx.du(t, "Calls", "copy(s, s)", 0)
 	wantDU(t, "copy(s, s)", du, nil, ss("s[*]"), ss("s"))
 	du, _ = fx.du(t, "Calls", "_ = T(t)", 0)

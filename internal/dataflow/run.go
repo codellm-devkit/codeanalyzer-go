@@ -5,6 +5,7 @@ import (
 	"go/token"
 	"go/types"
 	"runtime"
+	"runtime/debug"
 	"sync"
 
 	"github.com/codellm-devkit/codeanalyzer-go/internal/utils"
@@ -77,11 +78,13 @@ func Run(fset *token.FileSet, units []Unit, k, jobs int) map[L3Key]Result {
 
 // runOne builds one unit's result. A panic in any stage (a latent bug in the
 // CFG, def-use or DDG builders) is recovered: that callable stays at L1 with a
-// warning, and the rest of the run — and the L1/L2 output — is unaffected.
+// warning (and, at -vv, the panic's stack), and the rest of the run — and the
+// L1/L2 output — is unaffected.
 func runOne(fset *token.FileSet, u Unit, k int) (res *Result) {
 	defer func() {
 		if r := recover(); r != nil {
 			utils.Warn("L3 skipped for %s (%s): %v", u.Key.Signature, u.Key.Path, r)
+			utils.Debug("L3 panic in %s (%s):\n%s", u.Key.Signature, u.Key.Path, debug.Stack())
 			res = nil
 		}
 	}()

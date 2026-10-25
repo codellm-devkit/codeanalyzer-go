@@ -86,9 +86,10 @@ const DeferPrefix = "<defer>:"
 // and recv.* for a receiver that is
 // reference-typed (the same kinds) or bound to a pointer-receiver method. A value-typed struct
 // argument is not weak-defined. Conversions write nothing; builtins write
-// nothing except copy(dst, …), delete(m, …) and clear(x), which weak-define
-// dst[*], m[*], x[*] (copy(dst[i:], …) gives dst[*] too); append's result
-// flows to the assignment's LHS.
+// nothing except append(dst, …), copy(dst, …), delete(m, …) and clear(x),
+// which weak-define dst[*], m[*], x[*] (copy(dst[i:], …) and append(dst[:0],
+// …) give dst[*] too: append may write into dst's backing array); append's
+// result also flows to the assignment's LHS.
 func DefUseOf(n Node, info *types.Info, k int, entryBases []types.Object, fn ast.Node, keyOf map[ast.Node]string) DefUse {
 	c := &collector{info: info, k: k, seen: map[pathKind]bool{}}
 	switch {

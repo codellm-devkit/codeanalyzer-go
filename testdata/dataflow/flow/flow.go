@@ -534,3 +534,11 @@ func GoArgs(x int) {
 	go f(g(x))
 	go func(y int) { _ = y }(h())
 }
+
+// AppendReuse appends into dst's backing array through dst[:0]: the append
+// writes dst's elements, which the later read sees.
+func AppendReuse(dst []int, x int) []int {
+	out := append(dst[:0], x)
+	_ = dst[0]
+	return out
+}

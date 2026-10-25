@@ -20,6 +20,7 @@ import (
 	"github.com/codellm-devkit/codeanalyzer-go/internal/semantic_analysis"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/syntactic_analysis"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/syntactic_analysis/v2emit"
+	"github.com/codellm-devkit/codeanalyzer-go/internal/utils"
 )
 
 // TestRun_JobsDeterminism locks spec §4.12: the L3 output of testdata/chi is
@@ -250,6 +251,21 @@ func TestRun_PanicInUnitIsContained(t *testing.T) {
 				t.Errorf("-j %d: %v result = %+v, %v; want a CFG", jobs, k, r, ok)
 			}
 		}
+	}
+
+	// The warning is always printed; at -vv the panic's stack follows it, so
+	// the failing builder can be found.
+	run := func() {
+		dataflow.Run(fset, []dataflow.Unit{{Key: badKey, Fn: bad, Info: info}}, 3, 1)
+	}
+	if quiet := captureStderr(t, run); !strings.Contains(quiet, "L3 skipped for p.bad") || strings.Contains(quiet, "goroutine ") {
+		t.Errorf("default verbosity: want the warning and no stack; got:\n%s", quiet)
+	}
+	utils.SetVerbosity(2)
+	defer utils.SetVerbosity(0)
+	if loud := captureStderr(t, run); !strings.Contains(loud, "L3 skipped for p.bad") ||
+		!strings.Contains(loud, "DEBUG") || !strings.Contains(loud, "dataflow.BuildNodes") {
+		t.Errorf("-vv: want the warning and a stack naming the panicking builder; got:\n%s", loud)
 	}
 }
 
