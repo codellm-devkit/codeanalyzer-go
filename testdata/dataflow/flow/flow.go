@@ -549,11 +549,81 @@ func observe(err error) { _ = err }
 
 // DeferWrap has a deferred closure that rewrites the named result err (R11).
 // The chain runs the rewrite, then the observer, then @exit. Deferred nodes
-// never strong-define, and L3 records no def for the closure's write to its
-// captured err, so the earlier def of err still reaches the observer.
+// never strong-define; the rewrite weak-defines its captured err (D1), so the
+// earlier def of err and the rewrite both reach the observer.
 func DeferWrap() (err error) {
 	err = wrapErr(nil)
 	defer func() { observe(err) }()
 	defer func() { err = wrapErr(err) }()
 	return
+}
+
+// CaptureWrite calls a literal that writes the captured x (D1 gap 1).
+func CaptureWrite() int {
+	x := 0
+	func() { x = 1 }()
+	return x
+}
+
+// CaptureThenReassign stores a literal that writes x, rebinds x, then calls
+// the literal: x = 2 must not kill the closure's write.
+func CaptureThenReassign() int {
+	x := 0
+	h := func() { x = 1 }
+	x = 2
+	h()
+	return x
+}
+
+type onceT struct{}
+
+func (o *onceT) Do(f func()) { f() }
+
+func load() int { return 1 }
+
+// OnceDo writes cfg through a literal passed to a method.
+func OnceDo() int {
+	var once onceT
+	var cfg int
+	once.Do(func() { cfg = load() })
+	return cfg
+}
+
+// DeferReassign writes an element of b after registering fill(b), then
+// rebinds b (D1 gap 3): the element write still reaches the deferred fill.
+func DeferReassign(b, o []byte, s byte) {
+	defer fill(b)
+	b[0] = s
+	b = o
+}
+
+// AppendKeepsElems writes an element, then appends in place (#28): append may
+// keep the backing array, so the s[0] def survives s = append(s, n).
+func AppendKeepsElems(s []int, n int) int {
+	s[0] = 5
+	s = append(s, n)
+	return s[0]
+}
+
+// CaptureNested writes x from a literal nested in the stored one, and buf's
+// elements through a call. y is the outer literal's own variable and z is
+// only read: neither is a capture write.
+func CaptureNested(buf []byte) int {
+	x, z := 0, 0
+	f := func() {
+		y := 0
+		func() { x = y; y = 1 }()
+		fill(buf)
+		_ = z
+	}
+	f()
+	return x
+}
+
+// CaptureGo launches a literal that writes the captured x: the go node is
+// its host.
+func CaptureGo(ch chan int) int {
+	x := 0
+	go func() { x = <-ch }()
+	return x
 }

@@ -16,9 +16,12 @@ import (
 //   - GEN is every def and weak def of the node.
 //   - KILL is every def d, anywhere in the body, with p.Covers(d.path) for a
 //     strong def p of the node (`x = …` kills x, x.f, x[*]; `x.f = …` kills
-//     x.f… but not x). Weak defs kill nothing. Strong defs carry no wildcard
-//     (DefUseOf), so a kill never over-reaches. A deferred call node only
-//     weak-defines (R11), so nothing is killed through the exit chain.
+//     x.f… but not x); for a Shallow strong def p, only the defs of p itself
+//     (`s = append(s, …)` kills s, not s[*]: #28). Weak defs kill nothing.
+//     Strong defs carry no wildcard (DefUseOf), so a kill never over-reaches.
+//     A deferred call node only weak-defines (R11), so nothing is killed
+//     through the exit chain. GEN is applied after KILL, so a node's own weak
+//     def (the s[*] of `s = append(s, …)`) survives its own strong def.
 //
 // A node's uses read IN — the defs reaching it before its own defs apply —
 // so `y = y + 1` in a loop links to itself across the back edge, never
@@ -69,9 +72,13 @@ func BuildDDG(nodes []Node, cfg []CfgEdge, du map[string]DefUse) []DdgEdge {
 		for _, i := range genOf[v] {
 			gen[v][i/64] |= 1 << (i % 64)
 		}
+		shallow := map[Path]bool{}
+		for _, p := range du[k].Shallow {
+			shallow[p] = true
+		}
 		for _, p := range du[k].Defs {
 			for i, d := range defs {
-				if p.Covers(d.path) {
+				if p == d.path || !shallow[p] && p.Covers(d.path) {
 					kill[v][i/64] |= 1 << (i % 64)
 				}
 			}

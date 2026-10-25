@@ -18,11 +18,18 @@ import (
 //
 // A strong def never has a wildcard step (any write through an index, a
 // dereference or past k is weak), so a kill never removes more than the
-// written path covers. The `<defer>:` pseudo path (nil Base) appears only as
-// a registration's weak def and its deferred call node's use. Each list is
-// deduplicated and sorted by (Spell, base position).
+// written path covers. The `<defer>:` pseudo path (nil Base) appears as a
+// registration's weak def, its deferred call node's use, and the weak def of
+// a node writing one of the deferred call's operand bases.
+//
+// Shallow is the subset of Defs that kills only its own path, not the
+// extensions below it: `s = append(s, …)` rebinds s, but the new s keeps the
+// old elements, so it kills s and not s[*] or s.* (#28).
+//
+// Each list is deduplicated and sorted by (Spell, base position).
 type DefUse struct {
 	Defs, WeakDefs, Uses []Path
+	Shallow              []Path
 }
 
 // DeferPrefix starts the pseudo path a defer registration weak-defines and its
@@ -34,6 +41,10 @@ const DeferPrefix = "<defer>:"
 // entryBases is EntryBases(fn, info), what @entry defines. keyOf is
 // BuildNodes' map, used to find the deferred call node's key from a defer
 // registration (keyOf[DeferStmt.Call]). info must be non-nil.
+//
+// The capture-write and deferred-operand rules below need facts about the
+// whole callable, which DefUseOf derives from fn and keyOf on every call;
+// DefUses computes them once for a node set and returns the same result.
 //
 // Rules by node:
 //
@@ -60,7 +71,8 @@ const DeferPrefix = "<defer>:"
 //     nested in them) and weak-defines the pseudo path "<defer>:<call-key>",
 //     <call-key> = keyOf[DeferStmt.Call], the deferred call node's Key. The
 //     deferred call node (Deferred) uses that pseudo path, every named result
-//     of fn and, for `defer func(){…}()`, what the closure captures; it
+//     of fn and, for `defer func(){…}()`, what the closure captures (and
+//     weak-defines what it writes of them: capture writes, below); it
 //     weak-defines what the call may write through (call rule), uses those
 //     same paths (it reads receiver and argument state at exit, not at
 //     registration) and never strong-defines anything (R11: chain
@@ -89,8 +101,56 @@ const DeferPrefix = "<defer>:"
 // nothing except append(dst, …), copy(dst, …), delete(m, …) and clear(x),
 // which weak-define dst[*], m[*], x[*] (copy(dst[i:], …) and append(dst[:0],
 // …) give dst[*] too: append may write into dst's backing array); append's
-// result also flows to the assignment's LHS.
+// result also flows to the assignment's LHS. `s = append(s, …)` (the LHS is
+// append's destination path, sliceBase stripped) strong-defines s as
+// Shallow: the new s keeps the old elements, so an earlier `s[0] = v` still
+// reaches a later read of s[0] (#28).
+//
+// Callable-level rules (spec §4.5 "L3 precision", D1). They only add edges:
+//
+//   - Capture writes (gap 1). A function literal may run at any later point
+//     (called in place, stored, passed to once.Do, deferred, launched), and
+//     its writes to the variables it captures are writes of this callable.
+//     Let W be the union of CaptureWrites over the outermost literals of fn's
+//     body (a literal nested in another belongs to the outer one's unit, and
+//     CaptureWrites already includes what it writes). The host of a literal
+//     (the node whose DefUse is computed from an expression containing it:
+//     for `defer func(){…}()` the deferred call node, for `go func(){…}()`
+//     the go node) weak-defines each path of CaptureWrites(lit). Every strong
+//     def in fn whose base is a base of W is weak instead (@entry excepted:
+//     nothing reaches it to kill). This is flow-insensitive per captured
+//     variable on purpose: `h := func(){ x = 1 }; x = 2; h()` must not let
+//     x = 2 kill the closure's write.
+//   - Deferred operands (gap 3). For each `defer` in fn's body (not in a
+//     nested literal), its operand bases are the receiver's base of a method
+//     value and each argument's base (sliceBase stripped, & stripped); a
+//     function literal's captures do not count (the deferred call node
+//     already uses them at exit). Every non-@entry, non-deferred node that
+//     defines (strongly or weakly) a path on such a base also weak-defines
+//     that defer's "<defer>:<call-key>", which nothing kills, so `defer
+//     fill(b); b[0] = s; b = o` keeps b[0] = s → fill. A def before the
+//     registration gets it too: harmless, an over-approximation.
 func DefUseOf(n Node, info *types.Info, k int, entryBases []types.Object, fn ast.Node, keyOf map[ast.Node]string) DefUse {
+	return defUseOf(n, info, k, entryBases, fn, keyOf, newFacts(fn, info, k, keyOf))
+}
+
+// DefUses is DefUseOf of every node of nodes, keyed by Key, with the
+// callable-level facts computed once.
+func DefUses(nodes []Node, info *types.Info, k int, entryBases []types.Object, fn ast.Node, keyOf map[ast.Node]string) map[string]DefUse {
+	return defUses(nodes, info, k, entryBases, fn, keyOf, newFacts(fn, info, k, keyOf))
+}
+
+func defUses(nodes []Node, info *types.Info, k int, entryBases []types.Object, fn ast.Node, keyOf map[ast.Node]string, f *facts) map[string]DefUse {
+	out := make(map[string]DefUse, len(nodes))
+	for _, n := range nodes {
+		out[n.Key] = defUseOf(n, info, k, entryBases, fn, keyOf, f)
+	}
+	return out
+}
+
+// defUseOf is DefUseOf with the callable-level facts given; nil facts apply
+// none of the callable-level rules (the pre-D1 sets, for the gates).
+func defUseOf(n Node, info *types.Info, k int, entryBases []types.Object, fn ast.Node, keyOf map[ast.Node]string, f *facts) DefUse {
 	c := &collector{info: info, k: k, seen: map[pathKind]bool{}}
 	switch {
 	case n.Kind == KindEntry:
@@ -103,12 +163,14 @@ func DefUseOf(n Node, info *types.Info, k int, entryBases []types.Object, fn ast
 		if !ok {
 			break
 		}
+		c.facts = f
 		c.add(kindUse, Path{Spell: DeferPrefix + n.Key})
 		for _, r := range namedResults(fn, info) {
 			c.add(kindUse, Path{Base: r, Spell: r.Name()})
 		}
-		if lit, ok := ast.Unparen(call.Fun).(*ast.FuncLit); ok {
-			c.captures(lit)
+		lit, _ := ast.Unparen(call.Fun).(*ast.FuncLit)
+		if lit != nil {
+			c.captureUses(lit)
 		}
 		c.callWrites(call)
 		// The call runs at exit and reads, then, the state behind what it may
@@ -117,15 +179,41 @@ func DefUseOf(n Node, info *types.Info, k int, entryBases []types.Object, fn ast
 		for _, p := range c.du.WeakDefs {
 			c.add(kindUse, p)
 		}
+		if lit != nil {
+			// The closure's own writes (gap 1): it already uses its captures.
+			c.captureWrites(lit)
+		}
 	default:
 		c.fn = fn
 		c.keyOf = keyOf
+		c.facts = f
 		c.stmt(n.Stmt)
+		c.deferOperandWrites()
 	}
 	sortPaths(c.du.Defs)
 	sortPaths(c.du.WeakDefs)
 	sortPaths(c.du.Uses)
+	sortPaths(c.du.Shallow)
 	return c.du
+}
+
+// deferOperandWrites weak-defines "<defer>:<key>" of every defer whose
+// operand base this node defines.
+func (c *collector) deferOperandWrites() {
+	if c.facts == nil || len(c.facts.deferOps) == 0 {
+		return
+	}
+	var spells []string
+	for _, list := range [][]Path{c.du.Defs, c.du.WeakDefs} {
+		for _, p := range list {
+			if p.Base != nil {
+				spells = append(spells, c.facts.deferOps[p.Base]...)
+			}
+		}
+	}
+	for _, s := range spells {
+		c.add(kindWeak, Path{Spell: s})
+	}
 }
 
 type pathKind struct {
@@ -144,22 +232,27 @@ type collector struct {
 	k        int
 	fn       ast.Node
 	keyOf    map[ast.Node]string
+	facts    *facts // callable-level facts; nil applies no callable-level rule
 	du       DefUse
 	seen     map[pathKind]bool
+	shallow  map[Path]bool
 	weakOnly bool // record every def as weak (a range with `=`)
 }
 
 // fork returns an empty collector with c's settings.
 func (c *collector) fork() *collector {
-	return &collector{info: c.info, k: c.k, fn: c.fn, keyOf: c.keyOf, seen: map[pathKind]bool{}}
+	return &collector{info: c.info, k: c.k, fn: c.fn, keyOf: c.keyOf, facts: c.facts, seen: map[pathKind]bool{}}
 }
 
 // mergeLoop adds a's facts to c, keeping a strong def strong only when other
-// strong-defines the same path too.
+// strong-defines the same path too (Shallow when either side's is).
 func (c *collector) mergeLoop(a, other *collector) {
 	for _, p := range a.du.Defs {
 		if other.seen[pathKind{p, kindDef}] {
 			c.add(kindDef, p)
+			if a.shallow[p] || other.shallow[p] {
+				c.markShallow(p)
+			}
 		} else {
 			c.add(kindWeak, p)
 		}
@@ -190,6 +283,9 @@ func sortPaths(ps []Path) {
 }
 
 func (c *collector) add(kind int, p Path) {
+	if kind == kindDef && c.facts != nil && p.Base != nil && c.facts.weakBases[p.Base] {
+		kind = kindWeak // a base a literal of this callable may write (D1 gap 1)
+	}
 	if c.seen[pathKind{p, kind}] {
 		return
 	}
@@ -204,6 +300,20 @@ func (c *collector) add(kind int, p Path) {
 	}
 }
 
+// markShallow records strong def p as Shallow; a no-op unless p is in Defs.
+func (c *collector) markShallow(p Path) {
+	if !c.seen[pathKind{p, kindDef}] {
+		return
+	}
+	if c.shallow == nil {
+		c.shallow = map[Path]bool{}
+	}
+	if !c.shallow[p] {
+		c.shallow[p] = true
+		c.du.Shallow = append(c.du.Shallow, p)
+	}
+}
+
 func (c *collector) addUse(b pathB)  { c.add(kindUse, b.limit(c.k)) }
 func (c *collector) addWeak(b pathB) { c.add(kindWeak, b.limit(c.k)) }
 
@@ -215,8 +325,11 @@ func (c *collector) stmt(s ast.Node) {
 		for _, r := range s.Rhs {
 			c.use(r)
 		}
-		for _, l := range s.Lhs {
+		for i, l := range s.Lhs {
 			c.assignTo(l, compound)
+			if !compound && len(s.Lhs) == len(s.Rhs) {
+				c.appendOnto(l, s.Rhs[i])
+			}
 		}
 	case *ast.IncDecStmt:
 		c.assignTo(s.X, true)
@@ -474,10 +587,60 @@ func (c *collector) recv(ch ast.Expr) {
 	c.indexReads(ch)
 }
 
-// captures uses every variable function literal lit captures.
+// appendOnto marks the strong def of lhs Shallow when rhs is append(lhs, …)
+// (or append(lhs[:j], …)): the new slice keeps lhs's elements, so the def
+// kills lhs but not lhs[*] (#28). callWrites already weak-defines lhs[*].
+func (c *collector) appendOnto(lhs, rhs ast.Expr) {
+	if c.facts == nil {
+		return
+	}
+	call, ok := ast.Unparen(rhs).(*ast.CallExpr)
+	if !ok || len(call.Args) == 0 {
+		return
+	}
+	if name, ok := builtinName(call.Fun, c.info); !ok || name != "append" {
+		return
+	}
+	l, ok := pathOf(lhs, c.info)
+	if !ok || l.base == nil {
+		return
+	}
+	dst, _ := sliceBase(call.Args[0])
+	d, ok := pathOf(dst, c.info)
+	if !ok {
+		return
+	}
+	if p := l.limit(c.k); p == d.limit(c.k) {
+		c.markShallow(p)
+	}
+}
+
+// captures uses every variable function literal lit captures and, with the
+// callable-level facts, weak-defines what lit may write of them (D1 gap 1).
 func (c *collector) captures(lit *ast.FuncLit) {
+	c.captureUses(lit)
+	c.captureWrites(lit)
+}
+
+// captureUses uses every variable function literal lit captures.
+func (c *collector) captureUses(lit *ast.FuncLit) {
 	for _, v := range freeVars(lit, c.info) {
 		c.add(kindUse, Path{Base: v, Spell: v.Name()})
+	}
+}
+
+// captureWrites weak-defines CaptureWrites(lit), with the callable-level
+// facts only.
+func (c *collector) captureWrites(lit *ast.FuncLit) {
+	if c.facts == nil {
+		return
+	}
+	ws, ok := c.facts.capW[lit]
+	if !ok {
+		ws = CaptureWrites(lit, c.info, c.k)
+	}
+	for _, p := range ws {
+		c.add(kindWeak, p)
 	}
 }
 

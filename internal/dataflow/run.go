@@ -112,11 +112,7 @@ func runOne(fset *token.FileSet, u Unit, k int) (res *Result) {
 	}
 	nodes, keyOf := BuildNodes(fset, body, u.Calls)
 	kept, cfg := BuildCFG(nodes, keyOf, body, u.Info)
-	bases := EntryBases(u.Fn, u.Info)
-	du := make(map[string]DefUse, len(kept))
-	for _, n := range kept {
-		du[n.Key] = DefUseOf(n, u.Info, k, bases, u.Fn, keyOf)
-	}
+	du := DefUses(kept, u.Info, k, EntryBases(u.Fn, u.Info), u.Fn, keyOf)
 	return &Result{
 		Nodes: kept,
 		Cfg:   cfg,

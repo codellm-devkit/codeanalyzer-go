@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"sort"
 )
 
 // The call rule of DefUseOf (spec §4.5), split into what a call reads and
@@ -158,4 +159,56 @@ func refTyped(t types.Type) bool {
 		return true
 	}
 	return false
+}
+
+// deferOperandBases maps each operand base of every `defer` in body (not in a
+// nested function literal) to the defers' "<defer>:<call-key>" pseudo paths,
+// sorted: the base of a method value's receiver and of each argument path
+// (sliceBase and & stripped; a non-path argument has none). A function
+// literal's captures are not operands: the deferred call node already uses
+// them at exit. A defer keyOf does not name is skipped.
+func deferOperandBases(body *ast.BlockStmt, info *types.Info, keyOf map[ast.Node]string) map[types.Object][]string {
+	out := map[types.Object][]string{}
+	add := func(e ast.Expr, spell string) {
+		e, _ = sliceBase(e)
+		e = ast.Unparen(e)
+		if u, ok := e.(*ast.UnaryExpr); ok && u.Op == token.AND {
+			e = u.X
+		}
+		b, ok := pathOf(e, info)
+		if !ok || b.base == nil {
+			return
+		}
+		for _, s := range out[b.base] {
+			if s == spell {
+				return
+			}
+		}
+		out[b.base] = append(out[b.base], spell)
+	}
+	ast.Inspect(body, func(n ast.Node) bool {
+		switch d := n.(type) {
+		case *ast.FuncLit:
+			return false
+		case *ast.DeferStmt:
+			key, ok := keyOf[d.Call]
+			if !ok {
+				return true
+			}
+			spell := DeferPrefix + key
+			if sel, ok := ast.Unparen(d.Call.Fun).(*ast.SelectorExpr); ok {
+				if s := info.Selections[sel]; s != nil && s.Kind() == types.MethodVal {
+					add(sel.X, spell)
+				}
+			}
+			for _, a := range d.Call.Args {
+				add(a, spell)
+			}
+		}
+		return true
+	})
+	for _, ss := range out {
+		sort.Strings(ss)
+	}
+	return out
 }

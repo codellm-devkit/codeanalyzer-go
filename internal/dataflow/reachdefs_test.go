@@ -15,15 +15,10 @@ import (
 
 func dd(src, dst, v string) dataflow.DdgEdge { return dataflow.DdgEdge{Src: src, Dst: dst, Var: v} }
 
-// duMap is DefUseOf for every node of the pruned set, keyed by node Key —
-// BuildDDG's input, computed the way the analyzer computes it.
+// duMap is DefUses of the pruned set, keyed by node Key — BuildDDG's input,
+// computed the way the analyzer computes it.
 func duMap(nodes []dataflow.Node, info *types.Info, fn ast.Node, keyOf map[ast.Node]string) map[string]dataflow.DefUse {
-	bases := dataflow.EntryBases(fn, info)
-	out := map[string]dataflow.DefUse{}
-	for _, n := range nodes {
-		out[n.Key] = dataflow.DefUseOf(n, info, kTest, bases, fn, keyOf)
-	}
-	return out
+	return dataflow.DefUses(nodes, info, kTest, dataflow.EntryBases(fn, info), fn, keyOf)
 }
 
 // ddgOf builds fn's pruned nodes, CFG, CDG and DDG from the flow fixture with
@@ -340,12 +335,13 @@ func TestSlice_BackwardExact(t *testing.T) {
 // TestDDG_CorpusGate runs BuildDDG over every function and function literal
 // body in testdata/dataflow and testdata/chi: no panic, the output contract
 // (checkDDG: endpoints are pruned non-satellite nodes, sorted, deduped), two
-// builds deep-equal, and the result independent of input order (nodes, CFG
-// edges and every DefUse list reversed).
+// builds deep-equal, the result independent of input order (nodes, CFG
+// edges and every DefUse list reversed), and a superset of the DDG of the
+// pre-D1 def/use sets (the D1 rules only add edges).
 func TestDDG_CorpusGate(t *testing.T) {
 	_, thisFile, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(thisFile), "..", "..", "testdata")
-	total, edges := 0, 0
+	total, edges, oldEdges := 0, 0, 0
 	for _, dir := range []string{"dataflow", "chi"} {
 		fset, cases := loadDiffCases(t, filepath.Join(root, dir))
 		for _, c := range cases {
@@ -357,6 +353,14 @@ func TestDDG_CorpusGate(t *testing.T) {
 			checkDDG(t, c.name, kept, got)
 			edges += len(got)
 
+			// DefUseOf (callable facts derived per call) agrees with DefUses.
+			bases := dataflow.EntryBases(c.fn, c.info)
+			for _, n := range kept {
+				if one := dataflow.DefUseOf(n, c.info, kTest, bases, c.fn, keyOf); !reflect.DeepEqual(one, du[n.Key]) {
+					t.Errorf("%s %s: DefUseOf %+v != DefUses %+v", c.name, n.Key, one, du[n.Key])
+				}
+			}
+
 			if again := dataflow.BuildDDG(kept, es, duMap(kept, c.info, c.fn, keyOf)); !reflect.DeepEqual(got, again) {
 				t.Errorf("%s: two builds differ", c.name)
 			}
@@ -366,17 +370,31 @@ func TestDDG_CorpusGate(t *testing.T) {
 			reverse(re)
 			rdu := map[string]dataflow.DefUse{}
 			for k, v := range du {
-				rdu[k] = dataflow.DefUse{Defs: reversed(v.Defs), WeakDefs: reversed(v.WeakDefs), Uses: reversed(v.Uses)}
+				rdu[k] = dataflow.DefUse{Defs: reversed(v.Defs), WeakDefs: reversed(v.WeakDefs), Uses: reversed(v.Uses), Shallow: reversed(v.Shallow)}
 			}
 			if perm := dataflow.BuildDDG(rn, re, rdu); !reflect.DeepEqual(got, perm) {
 				t.Errorf("%s: DDG depends on input order", c.name)
 			}
+
+			// The D1 rules (#22, #28) only add edges: every edge of the
+			// pre-D1 def/use sets is still there.
+			have := map[dataflow.DdgEdge]bool{}
+			for _, g := range got {
+				have[g] = true
+			}
+			old := dataflow.BuildDDG(kept, es, dataflow.DefUsesPreD1(kept, c.info, kTest, dataflow.EntryBases(c.fn, c.info), c.fn, keyOf))
+			for _, o := range old {
+				if !have[o] {
+					t.Errorf("%s: D1 rules dropped pre-D1 ddg %s→%s on %q", c.name, o.Src, o.Dst, o.Var)
+				}
+			}
+			oldEdges += len(old)
 		}
 	}
 	if total < 100 || edges < 1000 {
 		t.Errorf("ddg gate covered only %d bodies / %d edges", total, edges)
 	}
-	t.Logf("ddg gate: %d bodies, %d edges", total, edges)
+	t.Logf("ddg gate: %d bodies, %d edges (%d pre-D1, all kept)", total, edges, oldEdges)
 }
 
 func reverse[T any](s []T) {
@@ -435,11 +453,43 @@ func TestDDG_AppendWritesDstBackingArray(t *testing.T) {
 // chain is return 558:2 → 557:8 (err = wrapErr(err)) → 556:8 (observe(err))
 // → @exit. A deferred call node never strong-defines, so err = wrapErr(nil)
 // (555:2) reaches the return, the rewriting closure and, through it, the
-// observer at the end of the chain.
+// observer at the end of the chain. The rewriting closure weak-defines its
+// captured err (D1 gap 1), so its write reaches the observer too.
 func TestDDG_DeferredNamedResultWriteNeverKills(t *testing.T) {
 	hasDDG(t, "DeferWrap",
 		dd("555:2", "558:2", "err"), // the bare return reads the named result
 		dd("555:2", "557:8", "err"), // the rewriting closure reads it at exit
 		dd("555:2", "556:8", "err"), // and the def survives past it
+		dd("557:8", "556:8", "err"), // the rewrite's capture write (D1 gap 1)
 	)
+}
+
+// TestDDG_ClosureCaptureWrites (D1 gap 1): the node hosting a function literal
+// weak-defines what the literal may write of its captures, and every strong
+// def of a captured-and-written variable in the callable is weak, so the
+// closure's write reaches the later read.
+func TestDDG_ClosureCaptureWrites(t *testing.T) {
+	// func(){ x = 1 }() at 564:2 → return x.
+	hasDDG(t, "CaptureWrite", dd("564:2", "565:2", "x"))
+	// h := func(){ x = 1 } at 572:2; x = 2 (573:2) does not kill it.
+	hasDDG(t, "CaptureThenReassign", dd("572:2", "575:2", "x"))
+	// once.Do(func(){ cfg = load() }) at 588:2 → return cfg.
+	hasDDG(t, "OnceDo", dd("588:2", "589:2", "cfg"))
+	// f := func(){ func(){ x = y }() } at 613:2: the nested literal's write.
+	hasDDG(t, "CaptureNested", dd("613:2", "620:2", "x"))
+	// go func(){ x = <-ch }() at 627:5: the go node hosts the literal.
+	hasDDG(t, "CaptureGo", dd("627:5", "628:2", "x"))
+}
+
+// TestDDG_DeferOperandAfterReassign (D1 gap 3): in `defer fill(b); b[0] = s;
+// b = o` the element write also weak-defines the defer's pseudo path, which
+// b = o does not kill, so it reaches the deferred fill (595:8).
+func TestDDG_DeferOperandAfterReassign(t *testing.T) {
+	hasDDG(t, "DeferReassign", dd("596:2", "595:8", "<defer>:595:8"))
+}
+
+// TestDDG_AppendKeepsElementDefs (#28): s = append(s, n) may keep s's backing
+// array, so it does not kill the earlier s[0] = 5.
+func TestDDG_AppendKeepsElementDefs(t *testing.T) {
+	hasDDG(t, "AppendKeepsElems", dd("603:2", "605:2", "s[*]"))
 }

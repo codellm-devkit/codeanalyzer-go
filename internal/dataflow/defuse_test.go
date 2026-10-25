@@ -267,12 +267,13 @@ func TestDefUse_DeferRegistrationCarriesArgs(t *testing.T) {
 	wantDU(t, "mu.Unlock() (deferred)", call, nil, ss("mu.*"), ss(d, "err", "mu.*", "n"))
 
 	// defer func(){…}(): nothing is evaluated at registration but the func
-	// value; the deferred call uses what the closure captures.
+	// value; the deferred call uses what the closure captures and (D1 gap 1)
+	// weak-defines what it writes of them: err = nil.
 	reg, _ = fx.du(t, "Defers", "defer func() {", 0)
 	call, ck = fx.du(t, "Defers", "defer func() {", len("defer "))
 	d = "<defer>:" + ck
 	wantDU(t, "defer func(){…}", reg, nil, ss(d), nil)
-	wantDU(t, "func(){…}() (deferred)", call, nil, nil, ss(d, "err", "n", "x"))
+	wantDU(t, "func(){…}() (deferred)", call, nil, ss("err"), ss(d, "err", "n", "x"))
 
 	reg, _ = fx.du(t, "Defers", "defer mut2(s, x)", 0)
 	call, ck = fx.du(t, "Defers", "defer mut2(s, x)", len("defer "))
@@ -418,4 +419,67 @@ func TestDefUse_SubsliceArgs(t *testing.T) {
 	wantDU(t, "copy(dst[i:], src)", flowDU(t, "CopyInto", "501:2"), nil, ss("dst[*]"), ss("dst", "i", "src"))
 	wantDU(t, "clear(m)", flowDU(t, "ClearAll", "507:2"), nil, ss("m[*]"), ss("m"))
 	wantDU(t, "clear(s[:n])", flowDU(t, "ClearAll", "508:2"), nil, ss("s[*]"), ss("n", "s"))
+}
+
+// firstLit is the first function literal in fn's body (outermost first).
+func firstLit(t *testing.T, fn string) *ast.FuncLit {
+	t.Helper()
+	var lit *ast.FuncLit
+	ast.Inspect(loadFlow(t).decl(t, fn).Body, func(n ast.Node) bool {
+		if f, ok := n.(*ast.FuncLit); ok && lit == nil {
+			lit = f
+		}
+		return lit == nil
+	})
+	if lit == nil {
+		t.Fatalf("%s: no function literal", fn)
+	}
+	return lit
+}
+
+// TestDefUse_CaptureWrites (D1 gap 1): CaptureWrites is what a literal or a
+// literal nested in it may write of the literal's free variables; the host
+// weak-defines it, and a strong def of a captured-and-written base is weak.
+func TestDefUse_CaptureWrites(t *testing.T) {
+	fx := loadFlow(t)
+	// CaptureNested's f: the nested literal's x = y (y is f's own), and the
+	// fill(buf) write through buf; z is only read.
+	wantSet(t, "CaptureWrites(CaptureNested f)", dataflow.CaptureWrites(firstLit(t, "CaptureNested"), fx.info, kTest), "buf.*", "x")
+	wantSet(t, "CaptureWrites(Closure h)", dataflow.CaptureWrites(firstLit(t, "Closure"), fx.info, kTest))
+
+	wantDU(t, "CaptureNested 613:2", flowDU(t, "CaptureNested", "613:2"), ss("f"), ss("buf.*", "x"), ss("buf", "x", "z"))
+	// x, z := 0, 0: x is written by the literal, so its def is weak; z stays.
+	wantDU(t, "CaptureNested 612:2", flowDU(t, "CaptureNested", "612:2"), ss("z"), ss("x"), nil)
+	wantDU(t, "CaptureWrite 564:2", flowDU(t, "CaptureWrite", "564:2"), nil, ss("x"), ss("x"))
+	wantDU(t, "CaptureThenReassign 573:2", flowDU(t, "CaptureThenReassign", "573:2"), nil, ss("x"), nil)
+	wantDU(t, "OnceDo 588:2", flowDU(t, "OnceDo", "588:2"), nil, ss("cfg", "once.*"), ss("cfg", "once"))
+	// The deferred closure call node is the host, not the registration:
+	// err = wrapErr(err) writes err, and err.* through the interface argument.
+	wantDU(t, "DeferWrap 557:2", flowDU(t, "DeferWrap", "557:2"), nil, ss("<defer>:557:8"), nil)
+	wantDU(t, "DeferWrap 557:8", flowDU(t, "DeferWrap", "557:8"), nil, ss("err", "err.*"), ss("<defer>:557:8", "err"))
+	wantDU(t, "DeferWrap 555:2", flowDU(t, "DeferWrap", "555:2"), nil, ss("err"), nil)
+	// go func(){ x = <-ch }(): the go node is the host.
+	wantDU(t, "CaptureGo 627:5", flowDU(t, "CaptureGo", "627:5"), nil, ss("x"), ss("ch", "x"))
+	wantDU(t, "CaptureGo 626:2", flowDU(t, "CaptureGo", "626:2"), nil, ss("x"), nil)
+}
+
+// TestDefUse_AppendOntoIsShallow (#28): s = append(s, n) strong-defines s
+// Shallow (it kills s, not s[*]) besides append's s[*] weak def.
+func TestDefUse_AppendOntoIsShallow(t *testing.T) {
+	du := flowDU(t, "AppendKeepsElems", "604:2")
+	wantDU(t, "AppendKeepsElems 604:2", du, ss("s"), ss("s[*]"), ss("n", "s"))
+	wantSet(t, "AppendKeepsElems 604:2 Shallow", du.Shallow, "s")
+	// out := append(dst[:0], x): the LHS is not the destination.
+	wantSet(t, "AppendReuse 541:2 Shallow", flowDU(t, "AppendReuse", "541:2").Shallow)
+}
+
+// TestDefUse_DeferOperandWrites (D1 gap 3): a node writing a base the
+// registered defer fill(b) takes as an operand also weak-defines its pseudo
+// path; the registration and the deferred call node are unchanged.
+func TestDefUse_DeferOperandWrites(t *testing.T) {
+	wantDU(t, "DeferReassign 596:2", flowDU(t, "DeferReassign", "596:2"), nil, ss("<defer>:595:8", "b[*]"), ss("b", "s"))
+	wantDU(t, "DeferReassign 597:2", flowDU(t, "DeferReassign", "597:2"), ss("b"), ss("<defer>:595:8"), ss("o"))
+	wantDU(t, "DeferReassign 595:2", flowDU(t, "DeferReassign", "595:2"), nil, ss("<defer>:595:8"), ss("b"))
+	wantDU(t, "DeferReassign 595:8", flowDU(t, "DeferReassign", "595:8"), nil, ss("b.*"), ss("<defer>:595:8", "b.*"))
+	wantDU(t, "DeferReassign @entry", flowDU(t, "DeferReassign", dataflow.EntryKey), ss("b", "o", "s"), nil, nil)
 }
