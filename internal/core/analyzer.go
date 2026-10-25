@@ -10,6 +10,7 @@
 //  3. Resolver-based call graph  (semantic_analysis) — if level >= 2
 //  4. Pass pipeline              (analysis/registry)
 //  5. Intraprocedural dataflow   (dataflow) — if level >= 3
+//  6. System dependence graph    (sdg) — if level >= 4
 package core
 
 import (
@@ -20,11 +21,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/codellm-devkit/codeanalyzer-go/internal/analysis"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/dataflow"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/options"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/schema"
+	"github.com/codellm-devkit/codeanalyzer-go/internal/sdg"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/semantic_analysis"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/syntactic_analysis"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/syntactic_analysis/v2emit"
@@ -38,12 +41,17 @@ type Analyzer struct {
 	// schema.GoApplication: schema must not depend on dataflow, and the
 	// cached v1 model has no L3 facts.
 	l3 map[dataflow.L3Key]dataflow.Result
+	// l4 is the Phase 6 result (nil below L4). Nothing emits it yet.
+	l4 *sdg.Result
 }
 
 // L3 returns the dataflow side table of the last Analyze run: one result per
 // callable with a body, keyed by (declaring file, signature). Nil below
 // level 3. Pass it to RenderJSON / WriteOutput / v2emit.Emit.
 func (a *Analyzer) L3() map[dataflow.L3Key]dataflow.Result { return a.l3 }
+
+// L4 returns the SDG result of the last Analyze run. Nil below level 4.
+func (a *Analyzer) L4() *sdg.Result { return a.l4 }
 
 // KLimit is the access-path bound used at L3: opts.FieldDepth, or the
 // --graph-field-depth default of 3 when a non-CLI caller left it 0.
@@ -113,19 +121,68 @@ func (a *Analyzer) Analyze() (*schema.GoApplication, error) {
 	}
 
 	// ── Phase 5: Intraprocedural dataflow (L3) ────────────────────────────────
+	var units []dataflow.Unit
 	if a.opts.Level >= options.LevelDataflow {
-		a.l3 = dataflow.Run(builder.Fset(), builder.L3Units(symbolTable), KLimit(a.opts), a.opts.Jobs)
+		units = builder.L3Units(symbolTable)
+		a.l3 = dataflow.Run(builder.Fset(), units, KLimit(a.opts), a.opts.Jobs)
 		utils.Info("dataflow: %d callables", len(a.l3))
-		// Run was the last reader of Node.Stmt (the emitters read keys, spans
-		// and edges only), so drop the AST references now: the parsed
-		// packages are then unreachable once Analyze returns, before the
-		// cache write and the emission. (#27)
-		for _, r := range a.l3 {
-			r.Release()
+	}
+
+	// ── Phase 6: System dependence graph (L4) ─────────────────────────────────
+	if a.opts.Level >= options.LevelSDG {
+		res := sdg.Run(sdg.Input{
+			Fset:        builder.Fset(),
+			Pkgs:        builder.Pkgs(),
+			ProjectDir:  a.opts.InputPath,
+			SymbolTable: symbolTable,
+			Externals:   app.Externals,
+			Units:       units,
+			L3:          a.l3,
+			K:           KLimit(a.opts),
+			Jobs:        a.opts.Jobs,
+		})
+		a.l4 = &res
+		if err := a.reportDegraded(res.Degraded); err != nil {
+			return nil, err
 		}
 	}
 
+	// The last reader of Node.Stmt is done (dataflow.Run, or sdg.Run at L4,
+	// which binds call-site actuals from the AST; the emitters read keys,
+	// spans and edges only), so drop the AST references now: the parsed
+	// packages are then unreachable once Analyze returns, before the cache
+	// write and the emission. (#27)
+	for _, r := range a.l3 {
+		r.Release()
+	}
+
 	return a.finalizeAndCache(app)
+}
+
+// reportDegraded logs one warning per L4 degradation, or, under --strict,
+// fails with an error naming every degraded code.
+func (a *Analyzer) reportDegraded(deg []sdg.Degraded) error {
+	if len(deg) == 0 {
+		return nil
+	}
+	if a.opts.Strict {
+		codes := make([]string, len(deg))
+		for i, d := range deg {
+			codes[i] = d.Code
+		}
+		return fmt.Errorf("--strict: analysis level 4 degraded: %s", strings.Join(codes, ", "))
+	}
+	for _, d := range deg {
+		msg := "L4 degraded: " + d.Code
+		if d.Detail != "" {
+			msg += " (" + d.Detail + ")"
+		}
+		if len(d.Packages) > 0 {
+			msg += ": " + strings.Join(d.Packages, ", ")
+		}
+		utils.Warn("%s", msg)
+	}
+	return nil
 }
 
 // materialize runs `go mod download` to ensure the module graph is available

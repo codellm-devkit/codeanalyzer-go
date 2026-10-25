@@ -1,0 +1,75 @@
+package core_test
+
+import (
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/codellm-devkit/codeanalyzer-go/internal/core"
+	"github.com/codellm-devkit/codeanalyzer-go/internal/options"
+)
+
+// TestAnalyze_Level4RunsSDG: -a 4 runs the L4 pass (SSA + VTA) after L3 and
+// keeps its result; a clean project degrades nothing. Below -a 4 there is no
+// L4 result.
+func TestAnalyze_Level4RunsSDG(t *testing.T) {
+	opts := options.AnalysisOptions{
+		InputPath: greeterDir(t), Level: options.LevelSDG, SkipTests: true, CacheDir: t.TempDir(), Strict: true,
+	}
+	a := core.New(opts)
+	if _, err := a.Analyze(); err != nil {
+		t.Fatal(err)
+	}
+	if a.L4() == nil {
+		t.Fatal("-a 4 produced no L4 result")
+	}
+	if len(a.L4().Degraded) != 0 {
+		t.Errorf("degraded = %+v, want none", a.L4().Degraded)
+	}
+	if len(a.L3()) == 0 {
+		t.Fatal("-a 4 produced no L3 results")
+	}
+	for k, r := range a.L3() {
+		for _, n := range r.Nodes {
+			if n.Stmt != nil {
+				t.Fatalf("%v: node %s keeps its Stmt after -a 4", k, n.Key)
+			}
+		}
+	}
+
+	opts.Level = options.LevelDataflow
+	a3 := core.New(opts)
+	if _, err := a3.Analyze(); err != nil {
+		t.Fatal(err)
+	}
+	if a3.L4() != nil {
+		t.Error("-a 3 ran the L4 pass")
+	}
+}
+
+// TestAnalyze_Level4StrictFailsOnDegraded: an ill-typed package gets no SSA.
+// By default -a 4 degrades and still succeeds; with --strict Analyze fails
+// and the error names the degraded codes.
+func TestAnalyze_Level4StrictFailsOnDegraded(t *testing.T) {
+	opts := options.AnalysisOptions{
+		InputPath: filepath.Join(testdataDir(), "typeerr"), Level: options.LevelSDG, SkipTests: true, CacheDir: t.TempDir(),
+	}
+	a := core.New(opts)
+	if _, err := a.Analyze(); err != nil {
+		t.Fatalf("non-strict -a 4 failed: %v", err)
+	}
+	if a.L4() == nil || len(a.L4().Degraded) == 0 {
+		t.Fatalf("L4 = %+v, want a degraded result", a.L4())
+	}
+
+	opts.Strict = true
+	_, err := core.New(opts).Analyze()
+	if err == nil {
+		t.Fatal("--strict -a 4 on a degraded project succeeded")
+	}
+	for _, code := range []string{"partial_ssa", "no_ssa"} {
+		if !strings.Contains(err.Error(), code) {
+			t.Errorf("error %q does not name %s", err, code)
+		}
+	}
+}

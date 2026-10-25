@@ -39,6 +39,7 @@
 #   2. cango -a 3 -j 1
 #   3. cango -a 3 -j N     (N = CPU count)
 #   4. cango -a 3 -j N     (second run)
+#   5. cango -a 4 -j 1 -v  (only when CANGO_LEVELS includes 4)
 # and compares the three -a 3 analysis.json files byte for byte. It records wall time, peak
 # RSS (macOS /usr/bin/time -l), module/callable/body-node/edge counts, external_symbols, the
 # call_graph split, the prepare-time type-check status, the number of type-error warnings
@@ -59,6 +60,9 @@
 #   EVAL_JOBS   N for the -j N runs      (default: CPU count)
 #   RUN_TIMEOUT per-run limit, seconds   (default 3600); on expiry the run is killed, the app
 #               is marked TIMEOUT and its remaining runs are skipped
+#   CANGO_LEVELS levels to run (default "2 3"). Levels 2 and 3 always run (the L3 baseline);
+#               adding 4 (e.g. "2 3 4") also runs step 5 and records its wall time, peak RSS, and the
+#               SSA build time, VTA time and VTA edge count from its -v log.
 #   EVAL_PRUNE  1 = after the comparison, delete the warm-up and both -j N analysis.json files
 #               (keeps a2j1 and a3j1, and every .err/.time). For very large apps.
 # Any other environment (GOOS, GOFLAGS, ...) is inherited by the analyzer unchanged.
@@ -73,6 +77,9 @@ EVAL_GO=${EVAL_GO:-go1.27.3}
 DATE=$(date +%Y-%m-%d)
 EVAL_NOTE=${EVAL_NOTE:-$EVAL_OUT/l3-$DATE.md}
 RUN_TIMEOUT=${RUN_TIMEOUT:-3600}
+CANGO_LEVELS=${CANGO_LEVELS:-"2 3"}
+RUN_L4=0
+case " $CANGO_LEVELS " in *" 4 "*) RUN_L4=1 ;; esac
 EVAL_PRUNE=${EVAL_PRUNE:-0}
 JOBS=${EVAL_JOBS:-$( (sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4) | head -1)}
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -142,7 +149,7 @@ if [ "${1:-}" = "--clean" ]; then
   [ -d "$EVAL_OUT" ] || exit 0
   case $EVAL_OUT in /|"$HOME"|"$EVAL_SRC") echo "refusing to clean $EVAL_OUT" >&2; exit 2 ;; esac
   for n in $(manifest_names) $(ls "$EVAL_OUT" 2>/dev/null | sed -n 's/-a3j1$//p'); do
-    for t in warm a2j1 a3j1 a3jN a3jN2; do
+    for t in warm a2j1 a3j1 a3jN a3jN2 a4j1; do
       rm -rf "$EVAL_OUT/$n-$t" "$EVAL_OUT/$n-$t.err" "$EVAL_OUT/$n-$t.time" "$EVAL_OUT/$n-$t.timeout"
     done
     rm -rf "$EVAL_OUT/cache-$n"
@@ -321,15 +328,16 @@ JQ_COUNTS='
     ([$a.call_graph[]|select(.dst|contains("/@external/")|not)]|length),
     ([$a.call_graph[]|select(.dst|contains("/@external/"))]|length) ] | @tsv'
 
-# run_one NAME TAG LEVEL JOBS -> sets RC WALL RSS; output in $EVAL_OUT/NAME-TAG/analysis.json
+# run_one NAME TAG LEVEL JOBS [FLAG...] -> sets RC WALL RSS; output in $EVAL_OUT/NAME-TAG/analysis.json
 run_one() {
   local name=$1 tag=$2 level=$3 jobs=$4
+  shift 4
   local dir=$EVAL_OUT/$name-$tag
   rm -rf "$dir"; mkdir -p "$dir"
   # shellcheck disable=SC2086
   env $APP_ENV GOTOOLCHAIN="$RUN_GO" /usr/bin/time -l -o "$dir.time" \
     "$CANGO" -i "$APP" --app-name "$name" -a "$level" -j "$jobs" \
-    --eager -c "$EVAL_OUT/cache-$name" -o "$dir" >/dev/null 2>"$dir.err" &
+    --eager -c "$EVAL_OUT/cache-$name" -o "$dir" "$@" >/dev/null 2>"$dir.err" &
   local pid=$! waited=0
   while kill -0 "$pid" 2>/dev/null; do
     if [ "$waited" -ge "$RUN_TIMEOUT" ]; then
@@ -358,8 +366,13 @@ CANGO_DIRTY=$(printf '%s\n' "$BUILD_INFO" | awk -F'=' '/vcs.modified=/{print $2}
   echo
   echo "Analyzer: $("$CANGO" --version 2>&1 | head -1), built with ${CANGO_GO:-unknown} (runtime.Version), rev ${CANGO_REV:-unknown}; runs use GOTOOLCHAIN=$RUN_GO; host: $(uname -sm); j=$JOBS; all runs --eager."
   echo
-  echo "| app | status | type-check | wall a2 j1 (s) | wall a3 j1 (s) | wall a3 jN (s) | RSS a3 j1 (MB) | modules | callables | body nodes | cfg | cdg | ddg | ext symbols | cg in-project | cg external | -j identical | L3 skips | type errors | toolchain warn |"
-  echo "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+  if [ "$RUN_L4" -eq 1 ]; then
+    L4H=" wall a4 j1 (s) | RSS a4 j1 (MB) | RSS a4/a3 | SSA a4 | VTA a4 | VTA edges |"; L4S="---|---|---|---|---|---|"
+  else
+    L4H=""; L4S=""
+  fi
+  echo "| app | status | type-check | wall a2 j1 (s) | wall a3 j1 (s) | wall a3 jN (s) | RSS a3 j1 (MB) | modules | callables | body nodes | cfg | cdg | ddg | ext symbols | cg in-project | cg external | -j identical | L3 skips | type errors | toolchain warn |$L4H"
+  echo "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|$L4S"
 } >"$EVAL_NOTE"
 
 FAILS=""
@@ -394,6 +407,21 @@ for T in $TARGETS; do
     if [ "$RCN" -ne 124 ]; then run_one "$name" a3jN2 3 "$JOBS"; RCN2=$RC; fi
   fi
 
+  L4COLS=""
+  if [ "$RUN_L4" -eq 1 ]; then
+    W4=n/a; R4=n/a; RATIO=n/a; RC4=0
+    if [ "$RC3" -ne 124 ] && [ "$RC2" -ne 124 ]; then
+      run_one "$name" a4j1 4 1 -v; W4=$WALL; R4=$RSS; RC4=$RC
+      if [ "$RC4" -ne 0 ]; then W4="$W4 (rc $RC4)"; fi
+    fi
+    case $R3$R4 in *[!0-9]*|"") ;; *) RATIO=$(awk -v a="$R4" -v b="$R3" 'BEGIN{printf "%.2f", a/b}') ;; esac
+    e4=$EVAL_OUT/$name-a4j1.err
+    SSA4=$(sed -n 's/.*L4: SSA built .* in \(.*\)$/\1/p' "$e4" 2>/dev/null | head -1)
+    VTA4=$(sed -n 's/.*L4: VTA over .* edges in \(.*\)$/\1/p' "$e4" 2>/dev/null | head -1)
+    VE4=$(sed -n 's/.*L4: VTA over .*: \([0-9]*\) edges in .*/\1/p' "$e4" 2>/dev/null | head -1)
+    L4COLS=" $W4 | $R4 | $RATIO | ${SSA4:-n/a} | ${VTA4:-n/a} | ${VE4:-n/a} |"
+  fi
+
   ident=n/a
   if [ "$RC2" -eq 124 ] || [ "$RC3" -eq 124 ] || [ "$RCN" -eq 124 ] || [ "$RCN2" -eq 124 ]; then
     status="TIMEOUT(>${RUN_TIMEOUT}s; remaining runs skipped)"
@@ -420,13 +448,13 @@ for T in $TARGETS; do
   IFS=$'\t' read -r c1 c2 c3 c4 c5 c6 c7 c8 c9 <<EOC
 $counts
 EOC
-  printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' \
+  printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |%s\n' \
     "$label" "$status" "$TYPECHECK" "$W2" "$W3" "$WN" "$R3" "$c1" "$c2" "$c3" "$c4" "$c5" "$c6" "$c7" "$c8" "$c9" \
-    "$ident" "$skips" "$terrs" "$twarn" >>"$EVAL_NOTE"
+    "$ident" "$skips" "$terrs" "$twarn" "$L4COLS" >>"$EVAL_NOTE"
 
   if [ "$EVAL_PRUNE" = 1 ] && [ "$ident" = yes ]; then
     rm -f "$EVAL_OUT/$name-warm/analysis.json" "$EVAL_OUT/$name-a3jN/analysis.json" \
-          "$EVAL_OUT/$name-a3jN2/analysis.json"
+          "$EVAL_OUT/$name-a3jN2/analysis.json" "$EVAL_OUT/$name-a4j1/analysis.json"
   fi
 done
 
