@@ -50,3 +50,25 @@ func TestEagerPurge_RunsAsImplicitTransaction(t *testing.T) {
 		t.Errorf("eagerPurge auto-commit statements = %q, want the one batched purge", s.autoCommit)
 	}
 }
+
+// TestEagerPurge_OnlyOnFullRun: the app-wide purge deletes every node under the
+// app prefix, so it must not run when --target-files limited the analysis to a
+// few packages. Otherwise `--eager -t file.go` would wipe the app and push back
+// only the targeted part.
+func TestEagerPurge_OnlyOnFullRun(t *testing.T) {
+	cases := []struct {
+		eager, fullRun, scoped, want bool
+	}{
+		{eager: true, fullRun: true, scoped: true, want: true},
+		{eager: true, fullRun: false, scoped: true, want: false},
+		{eager: false, fullRun: true, scoped: true, want: false},
+		{eager: true, fullRun: true, scoped: false, want: false},
+	}
+	for _, c := range cases {
+		w := &boltWriter{cfg: BoltConfig{Eager: c.eager, FullRun: c.fullRun}}
+		if got := w.shouldEagerPurge(c.scoped); got != c.want {
+			t.Errorf("eager=%v fullRun=%v scoped=%v: shouldEagerPurge = %v, want %v",
+				c.eager, c.fullRun, c.scoped, got, c.want)
+		}
+	}
+}

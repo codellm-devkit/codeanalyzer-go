@@ -89,7 +89,7 @@ func (w *boltWriter) run() error {
 	}
 
 	root, scoped := applicationPrefix(w.appID)
-	if w.cfg.Eager && scoped {
+	if w.shouldEagerPurge(scoped) {
 		if err := w.eagerPurge(root); err != nil {
 			return err
 		}
@@ -201,6 +201,14 @@ func (w *boltWriter) schemaVersionMismatch() (bool, error) {
 // eagerPurge runs as an implicit (auto-commit) transaction: Neo4j rejects
 // CALL { ... } IN TRANSACTIONS inside an explicit one, which is what
 // ExecuteWrite opens.
+// shouldEagerPurge reports whether to delete the app's whole subgraph before
+// pushing. The purge is app-wide, so it runs only on a full run: with
+// --target-files the push carries only the targeted packages, and purging
+// first would leave the rest of the app missing from the graph.
+func (w *boltWriter) shouldEagerPurge(scoped bool) bool {
+	return w.cfg.Eager && w.cfg.FullRun && scoped
+}
+
 func (w *boltWriter) eagerPurge(root string) error {
 	q, params := eagerPurgeQuery(root)
 	return w.autoCommit(q, params)
