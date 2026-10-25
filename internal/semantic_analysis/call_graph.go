@@ -289,8 +289,8 @@ func (cg *CallGraphBuilder) recordExternal(fn *types.Func, fullSig string) {
 
 // resolveCallSite resolves a single call site to its callee function by looking
 // it up in the package's call-site index under the key L1 recorded it with:
-// relPath (the file declaring the enclosing callable) and the site's
-// directive-adjusted start and end line:col. Returns nil when the site cannot be
+// relPath (the file declaring the enclosing callable) and the site's real
+// (not //line-adjusted) start and end line:col. Returns nil when the site cannot be
 // resolved (graceful fallback).
 func (cg *CallGraphBuilder) resolveCallSite(pkg *packages.Package, relPath string, site *schema.GoCallsite) *types.Func {
 	if pkg.TypesInfo == nil {

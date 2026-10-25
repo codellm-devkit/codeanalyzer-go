@@ -620,3 +620,70 @@ func anyEdgeFromTo(edges []v2.Edge, src, dst string) bool {
 	}
 	return false
 }
+
+// TestGate_LineDirectiveSpansSliceToText (#26): positions are real file
+// positions (token.FileSet.PositionFor(p, false)), never //line-adjusted, so
+// under a directive every span still indexes module.source. In
+// testdata/dataflow/linedir every call node's span slices to text that
+// starts with its callee expression, every callable's to its declaration,
+// and the call keys name the calls' real line:col.
+func TestGate_LineDirectiveSpansSliceToText(t *testing.T) {
+	_, thisFile, _, _ := runtime.Caller(0)
+	dir, err := filepath.Abs(filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "testdata", "dataflow"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := syntactic_analysis.NewSymbolTableBuilder(dir)
+	st, err := b.Build(nil, true)
+	if err != nil {
+		t.Fatalf("symbol table build failed: %v", err)
+	}
+	out := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: []schema.GoCallEdge{}}, "dataflow", dir, 1, "gate-test", 0, nil)
+	const rel = "linedir/linedir.go"
+	mod := mustModule(t, out, rel)
+	calls := 0
+	for sig, fn := range st[rel].Functions {
+		c := mod.Functions[sig]
+		text := c.Span.Slice(mod.Source)
+		if c.Span.Bytes[0] >= c.Span.Bytes[1] || !strings.HasPrefix(text, "func "+fn.Name+"(") {
+			t.Errorf("callable %s: span %v slices to %q, want func %s(…", sig, c.Span, text, fn.Name)
+		}
+		keys := v2.CallBodyKeys(siteStarts(fn.CallSites))
+		for i, cs := range fn.CallSites {
+			n, ok := c.Body[keys[i]]
+			if !ok {
+				t.Errorf("%s: no call node %s; body %v", sig, keys[i], keys)
+				continue
+			}
+			calls++
+			callee := cs.MethodName
+			if cs.ReceiverExpr != "" {
+				callee = cs.ReceiverExpr + "." + callee
+			}
+			if got := n.Span.Slice(mod.Source); n.Span.Bytes[0] >= n.Span.Bytes[1] || !strings.HasPrefix(got, callee+"(") {
+				t.Errorf("%s call %s: span %v slices to %q, want %s(…", sig, keys[i], n.Span, got, callee)
+			}
+		}
+	}
+	caller := functionByName(t, mod, "Caller")
+	if got := strings.Join(sortedKeys(caller.Body), ","); got != "13:12,13:2,15:2" {
+		t.Errorf("Caller call keys = %s, want the real 13:12,13:2,15:2", got)
+	}
+	if calls != 3 {
+		t.Errorf("checked %d call nodes, want 3", calls)
+	}
+}
+
+func siteStarts(sites []schema.GoCallsite) [][2]int {
+	pos := make([][2]int, len(sites))
+	for i, cs := range sites {
+		pos[i] = [2]int{cs.StartLine, cs.StartColumn}
+	}
+	return pos
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	ks := keys(m)
+	sort.Strings(ks)
+	return ks
+}

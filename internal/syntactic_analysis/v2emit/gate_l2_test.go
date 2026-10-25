@@ -490,10 +490,11 @@ func TestGateL2_VendoredCalleeIsExternal(t *testing.T) {
 	}
 }
 
-// TestGateL2_LineDirectiveCallsResolve (I1): L1 records call sites through
-// fset.Position, which applies //line directives, so a site under a directive
-// names a virtual line:col (here line 900 of a 17-line file). The resolver
-// must find it by that same key and backfill its callee and edge.
+// TestGateL2_LineDirectiveCallsResolve (I1, #26): L1 records call sites at
+// their real file positions, never the //line-adjusted ones, so a site under
+// a directive keeps its real line:col (here 13:2, which the directive maps
+// to virtual.y:900). The resolver must find it by that same key and backfill
+// its callee and edge.
 func TestGateL2_LineDirectiveCallsResolve(t *testing.T) {
 	out := buildDataflowL2Fresh(t)
 	fn := functionByName(t, mustModule(t, out, "linedir/linedir.go"), "Caller")
@@ -511,8 +512,8 @@ func TestGateL2_LineDirectiveCallsResolve(t *testing.T) {
 		}
 		callees[*n.Callee] = true
 	}
-	if _, virtual := fn.Body["900:2"]; !virtual {
-		t.Fatalf("no call node at the virtual 900:2; body %v", keys(fn.Body))
+	if _, real := fn.Body["13:2"]; !real {
+		t.Fatalf("no call node at the real 13:2; body %v", keys(fn.Body))
 	}
 	edges := map[string]bool{}
 	for _, e := range out.Application.CallGraph {

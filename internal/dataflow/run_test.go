@@ -68,9 +68,9 @@ func TestRun_JobsDeterminism(t *testing.T) {
 }
 
 // lineDirectiveSrc maps its body to a different (virtual) file and line with
-// a //line directive. L1 records call positions through fset.Position, which
-// honours the directive, so the call keys name virtual lines; pairing them
-// with the AST calls by recording index must still work (ruling R5).
+// a //line directive. Positions are real file positions (PositionFor(p,
+// false)), so the call keys and spans name the real lines 7–11 of p.go, not
+// the virtual 900+, and calls pair with their keys by Lparen (#26).
 const lineDirectiveSrc = `package p
 
 func f(x int) int { return x }
@@ -114,20 +114,22 @@ func funcDecl(t *testing.T, f *ast.File, name string) *ast.FuncDecl {
 	return nil
 }
 
-// TestRun_LineDirective: the call keys of a body under a //line directive
-// land on the call nodes, and spans carry the directive-adjusted positions
-// the keys name.
+// TestRun_LineDirective: under a //line directive the call keys and spans
+// are real positions, not the directive's virtual ones, and every call key
+// lands on its call node.
 func TestRun_LineDirective(t *testing.T) {
 	fset, f, info := parseCheck(t, lineDirectiveSrc)
 	g := funcDecl(t, f, "g")
-	keys := gateCallKeys(fset, g.Body)
-	// Virtual positions; the file has only 12 real lines, so rebuilding a
-	// token.Pos from them (File.LineStart(900)) would panic.
-	if strings.Join(keys, ",") != "900:7,900:9,902:3" {
-		t.Fatalf("call keys = %v, want the virtual 900:7, 900:9, 902:3", keys)
+	calls := gateCallKeys(fset, g.Body)
+	var keys []string
+	for _, c := range calls {
+		keys = append(keys, c.Key)
+	}
+	if strings.Join(keys, ",") != "7:7,7:9,9:3" {
+		t.Fatalf("call keys = %v, want the real 7:7, 7:9, 9:3", keys)
 	}
 	key := dataflow.L3Key{Path: "p.go", Signature: "p.g"}
-	out := dataflow.Run(fset, []dataflow.Unit{{Key: key, Fn: g, Info: info, Calls: keys}}, 3, 1)
+	out := dataflow.Run(fset, []dataflow.Unit{{Key: key, Fn: g, Info: info, Calls: calls}}, 3, 1)
 	res, ok := out[key]
 	if !ok {
 		t.Fatal("no result for g")
@@ -141,28 +143,67 @@ func TestRun_LineDirective(t *testing.T) {
 			t.Errorf("call key %s has no call node", k)
 		}
 	}
-	if n := byKey["901:2"]; n.Kind != dataflow.KindBranch || n.StartLC != [2]int{901, 2} || n.EndLC != [2]int{903, 3} {
-		t.Errorf("if node = %+v, want branch spanning 901:2–903:3", n)
+	if n := byKey["8:2"]; n.Kind != dataflow.KindBranch || n.StartLC != [2]int{8, 2} || n.EndLC != [2]int{10, 3} {
+		t.Errorf("if node = %+v, want branch spanning 8:2–10:3", n)
 	}
 }
 
-// TestRun_CallCountMismatchSkips: a unit whose L1 key list does not match
-// its body's calls gets no result (never a silently mis-keyed one); other
-// units are unaffected.
-func TestRun_CallCountMismatchSkips(t *testing.T) {
+// TestRun_UnpairedCallSkips: a unit with a body call that no L1 key names
+// (by Lparen) gets no result (never a silently mis-keyed one); other units
+// are unaffected.
+func TestRun_UnpairedCallSkips(t *testing.T) {
 	fset, f, info := parseCheck(t, lineDirectiveSrc)
 	g, fn := funcDecl(t, f, "g"), funcDecl(t, f, "f")
 	bad := dataflow.L3Key{Path: "p.go", Signature: "p.g"}
 	good := dataflow.L3Key{Path: "p.go", Signature: "p.f"}
-	out := dataflow.Run(fset, []dataflow.Unit{
-		{Key: bad, Fn: g, Info: info, Calls: []string{"900:7"}}, // 1 key, 3 calls
-		{Key: good, Fn: fn, Info: info, Calls: nil},
-	}, 3, 2)
+	var out map[dataflow.L3Key]dataflow.Result
+	stderr := captureStderr(t, func() {
+		out = dataflow.Run(fset, []dataflow.Unit{
+			{Key: bad, Fn: g, Info: info, Calls: gateCallKeys(fset, g.Body)[:1]}, // 1 key, 3 calls
+			{Key: good, Fn: fn, Info: info, Calls: nil},
+		}, 3, 2)
+	})
 	if _, ok := out[bad]; ok {
-		t.Error("mismatched unit produced a result")
+		t.Error("unit with unpaired calls produced a result")
 	}
 	if r, ok := out[good]; !ok || len(r.Cfg) == 0 {
 		t.Errorf("good unit result = %+v, %v", r, ok)
+	}
+	if !strings.Contains(stderr, "L3 skipped for p.g (p.go): 2 calls in the body have no L1 call key") {
+		t.Errorf("want the unpaired-call warning; got:\n%s", stderr)
+	}
+}
+
+// TestRun_CallCountMismatchWarnsOnly: the L1-key count is a cross-check, not
+// the pairing: a surplus key (here one naming no call of the body) warns, and
+// the unit is still built with every call keyed by its Lparen.
+func TestRun_CallCountMismatchWarnsOnly(t *testing.T) {
+	fset, f, info := parseCheck(t, lineDirectiveSrc)
+	g := funcDecl(t, f, "g")
+	key := dataflow.L3Key{Path: "p.go", Signature: "p.g"}
+	calls := append(gateCallKeys(fset, g.Body), dataflow.UnitCall{Key: "99:1", Lparen: token.NoPos})
+	var out map[dataflow.L3Key]dataflow.Result
+	stderr := captureStderr(t, func() {
+		out = dataflow.Run(fset, []dataflow.Unit{{Key: key, Fn: g, Info: info, Calls: calls}}, 3, 1)
+	})
+	if !strings.Contains(stderr, "4 L1 call keys for 3 calls in the body") {
+		t.Errorf("want the count cross-check warning; got:\n%s", stderr)
+	}
+	res, ok := out[key]
+	if !ok {
+		t.Fatal("count mismatch alone skipped the unit")
+	}
+	byKey := map[string]dataflow.Node{}
+	for _, n := range res.Nodes {
+		byKey[n.Key] = n
+	}
+	for _, c := range calls[:3] {
+		if n, ok := byKey[c.Key]; !ok || n.Kind != dataflow.KindCall {
+			t.Errorf("call key %s has no call node", c.Key)
+		}
+	}
+	if _, ok := byKey["99:1"]; ok {
+		t.Error("surplus key produced a node")
 	}
 }
 
@@ -326,9 +367,9 @@ func captureStderr(t *testing.T, fn func()) string {
 	return <-done
 }
 
-// TestRun_FlowFixtureHasNoCallCountMismatch: L1's call walk (buildCallSites)
-// and L3's (recordedCalls) agree on every flow-fixture body — including calls
-// in a `go` statement's arguments — so no unit is skipped with a warning.
+// TestRun_FlowFixtureHasNoCallCountMismatch: every L1 call site of every
+// flow-fixture body pairs with its call by Lparen — including calls in a `go`
+// statement's arguments — so no unit warns or is skipped.
 func TestRun_FlowFixtureHasNoCallCountMismatch(t *testing.T) {
 	_, thisFile, _, _ := runtime.Caller(0)
 	dir := filepath.Join(filepath.Dir(thisFile), "..", "..", "testdata", "dataflow")
@@ -340,8 +381,8 @@ func TestRun_FlowFixtureHasNoCallCountMismatch(t *testing.T) {
 	units := b.L3Units(st)
 	var out map[dataflow.L3Key]dataflow.Result
 	stderr := captureStderr(t, func() { out = dataflow.Run(b.Fset(), units, 3, 4) })
-	if strings.Contains(stderr, "L1 call keys for") {
-		t.Errorf("call-count mismatch warnings:\n%s", stderr)
+	if strings.Contains(stderr, "L1 call keys for") || strings.Contains(stderr, "have no L1 call key") {
+		t.Errorf("call pairing warnings:\n%s", stderr)
 	}
 	if len(out) != len(units) {
 		t.Errorf("%d results for %d units", len(out), len(units))

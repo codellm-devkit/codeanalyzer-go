@@ -464,3 +464,33 @@ func TestGateL3_GoStatementArgumentCalls(t *testing.T) {
 		}
 	}
 }
+
+// TestGateL3_LineDirectiveRealPositions (#26): under //line directives the
+// L3 body of linedir.Caller is built (its calls pair with their L1 keys by
+// Lparen), its keys are real line:col, and every non-synthetic node's span
+// slices module.source to its text.
+func TestGateL3_LineDirectiveRealPositions(t *testing.T) {
+	fx := buildL3(t, "dataflow")
+	mod := mustModule(t, fx.l3, "linedir/linedir.go")
+	c := functionByName(t, mod, "Caller")
+	want := map[string]string{
+		"@entry": "", "@exit": "",
+		"13:2":  "os.Getenv(helper())",
+		"13:12": "helper()",
+		"15:2":  "helper()",
+	}
+	if got, w := strings.Join(sortedKeys(c.Body), ","), strings.Join(sortedKeys(want), ","); got != w {
+		t.Fatalf("Caller body keys = %s, want %s", got, w)
+	}
+	for k, text := range want {
+		if text == "" {
+			continue
+		}
+		if got := c.Body[k].Span.Slice(mod.Source); got != text {
+			t.Errorf("Caller %s span slices to %q, want %q", k, got, text)
+		}
+	}
+	if len(c.Cfg) == 0 {
+		t.Error("Caller: empty cfg")
+	}
+}

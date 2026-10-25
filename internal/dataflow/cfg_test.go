@@ -15,6 +15,7 @@ import (
 	"golang.org/x/tools/go/cfg"
 	"golang.org/x/tools/go/packages"
 
+	"github.com/codellm-devkit/codeanalyzer-go/internal/astwalk"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/dataflow"
 	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
 )
@@ -768,28 +769,23 @@ func gateOne(t *testing.T, name string, nodes []dataflow.Node, es []dataflow.Cfg
 	return chain
 }
 
-// gateCallKeys lists the key of every call in body in the L1 recording order
-// (pre-order, an outer call before its nested calls; no function literal
-// bodies), as
-// v2.CallBodyKeys assigns them from each call's (line-directive adjusted)
-// position.
-func gateCallKeys(fset *token.FileSet, body *ast.BlockStmt) []string {
-	var calls []*ast.CallExpr
-	ast.Inspect(body, func(n ast.Node) bool {
-		switch n := n.(type) {
-		case *ast.FuncLit:
-			return false
-		case *ast.CallExpr:
-			calls = append(calls, n)
-		}
-		return true
-	})
+// gateCallKeys lists the L1 call node of every call in body in the L1
+// recording order (astwalk.Calls), each keyed as v2.CallBodyKeys assigns it
+// from the call's real (not //line-adjusted) position and carrying its
+// Lparen.
+func gateCallKeys(fset *token.FileSet, body *ast.BlockStmt) []dataflow.UnitCall {
+	calls := astwalk.Calls(body)
 	pos := make([][2]int, len(calls))
 	for i, c := range calls {
-		p := fset.Position(c.Pos())
+		p := fset.PositionFor(c.Expr.Pos(), false)
 		pos[i] = [2]int{p.Line, p.Column}
 	}
-	return v2.CallBodyKeys(pos)
+	keys := v2.CallBodyKeys(pos)
+	out := make([]dataflow.UnitCall, len(calls))
+	for i, c := range calls {
+		out[i] = dataflow.UnitCall{Key: keys[i], Lparen: c.Expr.Lparen}
+	}
+	return out
 }
 
 // ---- canPanic rules (spec §4.3.2) ----

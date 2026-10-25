@@ -39,8 +39,9 @@ const (
 //   - Key is the local key: "l:c" (v2.LocalID of the node's anchor position),
 //     "l:c/2", … for co-positioned nodes, or EntryKey / ExitKey.
 //   - Pos/End is the span of Stmt; NoPos for synthetic nodes. StartLC/EndLC
-//     are their [line, col] (fset.Position, so //line directives apply, as
-//     they do to the L1 call-site positions); zero for synthetic nodes.
+//     are their real [line, col] (fset.PositionFor(p, false): //line
+//     directives are not applied, as they are not to the L1 call-site
+//     positions); zero for synthetic nodes.
 //   - Stmt is the AST node the body node stands for:
 //     a statement (*ast.ExprStmt for a bare call, *ast.GoStmt for a `go` call),
 //     a clause head (*ast.CaseClause / *ast.CommClause),

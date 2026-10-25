@@ -173,6 +173,10 @@ span
 └─ bytes   [from, to]                 # UTF-8 byte offsets into the owning module.source
 ```
 
+`start` / `end` are real file positions (`token.FileSet.PositionFor(p, false)`): `//line`
+directives are never applied, so in generated code that carries them (goyacc, templ) every
+span, and every body key derived from one, still indexes `module.source`.
+
 ## Presence rules
 
 - **Always present:** every `id` (body nodes included, from L1 on — parity with

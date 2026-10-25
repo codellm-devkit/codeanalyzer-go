@@ -5,6 +5,8 @@
 // transformation. Design decisions are recorded in .claude/SCHEMA_DECISIONS.md.
 package schema
 
+import "go/token"
+
 // ─── Leaf models ─────────────────────────────────────────────────────────────
 
 // GoImport represents a single import declaration in a Go source file.
@@ -92,6 +94,11 @@ type GoCallsite struct {
 	StartColumn       int    `json:"start_column"`
 	EndLine           int    `json:"end_line"`
 	EndColumn         int    `json:"end_column"`
+	// Lparen is the call's raw CallExpr.Lparen in the builder's FileSet: the
+	// in-memory join key from an L1 site to its *ast.CallExpr (L3 body nodes,
+	// and go/ssa CallCommon.Pos() at L4). Never serialized; meaningless once
+	// the FileSet is gone.
+	Lparen token.Pos `json:"-"`
 }
 
 // ─── Callable ─────────────────────────────────────────────────────────────────

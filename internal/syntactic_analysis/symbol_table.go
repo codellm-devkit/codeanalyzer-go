@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/tools/go/packages"
 
+	"github.com/codellm-devkit/codeanalyzer-go/internal/astwalk"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/schema"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/utils"
 )
@@ -35,6 +36,16 @@ func NewSymbolTableBuilder(projectDir string) *SymbolTableBuilder {
 		fset:       token.NewFileSet(),
 		pkgs:       map[string]*packages.Package{},
 	}
+}
+
+// position is p's real file position: //line directives are NOT applied
+// (token.FileSet.PositionFor(p, false)). Every line:col the builder records —
+// call sites, callable / type / field / import spans — indexes the file that
+// holds the node, the file module.source is read from, so spans slice to the
+// node's text even in generated code (goyacc, templ) carrying //line
+// directives.
+func (b *SymbolTableBuilder) position(p token.Pos) token.Position {
+	return b.fset.PositionFor(p, false)
 }
 
 // Build loads all packages under projectDir (or only targetFiles if non-empty),
@@ -268,8 +279,8 @@ func (b *SymbolTableBuilder) buildImports(astFile *ast.File) []schema.GoImport {
 		if imp.Name != nil {
 			alias = imp.Name.Name
 		}
-		pos := b.fset.Position(imp.Pos())
-		end := b.fset.Position(imp.End())
+		pos := b.position(imp.Pos())
+		end := b.position(imp.End())
 		imports = append(imports, schema.GoImport{
 			Module:    path,
 			Alias:     alias,
@@ -286,8 +297,8 @@ func (b *SymbolTableBuilder) buildFileComments(astFile *ast.File) []schema.GoCom
 	var comments []schema.GoComment
 	for _, cg := range astFile.Comments {
 		for _, c := range cg.List {
-			pos := b.fset.Position(c.Pos())
-			end := b.fset.Position(c.End())
+			pos := b.position(c.Pos())
+			end := b.position(c.End())
 			comments = append(comments, schema.GoComment{
 				Content:      c.Text,
 				StartLine:    pos.Line,
@@ -307,8 +318,8 @@ func (b *SymbolTableBuilder) docComments(doc *ast.CommentGroup) []schema.GoComme
 	}
 	var comments []schema.GoComment
 	for _, c := range doc.List {
-		pos := b.fset.Position(c.Pos())
-		end := b.fset.Position(c.End())
+		pos := b.position(c.Pos())
+		end := b.position(c.End())
 		comments = append(comments, schema.GoComment{
 			Content:      c.Text,
 			StartLine:    pos.Line,
@@ -362,8 +373,8 @@ func (b *SymbolTableBuilder) buildType(
 		typSig = pkg.Types.Path() + "." + typeName
 	}
 
-	pos := b.fset.Position(spec.Pos())
-	end := b.fset.Position(spec.End())
+	pos := b.position(spec.Pos())
+	end := b.position(spec.End())
 
 	gt := &schema.GoType{
 		Name:       typeName,
@@ -437,8 +448,8 @@ func (b *SymbolTableBuilder) buildStructFields(pkg *packages.Package, st *ast.St
 		isEmbedded := len(field.Names) == 0
 
 		if isEmbedded {
-			pos := b.fset.Position(field.Pos())
-			end := b.fset.Position(field.End())
+			pos := b.position(field.Pos())
+			end := b.position(field.End())
 			fields = append(fields, schema.GoField{
 				Name:       typStr,
 				Type:       typStr,
@@ -451,8 +462,8 @@ func (b *SymbolTableBuilder) buildStructFields(pkg *packages.Package, st *ast.St
 			continue
 		}
 		for _, name := range field.Names {
-			pos := b.fset.Position(name.Pos())
-			end := b.fset.Position(field.End())
+			pos := b.position(name.Pos())
+			end := b.position(field.End())
 			fields = append(fields, schema.GoField{
 				Name:       name.Name,
 				Type:       typStr,
@@ -491,8 +502,8 @@ func (b *SymbolTableBuilder) collectInterfaceMethods(pkg *packages.Package, it *
 			continue
 		}
 		for _, name := range method.Names {
-			pos := b.fset.Position(name.Pos())
-			end := b.fset.Position(method.End())
+			pos := b.position(name.Pos())
+			end := b.position(method.End())
 
 			var retType string
 			var retTypes []string
@@ -544,8 +555,8 @@ func (b *SymbolTableBuilder) buildCallable(
 	}
 
 	isExported := unicode.IsUpper(rune(name[0]))
-	pos := b.fset.Position(decl.Pos())
-	end := b.fset.Position(decl.End())
+	pos := b.position(decl.Pos())
+	end := b.position(decl.End())
 
 	sig := b.declSignature(pkg, decl)
 
@@ -561,7 +572,7 @@ func (b *SymbolTableBuilder) buildCallable(
 	retType, retTypes := b.buildReturnTypes(pkg, decl.Type)
 	bodyStart := pos.Line
 	if decl.Body != nil {
-		bodyStart = b.fset.Position(decl.Body.Pos()).Line
+		bodyStart = b.position(decl.Body.Pos()).Line
 	}
 
 	callable := &schema.GoCallable{
@@ -626,8 +637,8 @@ func (b *SymbolTableBuilder) buildParams(pkg *packages.Package, ft *ast.FuncType
 		if _, ok := field.Type.(*ast.Ellipsis); ok {
 			isVariadic = true
 		}
-		pos := b.fset.Position(field.Pos())
-		end := b.fset.Position(field.End())
+		pos := b.position(field.Pos())
+		end := b.position(field.End())
 		if len(field.Names) == 0 {
 			params = append(params, schema.GoParameter{
 				Name: "_", Type: typStr, IsVariadic: isVariadic,
@@ -684,42 +695,23 @@ func (b *SymbolTableBuilder) joinReturnTypes(parts []string) string {
 
 // ─── Call sites ───────────────────────────────────────────────────────────────
 
-// buildCallSites walks the function body and records every call expression.
-// callee_signature is left nil here — the resolver backfills it in the call-graph stage.
+// buildCallSites records every call expression of the function body in the
+// order astwalk.Calls lists them (the order L3 pairs its call nodes with by
+// Lparen). callee_signature is left nil here — the resolver backfills it in
+// the call-graph stage.
 func (b *SymbolTableBuilder) buildCallSites(pkg *packages.Package, body *ast.BlockStmt) []schema.GoCallsite {
 	var sites []schema.GoCallsite
-	// goroutine / deferred hold the call of each `go` / `defer` statement seen
-	// so far. Pre-order traversal visits the statement before its call, so the
-	// CallExpr case can tag it, and continues into the call so calls in its
-	// function value and arguments (evaluated by the launching goroutine, at
-	// the statement) are recorded as ordinary sites. The L3 walk
-	// (dataflow.recordedCalls) must record the same calls in the same order.
-	goroutine := map[*ast.CallExpr]bool{}
-	deferred := map[*ast.CallExpr]bool{}
-	ast.Inspect(body, func(n ast.Node) bool {
-		switch node := n.(type) {
-		case *ast.GoStmt:
-			goroutine[node.Call] = true
-		case *ast.DeferStmt:
-			deferred[node.Call] = true
-		case *ast.FuncLit:
-			// Closure bodies are handled by buildInnerCallables; don't double-count.
-			return false
-		case *ast.CallExpr:
-			site := b.callExprToSite(pkg, node, goroutine[node])
-			if site != nil {
-				site.IsDeferred = deferred[node]
-				sites = append(sites, *site)
-			}
-		}
-		return true
-	})
+	for _, c := range astwalk.Calls(body) {
+		site := b.callExprToSite(pkg, c.Expr, c.Goroutine)
+		site.IsDeferred = c.Deferred
+		sites = append(sites, *site)
+	}
 	return sites
 }
 
 func (b *SymbolTableBuilder) callExprToSite(pkg *packages.Package, call *ast.CallExpr, isGoroutine bool) *schema.GoCallsite {
-	pos := b.fset.Position(call.Pos())
-	end := b.fset.Position(call.End())
+	pos := b.position(call.Pos())
+	end := b.position(call.End())
 
 	var methodName, receiverExpr, receiverType string
 	isConstructor := false
@@ -771,6 +763,7 @@ func (b *SymbolTableBuilder) callExprToSite(pkg *packages.Package, call *ast.Cal
 		StartColumn:       pos.Column,
 		EndLine:           end.Line,
 		EndColumn:         end.Column,
+		Lparen:            call.Lparen,
 	}
 }
 
@@ -784,7 +777,7 @@ func (b *SymbolTableBuilder) buildLocalVars(pkg *packages.Package, body *ast.Blo
 			if node.Tok.String() == ":=" {
 				for i, lhs := range node.Lhs {
 					if ident, ok := lhs.(*ast.Ident); ok {
-						pos := b.fset.Position(ident.Pos())
+						pos := b.position(ident.Pos())
 						typStr := ""
 						if pkg.TypesInfo != nil {
 							if obj := pkg.TypesInfo.ObjectOf(ident); obj != nil {
@@ -807,7 +800,7 @@ func (b *SymbolTableBuilder) buildLocalVars(pkg *packages.Package, body *ast.Blo
 				for _, spec := range gen.Specs {
 					if vs, ok := spec.(*ast.ValueSpec); ok {
 						for i, name := range vs.Names {
-							pos := b.fset.Position(name.Pos())
+							pos := b.position(name.Pos())
 							typStr := ""
 							if vs.Type != nil {
 								typStr = b.typeString(pkg, vs.Type)
@@ -834,22 +827,17 @@ func (b *SymbolTableBuilder) buildLocalVars(pkg *packages.Package, body *ast.Blo
 	return vars
 }
 
-// buildInnerCallables walks body and collects each FuncLit as a named closure.
-// Only the top level is captured; nested closures appear in the closure's own
-// InnerCallables (populated when buildCallSites recurses into lit.Body).
+// buildInnerCallables collects the outermost function literals of body as
+// named closures (astwalk.Literals: closure_1, closure_2, … in ast.Inspect
+// order). A nested literal is its enclosing closure's own inner callable,
+// built by the recursion on lit.Body.
 func (b *SymbolTableBuilder) buildInnerCallables(pkg *packages.Package, outerSig string, body *ast.BlockStmt) map[string]schema.GoCallable {
 	inner := map[string]schema.GoCallable{}
-	n := 0
-	ast.Inspect(body, func(node ast.Node) bool {
-		lit, ok := node.(*ast.FuncLit)
-		if !ok {
-			return true
-		}
-		n++
-		name := fmt.Sprintf("closure_%d", n)
+	for _, l := range astwalk.Literals(body) {
+		lit, name := l.Lit, l.Name
 		sig := outerSig + "." + name
-		pos := b.fset.Position(lit.Pos())
-		endPos := b.fset.Position(lit.End())
+		pos := b.position(lit.Pos())
+		endPos := b.position(lit.End())
 		_, retTypes := b.buildReturnTypes(pkg, lit.Type)
 		retType := b.joinReturnTypes(retTypes)
 
@@ -872,8 +860,7 @@ func (b *SymbolTableBuilder) buildInnerCallables(pkg *packages.Package, outerSig
 			ic.InnerCallables = b.buildInnerCallables(pkg, sig, lit.Body)
 		}
 		inner[name] = ic
-		return false // don't recurse; nested closures are handled above
-	})
+	}
 	return inner
 }
 
@@ -895,7 +882,7 @@ func (b *SymbolTableBuilder) buildPackageVars(pkg *packages.Package, astFile *as
 				continue
 			}
 			for i, name := range vs.Names {
-				pos := b.fset.Position(name.Pos())
+				pos := b.position(name.Pos())
 				typStr := ""
 				if vs.Type != nil {
 					typStr = b.typeString(pkg, vs.Type)
@@ -1012,7 +999,7 @@ func (b *SymbolTableBuilder) nodeSource(node ast.Node) string {
 	if tf == nil || b.fset.File(node.End()) != tf {
 		return ""
 	}
-	pos := b.fset.Position(node.Pos())
+	pos := b.position(node.Pos())
 	if pos.Filename == "" {
 		return ""
 	}

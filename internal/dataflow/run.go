@@ -24,14 +24,22 @@ type L3Key struct{ Path, Signature string }
 //
 //   - Fn is the *ast.FuncDecl or *ast.FuncLit; a closure is its own unit.
 //   - Info is the type info of Fn's package (nil degrades: no def/use).
-//   - Calls is the callable's L1 call-node keys in L1 recording order
-//     (v2.CallBodyKeys over its call sites). BuildNodes pairs them with the
-//     body's calls by index (ruling R5); Run checks the counts first.
+//   - Calls is the callable's L1 call nodes: each L1 call-node key
+//     (v2.CallBodyKeys over its call sites) with its site's CallExpr.Lparen.
+//     BuildNodes pairs them with the body's calls by Lparen, so their order
+//     does not matter.
 type Unit struct {
 	Key   L3Key
 	Fn    ast.Node
 	Info  *types.Info
-	Calls []string
+	Calls []UnitCall
+}
+
+// UnitCall is one L1 call node of a unit: its key and the raw Lparen of the
+// call expression it was recorded from.
+type UnitCall struct {
+	Key    string
+	Lparen token.Pos
 }
 
 // Run builds the L3 overlay of every unit: the pruned body nodes, CFG, CDG
@@ -42,9 +50,11 @@ type Unit struct {
 //
 // A unit that panics in any stage is skipped the same way (runOne).
 //
-// A unit whose L1 call-key count differs from its body's recorded call count
-// gets no result and a warning on stderr: pairing by index would mis-key its
-// call nodes, so its body stays at L1 rather than being silently wrong.
+// A unit with a body call that no L1 call key names (by Lparen) gets no
+// result and a warning on stderr: a call node without its L1 key would be
+// silently wrong, so its body stays at L1. A count mismatch between the L1
+// keys and the body's recorded calls (RecordedCallCount) is a cross-check
+// only: it warns, and the unit is still built when every call is paired.
 func Run(fset *token.FileSet, units []Unit, k, jobs int) map[L3Key]Result {
 	if jobs < 1 {
 		jobs = runtime.GOMAXPROCS(0)
@@ -92,8 +102,12 @@ func runOne(fset *token.FileSet, u Unit, k int) (res *Result) {
 	if body == nil {
 		return nil
 	}
-	if n := RecordedCallCount(body); n != len(u.Calls) {
-		utils.Warn("L3 skipped for %s (%s): %d L1 call keys for %d calls in the body", u.Key.Signature, u.Key.Path, len(u.Calls), n)
+	recorded, missing := unpairedCalls(body, u.Calls)
+	if recorded != len(u.Calls) {
+		utils.Warn("L3 for %s (%s): %d L1 call keys for %d calls in the body", u.Key.Signature, u.Key.Path, len(u.Calls), recorded)
+	}
+	if missing > 0 {
+		utils.Warn("L3 skipped for %s (%s): %d calls in the body have no L1 call key", u.Key.Signature, u.Key.Path, missing)
 		return nil
 	}
 	nodes, keyOf := BuildNodes(fset, body, u.Calls)
