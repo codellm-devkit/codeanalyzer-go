@@ -570,3 +570,53 @@ func TestGateL1_BodyNodeIDs(t *testing.T) {
 		t.Errorf("only %d L1 body nodes checked", checked)
 	}
 }
+
+// TestGateL2_GoStatementArgumentCalls: calls in a `go` statement's arguments
+// (`go f(g(x))`, `go func(y int){…}(h())`) are call sites of their own —
+// call nodes with resolved callees and call_graph edges — evaluated in the
+// launching goroutine, so only the launched call carries is_goroutine.
+func TestGateL2_GoStatementArgumentCalls(t *testing.T) {
+	out := buildDataflowL2V2(t)
+	fn := functionByName(t, mustModule(t, out, "flow/flow.go"), "GoArgs")
+	const pkg = "example.com/dataflow/flow."
+	for _, w := range []struct {
+		key, callee string
+		goroutine   bool
+	}{
+		{"534:5", "f", true},
+		{"534:7", "g", false},
+		{"535:5", "", true}, // the launched func literal: no named callee
+		{"535:27", "h", false},
+	} {
+		n, ok := fn.Body[w.key]
+		if !ok {
+			t.Errorf("GoArgs: no call node %s; have %v", w.key, keys(fn.Body))
+			continue
+		}
+		if n.IsGoroutine != w.goroutine {
+			t.Errorf("GoArgs %s is_goroutine = %v, want %v", w.key, n.IsGoroutine, w.goroutine)
+		}
+		if w.callee == "" {
+			continue
+		}
+		want := "can://dataflow/go/flow/flow.go/" + pkg + w.callee
+		if n.Callee == nil || *n.Callee != want {
+			t.Errorf("GoArgs %s callee = %v, want %s", w.key, n.Callee, want)
+		}
+		if !anyEdgeFromTo(out.Application.CallGraph, fn.ID, want) {
+			t.Errorf("no call_graph edge %s -> %s", fn.ID, want)
+		}
+	}
+	if len(fn.Body) != 4 {
+		t.Errorf("GoArgs body has %d nodes, want 4: %v", len(fn.Body), keys(fn.Body))
+	}
+}
+
+func anyEdgeFromTo(edges []v2.Edge, src, dst string) bool {
+	for _, e := range edges {
+		if e.Src == src && e.Dst == dst {
+			return true
+		}
+	}
+	return false
+}

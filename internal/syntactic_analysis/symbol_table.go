@@ -688,27 +688,25 @@ func (b *SymbolTableBuilder) joinReturnTypes(parts []string) string {
 // callee_signature is left nil here — the resolver backfills it in the call-graph stage.
 func (b *SymbolTableBuilder) buildCallSites(pkg *packages.Package, body *ast.BlockStmt) []schema.GoCallsite {
 	var sites []schema.GoCallsite
-	// deferred holds the call of each `defer` statement seen so far. Pre-order
-	// traversal visits the DeferStmt before its call, so the CallExpr case can
-	// tag it; unlike `go`, the traversal continues into the call so calls in its
-	// arguments are still recorded.
+	// goroutine / deferred hold the call of each `go` / `defer` statement seen
+	// so far. Pre-order traversal visits the statement before its call, so the
+	// CallExpr case can tag it, and continues into the call so calls in its
+	// function value and arguments (evaluated by the launching goroutine, at
+	// the statement) are recorded as ordinary sites. The L3 walk
+	// (dataflow.recordedCalls) must record the same calls in the same order.
+	goroutine := map[*ast.CallExpr]bool{}
 	deferred := map[*ast.CallExpr]bool{}
 	ast.Inspect(body, func(n ast.Node) bool {
 		switch node := n.(type) {
 		case *ast.GoStmt:
-			// Goroutine launch — record with is_goroutine=true.
-			site := b.callExprToSite(pkg, node.Call, true)
-			if site != nil {
-				sites = append(sites, *site)
-			}
-			return false
+			goroutine[node.Call] = true
 		case *ast.DeferStmt:
 			deferred[node.Call] = true
 		case *ast.FuncLit:
 			// Closure bodies are handled by buildInnerCallables; don't double-count.
 			return false
 		case *ast.CallExpr:
-			site := b.callExprToSite(pkg, node, false)
+			site := b.callExprToSite(pkg, node, goroutine[node])
 			if site != nil {
 				site.IsDeferred = deferred[node]
 				sites = append(sites, *site)

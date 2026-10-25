@@ -524,3 +524,13 @@ func DeferFlush(w *flusher, b []byte) {
 	w.buf = nil
 	b[0] = 1
 }
+
+func h() int { return 0 }
+
+// GoArgs launches goroutines whose arguments hold calls: g(x) and h() run at
+// the go statement, in the launching goroutine; only the launched call is a
+// goroutine.
+func GoArgs(x int) {
+	go f(g(x))
+	go func(y int) { _ = y }(h())
+}

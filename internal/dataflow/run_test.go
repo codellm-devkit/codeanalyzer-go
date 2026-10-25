@@ -8,6 +8,8 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"io"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -283,5 +285,49 @@ func TestRun_TypeErrorsKeepDefs(t *testing.T) {
 		if !found {
 			t.Errorf("%s: no ddg %s→%s on %q; have %v", c.fn, c.def, c.use, c.v, r.Ddg)
 		}
+	}
+}
+
+// captureStderr returns what fn writes to os.Stderr.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	done := make(chan string)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		done <- buf.String()
+	}()
+	defer func() { os.Stderr = old }()
+	fn()
+	_ = w.Close()
+	os.Stderr = old
+	return <-done
+}
+
+// TestRun_FlowFixtureHasNoCallCountMismatch: L1's call walk (buildCallSites)
+// and L3's (recordedCalls) agree on every flow-fixture body — including calls
+// in a `go` statement's arguments — so no unit is skipped with a warning.
+func TestRun_FlowFixtureHasNoCallCountMismatch(t *testing.T) {
+	_, thisFile, _, _ := runtime.Caller(0)
+	dir := filepath.Join(filepath.Dir(thisFile), "..", "..", "testdata", "dataflow")
+	b := syntactic_analysis.NewSymbolTableBuilder(dir)
+	st, err := b.Build(nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	units := b.L3Units(st)
+	var out map[dataflow.L3Key]dataflow.Result
+	stderr := captureStderr(t, func() { out = dataflow.Run(b.Fset(), units, 3, 4) })
+	if strings.Contains(stderr, "L1 call keys for") {
+		t.Errorf("call-count mismatch warnings:\n%s", stderr)
+	}
+	if len(out) != len(units) {
+		t.Errorf("%d results for %d units", len(out), len(units))
 	}
 }

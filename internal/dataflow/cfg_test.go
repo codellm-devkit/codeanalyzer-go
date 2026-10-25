@@ -769,7 +769,8 @@ func gateOne(t *testing.T, name string, nodes []dataflow.Node, es []dataflow.Cfg
 }
 
 // gateCallKeys lists the key of every call in body in the L1 recording order
-// (pre-order; a go statement's call only; no function literal bodies), as
+// (pre-order, an outer call before its nested calls; no function literal
+// bodies), as
 // v2.CallBodyKeys assigns them from each call's (line-directive adjusted)
 // position.
 func gateCallKeys(fset *token.FileSet, body *ast.BlockStmt) []string {
@@ -777,9 +778,6 @@ func gateCallKeys(fset *token.FileSet, body *ast.BlockStmt) []string {
 	ast.Inspect(body, func(n ast.Node) bool {
 		switch n := n.(type) {
 		case *ast.FuncLit:
-			return false
-		case *ast.GoStmt:
-			calls = append(calls, n.Call)
 			return false
 		case *ast.CallExpr:
 			calls = append(calls, n)

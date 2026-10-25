@@ -240,14 +240,17 @@ func TestBodyNodes_BareCallSharesKey(t *testing.T) {
 		t.Errorf("keyOf[ExprStmt] = %q, want 131:2", keyOf[n.Stmt])
 	}
 
-	// `go work(f(x))` is the call node, keyed at the call; L1 records no
-	// site for the goroutine's arguments, so no satellite appears.
+	// `go work(f(x))` is the call node, keyed at the call; f(x), evaluated
+	// at the go statement, is its satellite.
 	_, sp, _ := build(t, "Spawn")
 	g := wantKind(t, "Spawn", sp, "202:5", dataflow.KindCall)
 	if _, ok := g.Stmt.(*ast.GoStmt); !ok {
 		t.Errorf("go node Stmt = %T, want *ast.GoStmt", g.Stmt)
 	}
 	wantAbsent(t, "Spawn", sp, "202:2", "go statement shares the call's key")
+	if arg := wantKind(t, "Spawn", sp, "202:10", dataflow.KindCall); arg.Parent != "202:5" {
+		t.Errorf("Spawn: f(x) Parent = %q, want the go node 202:5", arg.Parent)
+	}
 
 	// s.A().B(): the outer call (L1 "234:2") is the statement's node; the
 	// co-positioned inner s.A() (L1 "234:2/2") is its satellite.
@@ -262,8 +265,8 @@ func TestBodyNodes_BareCallSharesKey(t *testing.T) {
 	// panic("negative") is a bare call statement too: it keeps kind call.
 	_, pn, _ := build(t, "Panics")
 	wantKind(t, "Panics", pn, "138:3", dataflow.KindCall)
-	if len(sp) != 3 {
-		t.Errorf("Spawn: %d nodes, want 3: %v", len(sp), keysOf(sp))
+	if len(sp) != 4 { // @entry, go node, f(x) satellite, @exit
+		t.Errorf("Spawn: %d nodes, want 4: %v", len(sp), keysOf(sp))
 	}
 }
 

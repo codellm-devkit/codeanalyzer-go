@@ -22,6 +22,8 @@ import (
 //     clause's Pos(); its span ends at the clause's colon.
 //   - a bare call statement (ExprStmt whose expression is an L1 call) and a
 //     `go` statement are the call node: kind call, keyed with the L1 call key.
+//     Calls nested in the call (a `go` statement's function value and
+//     arguments, evaluated at the statement) are satellites of that node.
 //   - `defer f(x)` is two nodes (§4.3.1): a statement node at the `defer`
 //     keyword and the L1 call node with Deferred set. Calls in the deferred
 //     call's receiver and arguments run at registration and are satellites of
@@ -82,15 +84,14 @@ func BuildNodes(fset *token.FileSet, body *ast.BlockStmt, calls []string) ([]Nod
 }
 
 // recordedCalls lists body's call expressions in the L1 recording order of
-// buildCallSites (internal/syntactic_analysis): pre-order, a `go` statement's
-// call only (not the calls in its arguments), no function literal bodies.
+// buildCallSites (internal/syntactic_analysis): pre-order — an outer call
+// before the calls nested in it, a `go` / `defer` statement's call before the
+// calls in its function value and arguments — and no function literal bodies.
+// The two walks must stay identical: keys pair with calls by index (R5).
 func recordedCalls(body *ast.BlockStmt) []*ast.CallExpr {
 	var out []*ast.CallExpr
 	ast.Inspect(body, func(n ast.Node) bool {
 		switch n := n.(type) {
-		case *ast.GoStmt:
-			out = append(out, n.Call)
-			return false
 		case *ast.FuncLit:
 			return false
 		case *ast.CallExpr:

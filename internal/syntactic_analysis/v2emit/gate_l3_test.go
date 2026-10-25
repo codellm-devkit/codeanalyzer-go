@@ -441,3 +441,26 @@ func TestGateL3_CrossFileClosureSourceFile(t *testing.T) {
 		}
 	}
 }
+
+// TestGateL3_GoStatementArgumentCalls: a call in a `go` statement's arguments
+// is evaluated at the go statement, so at L3 it is a satellite whose parent is
+// the go node (the launched call's key). GoArgs having a result at all shows
+// the L1 and L3 call walks agree (a count mismatch leaves it at L1).
+func TestGateL3_GoStatementArgumentCalls(t *testing.T) {
+	fx := buildL3(t, "dataflow")
+	key := dataflow.L3Key{Path: filepath.Join("flow", "flow.go"), Signature: "example.com/dataflow/flow.GoArgs"}
+	if _, ok := fx.res[key]; !ok {
+		t.Fatalf("no L3 result for %v (call-count mismatch?)", key)
+	}
+	fn := functionByName(t, mustModule(t, fx.l3, "flow/flow.go"), "GoArgs")
+	for k, parent := range map[string]string{"534:5": "", "534:7": "534:5", "535:5": "", "535:27": "535:5"} {
+		n, ok := fn.Body[k]
+		if !ok {
+			t.Errorf("GoArgs: no body node %s; have %v", k, keys(fn.Body))
+			continue
+		}
+		if n.Kind != "call" || n.Parent != parent {
+			t.Errorf("GoArgs %s kind=%q parent=%q, want call / %q", k, n.Kind, n.Parent, parent)
+		}
+	}
+}

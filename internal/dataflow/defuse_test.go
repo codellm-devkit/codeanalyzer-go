@@ -201,6 +201,11 @@ func TestDefUse_CallWeakDefsRefArgs(t *testing.T) {
 	du, _ = fx.du(t, "Goes", "func() { sink(x) }()", 0)
 	wantDU(t, "go func(){sink(x)}()", du, nil, nil, ss("x"))
 	wantDU(t, "Spawn 202:5", flowDU(t, "Spawn", "202:5"), nil, nil, ss("x"))
+	// The calls in a go statement's arguments are satellites now (L1 records
+	// them): their uses stay on the go node, the satellites carry nothing.
+	wantDU(t, "Spawn 202:10", flowDU(t, "Spawn", "202:10"), nil, nil, nil)
+	wantDU(t, "GoArgs 534:5", flowDU(t, "GoArgs", "534:5"), nil, nil, ss("x"))
+	wantDU(t, "GoArgs 534:7", flowDU(t, "GoArgs", "534:7"), nil, nil, nil)
 }
 
 func TestDefUse_ChanSendRecv(t *testing.T) {

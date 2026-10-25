@@ -53,9 +53,8 @@ const DeferPrefix = "<defer>:"
 //     weak. Range Key/Value are weak with `=` (zero iterations leave them),
 //     strong with `:=`. If and switch inits run once per header: strong.
 //   - A bare call node (*ast.ExprStmt, `panic(x)` included) and a `go` node
-//     (*ast.GoStmt) apply the call rule below to their call — for `go`, that
-//     covers the calls nested in its arguments, which have no node of their
-//     own.
+//     (*ast.GoStmt) apply the call rule below to their call — that covers the
+//     calls nested in its arguments, whose satellite nodes carry nothing.
 //   - defer (spec §4.3.1). The registration node (*ast.DeferStmt) uses the
 //     deferred call's function value / receiver and arguments (with the calls
 //     nested in them) and weak-defines the pseudo path "<defer>:<call-key>",
