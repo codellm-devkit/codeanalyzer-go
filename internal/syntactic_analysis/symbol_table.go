@@ -538,8 +538,8 @@ func (b *SymbolTableBuilder) buildCallable(
 	// They are toolchain artifacts, not project source — emitting them yields
 	// callables whose span cannot be sliced against any project module. Drop
 	// them here, at the point their (cache) file is first known.
-	if declFile := b.fset.File(decl.Pos()); declFile == nil ||
-		!utils.IsWithin(b.projectDir, declFile.Name()) {
+	declFile := b.fset.File(decl.Pos())
+	if declFile == nil || !utils.IsWithin(b.projectDir, declFile.Name()) {
 		return nil
 	}
 
@@ -566,7 +566,7 @@ func (b *SymbolTableBuilder) buildCallable(
 
 	callable := &schema.GoCallable{
 		Name:                 name,
-		Path:                 utils.RelativePath(b.projectDir, b.fset.File(decl.Pos()).Name()),
+		Path:                 utils.RelativePath(b.projectDir, declFile.Name()),
 		Signature:            sig,
 		Comments:             b.docComments(decl.Doc),
 		Parameters:           b.buildParams(pkg, decl.Type),
@@ -1004,8 +1004,16 @@ func (b *SymbolTableBuilder) exprString(expr ast.Expr) string {
 	}
 }
 
-// nodeSource extracts the raw source text of a node (best effort).
+// nodeSource extracts the raw source text of a node (best effort). It returns
+// "" when the text cannot be recovered: an unreadable file, or a node from a
+// malformed file whose Pos or End has no token.File (or ends outside the file
+// it starts in), which the parser produces when it recovers from a syntax
+// error.
 func (b *SymbolTableBuilder) nodeSource(node ast.Node) string {
+	tf := b.fset.File(node.Pos())
+	if tf == nil || b.fset.File(node.End()) != tf {
+		return ""
+	}
 	pos := b.fset.Position(node.Pos())
 	if pos.Filename == "" {
 		return ""
@@ -1014,8 +1022,8 @@ func (b *SymbolTableBuilder) nodeSource(node ast.Node) string {
 	if err != nil {
 		return ""
 	}
-	startOff := b.fset.File(node.Pos()).Offset(node.Pos())
-	endOff := b.fset.File(node.End()).Offset(node.End())
+	startOff := tf.Offset(node.Pos())
+	endOff := tf.Offset(node.End())
 	if startOff < 0 || endOff > len(data) || startOff >= endOff {
 		return ""
 	}

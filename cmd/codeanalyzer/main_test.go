@@ -454,3 +454,52 @@ func TestRootCmd_EmitNeo4jRunsAtLevel3(t *testing.T) {
 		}
 	}
 }
+
+// ── malformed source ─────────────────────────────────────────────────────────
+
+// TestRootCmd_MalformedSourceDoesNotPanic: testdata/malformed holds syntax
+// errors (`if :=`, `range {`, `case 1, :`, `case <-:`), one per file, after
+// which the parser recovers with a function node whose End is one past the
+// end of the file: it has no token.File (the last file) or lies in the next
+// one. Every level must still emit valid JSON, with the well-formed function
+// that precedes each error present.
+func TestRootCmd_MalformedSourceDoesNotPanic(t *testing.T) {
+	td := cliTestdataDir()
+	for _, level := range []string{"1", "2", "3"} {
+		t.Run("a"+level, func(t *testing.T) {
+			var out string
+			var err error
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Fatalf("-a %s panicked: %v", level, r)
+					}
+				}()
+				out, _, err = runCmd("--input", filepath.Join(td, "malformed"), "-a", level, "--cache-dir", t.TempDir())
+			}()
+			if err != nil {
+				t.Fatalf("-a %s failed: %v", level, err)
+			}
+			var v struct {
+				Application struct {
+					SymbolTable map[string]struct {
+						Functions map[string]struct {
+							Signature string `json:"signature"`
+						} `json:"functions"`
+					} `json:"symbol_table"`
+				} `json:"application"`
+			}
+			if jsonErr := json.Unmarshal([]byte(out), &v); jsonErr != nil {
+				t.Fatalf("-a %s stdout is not valid JSON: %v", level, jsonErr)
+			}
+			for file, want := range map[string]string{
+				"if.go": "GoodIf", "range.go": "GoodRange", "case.go": "GoodCase", "recv.go": "GoodRecv",
+			} {
+				fns := v.Application.SymbolTable[file].Functions
+				if _, ok := fns["example.com/malformed."+want]; !ok {
+					t.Errorf("-a %s: %s: well-formed %s not emitted; have %v", level, file, want, fns)
+				}
+			}
+		})
+	}
+}
