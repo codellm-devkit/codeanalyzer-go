@@ -1,7 +1,8 @@
 # Spec: Go L3/L4 dataflow (CFG/CDG/DDG + SDG) with SDK taint (codeanalyzer-go)
 
-**Status:** design, awaiting approval · **Date:** 2026-10-23 · **Repos:** `codeanalyzer-go`,
-`python-sdk` · **Supersedes:** the "L3/L4 deferred" entries in `docs/design/roadmap.md`.
+**Status:** Phases 0–1 shipped (PR #16); L4 design amended by the 2026-10-25 re-check (§4.16) ·
+**Date:** 2026-10-23, amended 2026-10-25 · **Repos:** `codeanalyzer-go`, `python-sdk` ·
+**Supersedes:** the "L3/L4 deferred" entries in `docs/design/roadmap.md`.
 
 ## 1. Intent
 
@@ -67,35 +68,46 @@ siblings is required too; and the id grammar has to change for polyglot apps any
   case is called out.
 - **Golden rule** (from the v2 migration): keep everything that computes facts; add L3/L4 as new
   computation; the v2 emitter stays the single serialization point.
-- **Substrate:** `golang.org/x/tools v0.46.0` is already a dependency — `go/cfg`, `go/ssa`,
-  `go/ssa/ssautil`, `go/callgraph/vta`, `go/callgraph/cha` are available with no new module.
+- **Substrate:** `golang.org/x/tools v0.52.0` (`go.mod`, `go 1.26.0`) is already a dependency —
+  `go/cfg`, `go/ssa`, `go/ssa/ssautil`, `go/callgraph/vta`, `go/callgraph/cha` are available with
+  no new module. VTA's package doc still says "experimental" and carries a TODO on generic
+  instantiation wrappers, so every VTA call runs under `recover` (§4.8, §4.15).
   `x/tools/go/pointer` is deprecated: **do not adopt**.
 - Level flag semantics (`cli-contract.md`): `-a 3` implies `-a 2`; `-a 4` implies `-a 3`; an `-a 3`
   run must not pay L4 cost; `--emit neo4j` runs at max implemented depth (now 4) and rejects `-a` and
   `--graph-field-depth`.
 - python-sdk rules: the Iron Rule (no public accessor changes name/signature/return type); new
-  capability only as new methods; models are `extra="forbid"` mirrors of v2.
+  capability only as new methods; models are `extra="ignore"` mirrors of v2 (PR #434's choice,
+  matching TS/Java since python-sdk #386 — an additive analyzer release parses without an SDK
+  edit; §7).
 
 ## 3. Current state (what exists)
 
-- `codeanalyzer-go` L1/L2 on v2, Neo4j projection live. Analysis loads packages once via
-  `go/packages` (`NeedSyntax|NeedTypes|NeedTypesInfo|NeedDeps`); the internal v1-shaped model
-  (`internal/schema/schema.go`) is re-serialized by `internal/syntactic_analysis/v2emit`.
-- No per-statement facts survive into the internal model; L3 must work from `pkg.Syntax` +
-  `pkg.TypesInfo` directly.
-- `internal/schema/v2/ids.go` already defines `OrdinalID` (`<callable>@<line>:<col>`) and `TagID`
-  (`<callable>@<tag>`). `internal/neo4j/schema.go` already reserves the L3/L4 relationships.
-- Known defects to fix on the way: `GO_DDG` discriminant is `var` only (must be `(var, prov)` per
-  CLAUDE.md K1 and siblings); `typeKind` never emits `alias`/`defined`; `is_deferred` is declared but
-  never populated; L2 call-site resolution re-walks the whole package AST per site (parked memory
-  `parked-callsite-resolution-perf`) — must be fixed before L3/L4 multiply call-site lookups.
-- L2 dispatch: an interface-method call's callee is the interface method (CHA-style); no concrete
-  targets. This is insufficient for must-have flow (3).
-- python-sdk `main` (2.0.0, c125d48) has **no Go support at all** — verified 2026-10-23: no tracked
-  Go files, `CLDK` has only `java`/`python`/`typescript` factories, the legacy `analysis()` shim
-  dispatches only those three. Branch `add-go-support` (July 2026, never merged, 332 commits behind)
-  is an old **v1-shaped** implementation and is obsolete. Since then PR #434 (unmerged) adds v2
-  L1/L2 Go support; the SDK work builds on it (§7).
+As of 2026-10-25 (code at `3504445`, branch `feat/l3-dataflow` = `feat/l4-sdg`):
+
+- **Phases 0 and 1 shipped together in PR #16** (§9). L1/L2/L3 on v2, Neo4j projection live through
+  L3.
+- **Phase 0 (live):** `can://<app>/go/…` ids (§4.1, `internal/schema/v2/ids.go`); L2 library calls
+  with `application.external_symbols` (§4.14); co-positioned call keys `l:c/n`; `is_deferred`;
+  `typeKind` emits `alias`/`defined`; `GO_DDG` `_k = var|prov`; the per-package call-site index
+  (`callsite_index.go`) replacing the per-site AST walk; body-node `id` from `-a 1`.
+- **Phase 1 (live):** `-a 3` and `--graph-field-depth`; per-callable statement body nodes, `cfg`
+  (defer chain, panic edges), `cdg`, syntactic `ddg` (`prov:["ssa"]`); `k_limit`; Neo4j
+  `GO_CFG_NEXT`/`GO_CDG`/`GO_DDG`. Package `internal/dataflow`; join key to the tree is
+  `dataflow.L3Key{Path, Signature}` (`run.go`); ids minted only in the emitter.
+- **Load:** `go/packages` once, `NeedSyntax|NeedTypes|NeedTypesInfo|NeedDeps` — every dependency
+  (stdlib included) is parsed and type-checked from source. That dominates RSS: the Kubernetes
+  root peaks at 7.1 GB at `-a 3` (`docs/design/notes/l3-dataflow-metrics.md`).
+- **L2 dispatch** is still `go/types`: an interface-method call's callee is the bodiless interface
+  method (`collectInterfaceMethods`); no concrete targets. Insufficient for must-have flow (3); L4
+  adds VTA (§4.8).
+- **Not yet built (Phase 2):** `-a 4` is rejected by the CLI; no `LevelSDG` in `internal/options`;
+  no `--strict`; `--emit neo4j` forces `LevelDataflow` (L3); `v2.Analysis` has no `degraded` and
+  the package doc says L4 fields are not declared; `ExternalSymbol` has no receiver or body;
+  `GO_PARAM_IN`/`GO_PARAM_OUT`/`GO_SUMMARY` stay `Reserved`.
+- **python-sdk:** Go v2 L1/L2 support is on PR #434 (branch `pr-434-v3`, unmerged); the SDK work
+  builds on it (§7). It cannot yet parse `-a 3` output (§7 prerequisites). `add-go-support` is
+  obsolete.
 
 ## 4. Decisions
 
@@ -261,8 +273,13 @@ truncated). Match Java's `AccessPath` / Python's `access_paths` semantics:
   every argument `a` that is pointer-, slice-, map-, chan-, func- or interface-typed, and the
   receiver if it is a pointer receiver or reference-typed** (pointer, slice, map, chan, func or
   interface — e.g. `hs.Write(b)` on an interface, `h.Set(k, v)` on a map-typed `http.Header`; the
-  callee may write through it; Python's suffixed-weak-def precedent). Value-typed struct arguments and
-  receivers are not weak-defined (copy semantics). A **slice expression** argument (`r.Read(buf[:n])`,
+  callee may write through it; Python's suffixed-weak-def precedent). **Amended (D1, gap 2):** the
+  predicate is widened to **"may hold a reference"** — the reference kinds above, or a struct or
+  array whose fields/elements transitively contain one (cycle-safe). A value struct or array that
+  may hold a reference (`fill(cfg)` with `cfg.items []T`) weak-defines `a.*` (whole base, not per
+  field, to stay k-safe). A value struct or array that holds no reference is not weak-defined (copy
+  semantics). The **same** predicate function is the L4 by-ref `formal_out` rule (§4.6), so caller
+  weak defs and callee ports agree. A **slice expression** argument (`r.Read(buf[:n])`,
   `io.ReadFull(r, hdr[:])`, and the destination of `copy(dst[i:], src)` / `clear(s[:n])`) shares its
   elements with its base, so it weak-defines the base's elements **`base[*]`** — slice, array or
   pointer-to-array base alike (`&`, `*` and parentheses around the base are stripped). `[*]` rather
@@ -298,29 +315,42 @@ truncated). Match Java's `AccessPath` / Python's `access_paths` semantics:
 Differential check (non-gating, reported): compare scalar def-use against `go/ssa` (the
 construction guide's answer key) on fixtures; mismatches are triaged, not asserted.
 
-#### L3 precision (known gaps)
+#### L3 precision (known gaps) — amended 2026-10-25 (D1) [user]
 
 The L3 `ddg` is **syntactic and intraprocedural**. It over-approximates where it models a flow
-(weak defs, bidirectional prefix matching), but it is **not refutation-complete**: the absence of
-a `ddg` path does not prove the absence of a flow. It does not model:
+(weak defs, bidirectional prefix matching). The re-check found that L4 as first designed closed
+neither gap 2 (the §4.10 oracle aliases only reference-typed bases, and the by-ref predicate
+excluded value structs) nor gap 3. **Decision (D1): all three gaps are closed at L3**, before L4
+port wiring (§9 Phase 2 prerequisites), and L4 still adds capture ports on top:
 
-- **Writes to captured variables inside closures.** `func(){ x = secret }()` or
-  `once.Do(func(){ cfg = load() })` writes `x` / `cfg` in the closure's own body; the enclosing
-  callable sees only a use of the captures at the closure expression, never a def, so a later
-  read of `x` in the enclosing callable does not link to the closure's write.
-- **Value-typed struct arguments or receivers that contain slice, map or pointer fields.** A
-  value struct is copied (no weak def, §4.5 Calls), but its reference-typed fields alias the
-  caller's: `fill(cfg)` with `cfg.items []T` may write `cfg.items[*]`, which L3 does not record.
-- ~~Deferred calls reading receiver or argument state at exit~~ — **closed at L3, except for
-  reassignment**: the deferred call node also uses every path it may write through
-  (`defer w.Flush()` uses `w.*`, `defer fill(b[1:])` uses `b[*]`), so a write after the
-  registration reaches it. The paths are keyed on the *variable* at exit, not on the value
-  bound at registration, so a reassignment after the `defer` (`defer fill(b); …; b = o`) can
-  add a spurious edge, and can kill an earlier def on the normal path.
+- **Gap 1 — writes to captured variables inside closures.** `func(){ x = secret }()` or
+  `once.Do(func(){ cfg = load() })` writes `x` / `cfg` in the closure's own body. **L3 fix:** the
+  node containing the literal weak-defines each captured variable the literal (or a literal nested
+  in it) may write; the write-set is computed syntactically per literal. In sequential code a
+  closure cannot run before it exists, so this is complete apart from goroutine interleaving (a
+  non-goal). Expect more `ddg` edges at capture sites (measured on Kubernetes). **L4** then adds a
+  traceable source through capture ports (§4.6 closures rule).
+- **Gap 2 — value structs or arrays with reference fields.** `fill(cfg)` with `cfg.items []T` may
+  write `cfg.items[*]`. **L3 fix:** the "may hold a reference" predicate (§4.5 Calls) weak-defines
+  `a.*`. Weak defs drive the `ddg` long tail (`l3-dataflow-metrics.md` takeaway 4), so the change
+  is gated on a Kubernetes measurement. **L4** reuses the same predicate for by-ref `formal_out`
+  (§4.6).
+- **Gap 3 — deferred operands after reassignment.** The deferred call node already uses every path
+  it may write through (`defer w.Flush()` uses `w.*`, `defer fill(b[1:])` uses `b[*]`). The real
+  miss was `defer fill(b); b[0] = s; b = o`: `b = o` kills `b[*]` before the exit, losing the write
+  `fill` reads. **L3 fix:** every write whose base is an operand base of a registered `defer` in the
+  same callable also weak-defines `<defer>:<key>`, which closes the false negative. L4 does not
+  touch gap 3.
 
-The first two are addressed at **L4**: capture formals (`@formal_in`/`@formal_out` for captured
-variables, §4.6 closures rule) carry closure writes back to the enclosing callable, and the
-points-to delta (§4.10) links writes through reference fields of copied structs.
+**Remaining documented over-approximation:** the deferred call's exit-time uses stay keyed on the
+*variable* at exit, not on the value bound at registration (they are the points-to hook), so a
+reassignment after the `defer` can still add a **spurious** edge. That is extra edges, not a
+dropped flow.
+
+With these fixes the L3 `ddg` misses no flow it models, but L3 is still **intraprocedural**: a flow
+through a callee is not an L3 fact, and the absence of an L3 `ddg` path does not prove the
+absence of a flow. A `go/ssa` def-use differential (built with the L4 SSA join, §4.8) is
+reported, non-gating.
 
 ### 4.6 L4 vertices [call; naming follows Python because the SDK reads it]
 
@@ -328,19 +358,49 @@ Per callable (formals), all with `kind` + `of`, no span:
 
 | Vertex | `of` | When |
 |---|---|---|
-| `@formal_in:<i>` | real parameter name; receiver name for the receiver | receiver first (index 0) if method, then declared params in order (unnamed `_`/blank params get `_<i>`) |
+| `@formal_in:<i>` | real parameter name; receiver name for the receiver | receiver first (index 0) if method, then declared params in order (unnamed or `_` params: `_<i>`; unnamed or `_` receiver: `_recv` — D6) |
 | `@formal_in:<i>` | `<capture>:<name>` | each variable a closure captures (after declared params) |
 | `@formal_in:<i>` | `<global>:<pkgpath>::<Name>` | each package-level variable the callable (transitively, via summary) reads |
-| `@formal_out` / `@formal_out:<i>` | `<return>` | **one per result position** — Go's multiple returns: `<return>` for a single result; for >1 results, `@formal_out:<i>` with `of` = the named result's name if named else `<return>:<i>` |
-| `@formal_out:<i>` | parameter name | each pointer-/reference-typed parameter (incl. pointer receiver) the callable may write through (by-ref out) |
-| `@formal_out:<i>` | `<global>:<pkgpath>::<Name>` | each package-level variable written |
+| `@formal_out` / `@formal_out:<i>` | `<return>` / `<return>:<i>` | **one per result position** — `<return>` for a single result; `<return>:<i>` for each position of a multi-result, **never the user's result names** (D6) |
+| `@formal_out:<i>` | parameter name | each parameter (incl. the receiver, pointer or value) satisfying the **shared by-ref predicate** the callable may write through (by-ref out) |
+| `@formal_out:<i>` | `<capture>:<name>` | each captured variable a closure writes (strong or weak def) |
+| `@formal_out:<i>` | `<global>:<pkgpath>::<Name>` | each package-level variable written (transitively, via summary) |
+
+**Indexing and order (amended, A9) [call].** Python's `IdentityMap` rule verbatim
+(`codeanalyzer-python dataflow/identity.py`): `formal_in` and `actual_in` are always indexed; a bare
+`@formal_out` / `<call>/actual_out` **iff that group has exactly one vertex**, else every vertex in
+the group is indexed — so a single-result function with a by-ref or global out has
+`@formal_out:0` (`<return>`), `@formal_out:1`, …. `formal_out` order: results by position, then
+by-ref params (receiver first) in declaration order, then captures, then globals sorted by `of`.
+`formal_in` order: receiver, declared params, captures, globals sorted (matches `EntryBases`).
+
+**`of` naming (D6) [call].**
+- Unnamed or `_` param: `_<i>`, i = the **declared-param index, receiver excluded** — the same
+  spelling `external_symbols[].parameters[]` uses. (In-project `parameters[].name` stays `_`; the
+  vertex `of` is the authority.)
+- Unnamed or `_` receiver: `_recv`.
+- Captures `<capture>:<name>`; globals `<global>:<pkgpath>::<Name>` (matches the L3 `ddg` base
+  spelling `pkgpath::Name`; the Go SDK matches on import-path segments, §7).
+- **The SDK reads `of`, never an index into `parameters[]`**: `formal_in:0` is the receiver for a
+  method, so Java's `formal_in:<n>` = `parameters[n]` convention does not hold for Go.
+
+**By-ref predicate (amended, A3/A10) [call].** By-ref `formal_out` (callee-side `mutated_params`)
+uses **the same function** as the L3 caller-side call rule (§4.5 Calls): reference-typed (pointer,
+slice, map, chan, func, interface) **or "may hold a reference"** (struct/array transitively
+containing one, D1 gap 2), for parameters and the receiver alike — a pointer receiver, and a value
+receiver of reference kind (map-typed `http.Header`) or one that may hold a reference. Caller weak
+defs and callee ports therefore agree.
 
 Per call site with a resolved callee (in-project **or stand-in**, §6):
 
 | Vertex | `of` | `parent` |
 |---|---|---|
-| `<call-local>/actual_in:<i>` | the bound callee formal's name (mirrors the callee's `formal_in:<i>` `of`) | call-site local id |
-| `<call-local>/actual_out` / `…/actual_out:<i>` | mirrors callee's `formal_out` `of` | call-site local id |
+| `<call-key>/actual_in:<i>` | the bound callee formal's name (mirrors the callee's `formal_in:<i>` `of`) | the call key |
+| `<call-key>/actual_out` / `…/actual_out:<i>` | mirrors callee's `formal_out` `of` | the call key |
+
+Vertices are **per call node** (Java style), keyed on the L1 call key (A11). Python groups actuals
+per statement; that is a recorded parity difference the SDK does not depend on. A call node the
+CFG pruned (unreachable, kept in `body` with no edges) gets **no** vertices.
 
 **Why Python's naming, not the keystone's `$ret`/`argN` [call, the one non-trivial parity choice]:**
 the SDK's `resolve_value` resolves a source/sink `(name, within)` against `formal_in` `of`, and
@@ -349,7 +409,7 @@ With Python's spelling the shared resolver works unchanged; Java/TS's `$ret`/`ar
 Go-specific translation layer. The `<return>:<i>` multi-result form is a Go-only leaf extension of
 `<return>`. Sources/sinks address `formal_in` only, so `<return>:<i>` never reaches
 `value_candidate`; it does reach `body_node_kind` (which labels path hops), where `RETURN_MARKER`
-is compared by equality — so an unnamed multi-result hop would be labelled `return` with name
+is compared by equality — so a multi-result hop would be labelled `return` with name
 `<return>:1`. The Go backend normalises this locally before calling the shared helper; shared
 `commons/` stays untouched.
 
@@ -361,36 +421,69 @@ miss later assignments (false refutation). Rule:
 - The closure callable gets `@formal_in:<i>` `of:"<capture>:<name>"` per captured variable and
   `@formal_out:<i>` `of:"<capture>:<name>"` per captured variable it **writes** (strong or weak
   def).
-- In the enclosing callable, the `FuncLit` has a **capture site**: the statement containing the
-  `FuncLit` is the host; vertices `<funclit-key>/actual_in:<i>` and `<funclit-key>/actual_out:<i>`
-  (`<funclit-key>` = `line:col` of the `func` keyword; `parent` = host statement's local id).
-  `param_in`/`param_out` connect them to the closure's capture formals. No `summary` edges at a
-  capture site (it is not a call; flow through the closure is via its own body).
+- In the enclosing callable, the `FuncLit` has a **capture site** (amended, A6 — a call's key is
+  `call.Pos()` = `Fun.Pos()` = `FuncLit.Pos()`, so keying the site at the `func` keyword collides
+  with the call node of `func(x){…}(v)`, `defer func(){…}()`, `go func(){…}()`):
+  - **Directly called literal:** the captures bind **at that call node**. Their
+    `<call-key>/actual_in:<i>` / `actual_out:<i>` indices continue after the declared arguments'
+    (matching the closure's `formal_in` order: params, then captures). For `defer func(){…}()` this
+    is the deferred call node in the exit chain.
+  - **Any other literal** (stored, passed, returned): the capture site is keyed at the literal's
+    position, taking the next free `/n` suffix the way `BodyNodes.add` does, so it never moves an
+    L1 call key (chains such as `func() T {…}().M()` already shift to `l:c/2`).
+  - The site's vertices carry `parent` = the innermost CFG node that contains the literal (the
+    host); at a directly called literal, `parent` = the call key, as for any call (§4.6 table).
+  - `param_in`/`param_out` connect the site to the closure's capture formals. No `summary` edges at
+    a non-call capture site (it is not a call; flow through the closure is via its own body).
 - **Flow-insensitive wiring for captured variables** (port wiring, `prov:["reaching-defs"]`):
   *every* def of a captured variable anywhere in the enclosing callable → the capture site's
   `actual_in`; the capture site's `actual_out` → *every* use of that variable in the enclosing
-  callable. This over-approximates timing (covers defer, goroutines and callbacks alike) and is the
-  same weak-update posture as the rest of the design.
+  callable, **and** (amended, A7) the enclosing callable's own `@formal_out` port for that variable
+  when it is a named result, a by-ref param base or a global. Without the latter,
+  `defer func(){ err = wrap(err) }()` — whose deferred call node only *uses* named results, with
+  nothing defining them after it — never reaches `@formal_out(err)`: a false refutation on the
+  commonest Go error idiom. This over-approximates timing (covers defer, goroutines and callbacks
+  alike) and is the same weak-update posture as the rest of the design.
 - Calls *of* the closure value (`f := func(){…}; f()`) resolve to the closure callable via VTA at
   L4 and get ordinary call-site vertices for its declared parameters.
 
 Go specifics:
 - **Variadic** `f(xs ...T)`: excess actuals collapse onto the last formal (weak, as Java).
 - **Multi-value call as args** `f(g())`: each `g` result binds to the corresponding `f` formal.
-- **Method value / expression** (`f := s.M; f(x)`; `T.M(s, x)`): resolved callee is `M`; receiver
-  binds `formal_in:0`.
+- **Method expression** (`T.M(s, x)`): resolved callee is `M`; `s` binds `formal_in:0`.
+- **Method value** (amended, A8) (`f := s.M; f(x)`): the receiver is not an argument of the call,
+  and VTA resolves the call to `M$bound` (unwrapped to `M`, §4.8). For a bound-method callee the
+  call's **function-value operand** (`f`) feeds `actual_in:0`, and the arguments bind
+  `formal_in:1…`. L3 already carries `s` into `f` (the `f := s.M` statement uses `s`).
 - **Global state as extra parameters** (keystone L4 rule): globals read/written are computed in the
   summary pass and propagated up the call graph, so a caller's `formal_in`/`formal_out` set includes
   globals its callees touch (Python precedent).
-- **Global filter — only globals that can carry data [call, from builder check].** Python emits
-  546k `<global>:` formals on one real app; transitive propagation is quadratic at cockroach scale.
-  A package-level variable is modelled as an extra parameter only if it is **mutable in a way that
-  can carry a value**: it has at least one write (strong or weak def, incl. a method call through it
-  or `&v` escaping) in any project function body including `init`, **or** its initializer contains a
+- **Transitive globals at hosts (amended, A4) [call].** L3 `@entry` defines only the package vars a
+  body touches **directly** (not those of nested literals), and a satellite call has an empty
+  DefUse, so a global G only a callee reads has no def reaching `<call>/actual_in(G)`, and a global
+  only a callee writes never defines G at the host. Adopt Python's `augmented_facts` + re-solve
+  (`summaries.py`): at each host statement, add the callee's `global_reads` as uses and its
+  `global_writes` as **weak** defs; `@formal_in(G)` is the def of G for transitively read globals.
+  Re-run `BuildDDG` and emit only the **new** edges, `prov:["reaching-defs"]`. Weak defs kill
+  nothing, so the L3 `ssa` set is untouched and L3 ⊆ L4 holds.
+- **Global filter — only globals that can carry data [call, from builder check; amended A5].**
+  Python emits 546k `<global>:` formals on one real app; transitive propagation is quadratic at
+  Kubernetes scale. A **project** package-level variable is modelled as an extra parameter only if
+  it is **mutable in a way that can carry a value**: it has at least one write in any project
+  function body **including closures and `init`** — a strong def, a **weak def from the call rule**
+  (`mu.Lock()` on a global with a pointer receiver), or `&v` — **or** its initializer contains a
   call (e.g. `os.Getenv`). A global initialized only from literals/constants and never written
-  cannot carry taint, so dropping it removes no flow. Constants and functions are never globals.
-  This filter is sound under the over-approximation rule; output size is measured in the eval (§8)
-  and a size budget set from the first measurement.
+  cannot carry taint, so dropping it removes no flow. **Non-project (library) package vars always
+  pass the filter** (`os::Args`, `os::Stdin`, `flag` vars — the L3 `@entry` already defines them via
+  `isPkgVar`); without that they would be unnameable as sources. Constants and functions are never
+  globals. This filter is sound under the over-approximation rule; `<global>:` volume is measured in
+  the eval (§8) and a size budget set from the first measurement.
+- **Range-over-func (amended, A21; D8) [user].** `for v := range seq` has no `CallExpr` (no L1 call
+  node), and SSA routes the loop body through a synthetic yield function, so data the iterator
+  passes to `yield` (a `rows.Scan` result inside a DB iterator) never reaches `v`
+  interprocedurally. **Not modelled this train:** a program that uses range-over-func gets degraded
+  code `range_func` (§4.15), and a fixture pins the gap. Modelling `for … range f` as a call site
+  of `f` is a follow-up (§11).
 
 ### 4.7 L4 edges [call]
 
@@ -408,6 +501,12 @@ Go specifics:
   not an access path); `<call>/actual_out[:i] → host stmt` (`var` = the LHS base it defines). **This
   wiring is what the SDK's `_ports_carry_dependence` probe checks; without it taint certifies false
   refutations.**
+- **Port host (amended, A11) [call].** Go records the host directly: host = the call node's
+  `parent` if set, else the call node itself (a bare call, a `go` call, a deferred call — each is
+  its own CFG node). For a deferred call the host is the deferred call node in the exit chain; its
+  DefUse already carries `<defer>:<key>` plus the weak defs of §4.5. Wiring is Java's coarse
+  host → `actual_in` (every host use feeds every `actual_in`; sound). Python's reaching-def-matched
+  variant is optional. A pruned call node (no vertices, §4.6) gets no port wiring.
 - `summary` (callable scope, local ids): `<call>/actual_in:i → <call>/actual_out[:j]` iff the
   callee's summary says formal `i` may flow to output `j`.
 - Edge-only-when-resolved: a call site whose callee cannot be resolved at all (e.g. a call through a
@@ -421,9 +520,9 @@ Go specifics:
 ### 4.8 Dispatch resolution: VTA for L2 and L4 [call]
 
 Must-have flow (3) needs concrete targets for interface and function-value calls. Use
-`x/tools/go/callgraph/vta` over `go/ssa` (built with `ssautil.AllPackages` from the same
-`go/packages` load, `ssa.InstantiateGenerics`), seeded with a CHA call graph
-(`callgraph/cha`) — the construction guide's recommended Go oracle.
+`x/tools/go/callgraph/vta` over `go/ssa` — the construction guide's recommended Go oracle — with SSA
+built per D2 (amended, A12): `ssautil.Packages` over the **same** `go/packages` load, not
+`AllPackages`.
 
 - **L2 refinement:** `call_graph` gains VTA-derived edges for interface/func-value call sites, `prov`
   `["vta"]`, merged with existing `["go/types"]` edges via `MergeEdges` (union prov, sum weight).
@@ -437,22 +536,48 @@ Must-have flow (3) needs concrete targets for interface and function-value calls
   `actual_*` have a target for the static edge) and a **pass-through summary** (like a stand-in, §6),
   so a call whose VTA target set is empty still does not drop flow. When VTA finds concrete targets,
   `param_in`/`param_out` go to each concrete target **and** to the interface method; the
-  call-site `summary` edges are the union over targets.
-- **SSA/VTA scope [call, from builder check]:** build SSA with `ssautil.AllPackages` over the
-  loaded packages (dependency SSA is needed for types and wrappers), but give VTA a function set of
-  **project functions only** (the SSA functions whose position lies in a project file, plus their
-  anonymous functions), seeded with a CHA graph restricted the same way. VTA needs no `main`/roots,
-  so libraries work. Library callbacks are therefore not discovered (§6, as intended) and cost stays
-  bounded by project size. Packages that fail to type-check get no SSA (`AllPackages` yields nil);
-  see §4.12 degradation.
-- **SSA → `can://` mapping [call]:** map an SSA function to a callable by source position:
-  `fn.Origin()` for generic instantiations; synthetic wrappers (bound `$bound`, thunk `$thunk`,
-  promoted-method and pointer wrappers from embedding) unwrap to the method they wrap; anonymous
-  functions (`f$1`) map to the L1 closure whose `FuncLit` position equals `fn.Pos()` (L1 closure
-  naming `closure_N` stays; the position is the join key). A target that maps to nothing in-project
-  is an external stand-in (§6) if it has a package path outside the project, else dropped with a
-  debug log. Build an `ast` position → callable index once (also fixes the parked per-site AST walk).
-- **VTA runs only at `-a 4`** (and `--emit neo4j`, which is `-a 4`): SSA construction is the
+  call-site `summary` edges are the union over targets. **D7:** an interface call *always* binds to
+  the interface method (pass-through) and every VTA target, even when every target is in-project —
+  per the anti-goal. Cost: every interface call (`io.Writer`, `error.Error()`) carries an
+  all-to-all summary.
+- **VTA-only externals (amended, A19).** A VTA target outside the project that the `go/types`
+  resolver never saw (e.g. `(*bytes.Buffer).Write` reached through `io.Writer`) is **added** to
+  `external_symbols` at `-a 4`, with its stand-in body (§6). Monotone: `-a 3` ⊆ `-a 4`.
+- **SSA construction (amended, A12; D2) [call].** The load is
+  `NeedSyntax|NeedTypesInfo|NeedDeps`, so `AllPackages` would create, and `Build` would compile,
+  **every dependency body** (stdlib included). Instead:
+  - `ssautil.Packages(roots, ssa.InstantiateGenerics|ssa.BuildSerially)` over `builder.Pkgs()`:
+    bodies only for project packages; dependencies come from types.
+  - Build **per package** (`pkg.Build()`) in our own goroutine under `recover` — `Program.Build`
+    and VTA panic inside their own goroutines, out of reach of the per-callable `recover`. A panic
+    degrades (`partial_ssa` / `no_ssa`, §4.15).
+  - Ill-typed packages (`pkg.IllTyped`) get no SSA and degrade to `partial_ssa`.
+- **VTA scope [call, from builder check].** Give `vta.CallGraph(funcs, nil)` a function set of
+  **project functions only** (the SSA functions of project packages, plus their anonymous
+  functions). `initial = nil`: VTA uses its internal lazy CHA (no separate `callgraph/cha` seed).
+  VTA needs no `main`/roots, so libraries work. Library callbacks are therefore not discovered (§6,
+  as intended) and cost stays bounded by project size. VTA runs under `recover`; a panic degrades to
+  `no_vta`. Targets are sorted by `can://` id (determinism: never key on SSA names or map order).
+- **SSA → L3 join (amended, A12) [call].** By **AST pointer identity**, never by position:
+  - Function: `fn.Syntax()` == the L3 unit's `Unit.Fn` (`l3units.go`); generic instances via
+    `fn.Origin()`. This holds because SSA is built from the same `*ast.File`s; positions break under
+    `//line`, and SSA's anonymous-function numbering (`f$1`) follows evaluation order, not
+    `ast.Inspect` order (L1 closure naming `closure_N` stays).
+  - Call instruction: `CallCommon.Pos()` == `CallExpr.Lparen` → the `*ast.CallExpr` → its L1 key.
+    Never by `line:col`.
+  - Synthetics unwrap: `$bound` / `$thunk` and promoted-method / pointer wrappers to the method
+    they wrap; instantiation wrappers to the origin; range-over-func `yield` synthetics fold into
+    `fn.Parent()`; `init#N` to its `init`; "from type information" synthetics have no syntax and map
+    to no callable.
+  - An SSA function or call that maps to nothing in-project is an external stand-in (§6) if it has a
+    package path outside the project; otherwise it is counted and degrades with `unmapped_ssa`
+    (§4.15).
+- **Mapping to `can://` ids (amended, A13) [call].** The L4 IR keys vertices by `(L3Key, local key)`
+  and cross-callable edges by `L3Key` pairs and external sigs — no ids in the IR. The emitter mints
+  global ids from an `L3Key` → callable-id map built in the same walk as `flow.apply` (`emit.go`).
+  Do not reuse `sigIndex.bySigPath`: it keys on the **nesting** module path, not the declaring file.
+  (The per-site AST walk the old text tied to this is already fixed by `callsite_index.go`.)
+- **VTA runs only at `-a 4`** (and `--emit neo4j`, which is `-a 4` per D4, §4.12): SSA construction is the
   dominant cost; `-a 2`/`-a 3` keep today's cheap `go/types` resolver (an `-a 3` run must not pay
   L4 cost). VTA edges therefore appear in `call_graph` only at `-a 4` (still monotone: L3 ⊆ L4).
 - Unsound spots (reflection, `unsafe`, cgo, plugins): no targets ⇒ handled by the unresolved-call
@@ -470,10 +595,20 @@ Context-insensitive. Per callable compute:
   results, by-ref params, written globals — by forward reachability over the callable's
   `ddg ∪ cdg` from each input's `@entry`/`formal_in` def, bridging call sites via callees'
   summaries (`summary` edges). Including `cdg` (implicit flow) matches Python and over-approximates.
-- `global_reads`, `global_writes`, `mutated_params` (written through, from the weak-def rule),
-  propagated up the SCC DAG.
+- **What summaries refine (amended, A15).** At statement granularity the host already links every
+  use to every def (the L3 call rule), so a callee summary adds **no intra-caller precision**; it
+  contributes only the callee's global footprint (A4, §4.6) and its by-ref writes. Summary edges
+  will be close to all-to-all — a precision limit, not a bug (Python's stated posture,
+  `summaries.py`).
+- `global_reads`, `global_writes`, `mutated_params` (written through, from the shared by-ref
+  predicate, §4.6), propagated up the SCC DAG and injected at hosts as uses / weak defs (A4).
 - No hammock regions (neither sibling built them; recorded as a known simplification).
 - Stand-ins (§6) contribute their modelled summary (default all-inputs → all-outputs).
+- **Unanalysed callables (amended, A16).** A callable whose L3 result was dropped (a contained
+  panic or a call-count mismatch, `run.go`) has no `ddg`, so taint entering through `param_in`
+  would stop at its `formal_in`. Such callables get formals and a **pass-through summary** (like an
+  interface method) and are listed under degraded code `l3_skipped` (§4.15). The same applies to SSA
+  functions that map to no callable (`unmapped_ssa`).
 - Caching of summaries in `cache_dir` and SCC-wavefront parallelism: **builder's choice** whether
   to implement in this train; determinism is mandatory either way.
 
@@ -505,46 +640,94 @@ Fill the reserved overlay, no contract renames:
   flat span props siblings use if the SDK backend needs them (builder confirms against
   `PyNeo4jBackend`).
 - `GO_HAS_BODY_NODE` callable → every body node (incl. synthetic).
-- `GO_CFG_NEXT {kind}` `_k=kind`; `GO_CDG`; `GO_DDG {var, prov}` **`_k=var|prov`** (fix the
-  current `var`-only discriminant); `GO_SUMMARY`; `GO_PARAM_IN {var}` / `GO_PARAM_OUT {var}`.
+- `GO_CFG_NEXT {kind}` `_k=kind`; `GO_CDG`; `GO_DDG {var, prov}` `_k=var|prov` (live since
+  Phase 0/1); `GO_SUMMARY`; `GO_PARAM_IN {var}` / `GO_PARAM_OUT {var}`. **Amended (A17):** today
+  `schema.go` declares the param rels with no props; Phase 2 adds `var` to both (Python parity,
+  `codeanalyzer-python neo4j/schema.py`).
 - Stand-ins (§6) project onto the existing `:GoExternal:GoSymbol:GoCanNode` ghost (same
-  `can://<app>/@external/…` id, so today's call-graph ghosts and stand-ins are one node), gaining
-  `signature`/`module` props and `GO_HAS_BODY_NODE` to their `formal_*` vertices. Their vertex ids
-  are `<external-id>@formal_in:<i>`, so the SDK's `under_callable` id-prefix rule covers them.
-  `RelHasBodyNode.From` widens to `{GoCallable, GoExternal}` in `schema.go`.
+  `can://<app>/@external/…` id, so today's call-graph ghosts and stand-ins are one node; it already
+  carries `signature`/`module`). Their vertex ids are `<external-id>@formal_in:<i>`, so the SDK's
+  `under_callable` id-prefix rule covers them. `GO_HAS_BODY_NODE` already allows a `GoExternal`
+  source. **Amended (A17):** the projector today creates `:GoExternal` only as call-endpoint ghosts
+  and never walks an external's body; Phase 2 adds a **stand-in pass** that emits each external's
+  `body` vertices as `:GoBodyNode` with `GO_HAS_BODY_NODE` from the `:GoExternal`.
+- **`degraded_json`** (amended, A17) — a new `:GoApplication` property carrying the envelope's
+  `degraded[]` (§4.15).
 - Flip `Reserved:false`; conformance test must see every declared relationship emitted on the
   fixture; cross-projection gate: Neo4j counts == JSON counts modulo `HAS_*`.
-- `--emit neo4j` now runs `-a 4`.
+- `--emit neo4j` now runs `-a 4` (D4, §4.12).
+- **Lazy Bolt push (amended, A17; D5) [call].** The lazy push diffs per module by `content_hash`,
+  but L4 facts are non-local: editing a callee changes callers' `summary` edges, actual vertices and
+  even `formal_in` indices (a transitive global set grows). Policy: at L4 a lazy push **upserts
+  every L4 row on every push** (additive — adds, never removes). Removing stale L4 rows needs
+  `--eager`. The README documents this under Neo4j and in Upgrading. App-wide L4 purge-and-rewrite
+  on a lazy push is deferred (§11).
 
 ### 4.12 CLI and envelope [call]
 
 - `-a 3`, `-a 4` accepted; `--graph-field-depth <k>` (default 3, error below `-a 3`, error with
   `--emit neo4j`).
+- **Phase 2 CLI tasks (amended, A14).** Today `-a 4` is rejected, there is no `LevelSDG` in
+  `internal/options`, no `--strict`, `--emit neo4j` forces `LevelDataflow`, and the
+  `--graph-field-depth` help says "at -a 3 only". Phase 2 adds `LevelSDG`, accepts `-a 4`, adds
+  `--strict`, sets the neo4j level per D4, handles `-t` per D9, and updates the help to "L3+".
+- **`--emit neo4j` level (D4) [user].** `--emit neo4j` runs at max implemented depth = **L4**, and
+  `-a` / `--graph-field-depth` with it stay an error — the same as Python and Java v2. (Letting
+  `--emit neo4j` accept `-a ≤ max` would be a CLI-contract change shared with the siblings; not
+  decided here.)
+- **`--target-files` with L4 (D9) [user].** L4 is whole-program, so a targeted run cannot produce
+  correct summaries or `param_in` edges. Incremental L4 is deferred to the CLDK-wide
+  incremental-analysis design (§11).
+  - `-a 1..3 -t` (JSON): unchanged, still works.
+  - `-a 4 -t` (JSON): an error, exact text:
+    `--target-files is not supported at analysis level 4 (whole-program); run without -t, or use -a 3`
+  - `--emit neo4j -t`: runs at **L3**, not L4, and pushes the targeted modules' L1–L3 rows as today.
+    It writes no L4 rows: the targeted modules' L4 rows stay as the last full run left them until
+    the next full run (`--eager` removes stale ones, D5). It logs one warning on stderr, exact text:
+    `--target-files: projecting the graph at level 3 (level 4 is whole-program); L4 rows keep the last full run's facts until a full run`
+  - The README documents both rules under Neo4j and in Upgrading.
 - Envelope: emit `k_limit` at L3+ (Python precedent; harmless superset of the keystone's "at L4").
 - `max_level` = requested level.
-- `--strict`: fail non-zero when SSA/VTA construction fails at `-a 4` (default: degrade — keep L3,
+- **Envelope and tree fields (amended, A18).** `v2.Analysis` gains `degraded` (§4.15); `BodyNode`
+  gains `of`; `Callable` gains `summary`; `Application` gains `param_in`/`param_out`;
+  `ExternalSymbol` gains `receiver` and `body` (§6). All absent below `-a 4` (the `schema.go`
+  package doc's "L4 fields … are not declared here" is retired).
+- `--strict`: fail non-zero on any degradation at `-a 4` (§4.15) (default: degrade — keep L3,
   derived vertices and param edges from `go/types` dispatch, log a warning to stderr, and record
-  the `degraded` envelope marker, §4.15), Java precedent.
+  the `degraded` envelope marker), Java precedent.
 - `-j N`: parallelize L3 per callable and L4 per SCC wavefront if implemented; collect then sort by
   id; never mint ids or emit inside a worker. Byte-identical to `-j 1`.
 
 ### 4.13 Caps [call]
 
 No hard node/time caps (neither sibling has them; a cap silently drops edges ⇒ false refutation).
-Termination comes from k-limiting and finite summary domains. Memory: build L3 per callable and
-discard ASTs-derived scratch after emission; SSA program is shared and freed after L4.
+Termination comes from k-limiting and finite summary domains.
 
-### 4.14 L2 external calls — fixing the current gap (Phase 0) [user: fix it; details are calls]
+**Memory (amended, A20; D3) [user: budget].** Today L3 nodes keep their AST (`ir.go` `Stmt`), the
+whole envelope is marshalled into one `[]byte` (`core/analyzer.go`), and most RSS is `go/packages`
+type info (Kubernetes root: 7.1 GB at `-a 3`). L4 adds SSA bodies for project packages, VTA,
+summaries and roughly 1.5–2.5× the body nodes (the ports).
+- **Prerequisites:** #27 streaming JSON output and AST release (before the real-app L4 eval).
+- L4 needs the ASTs to bind actuals, so each callable's L4 vertices are built **before** its AST
+  references are dropped. The SSA program is shared and freed after L4.
+- **Budget (D3):** `-a 4` peak RSS ≤ **1.5× `-a 3`** on the Kubernetes root, measured by an early
+  SSA+VTA spike task. If the spike blows it, record it in the ledger and keep going. Loading
+  dependencies from export data (dropping `NeedDeps` syntax) is a separate follow-up, not this
+  train (§11).
 
-Today the L2 resolver resolves library callees (`internal/semantic_analysis/call_graph.go:105-131`)
-and then drops them: no `call_graph` edge, and the emitter leaves the call node's `callee` `null`
-(`v2emit/emit.go:207-216`). Python and TS emit these; Java emits them behind `--external-calls`
-(always under `--emit neo4j`). Go fixes this at L2:
+### 4.14 L2 external calls (Phase 0, shipped in PR #16) [user: fix it; details are calls]
+
+Before Phase 0 the L2 resolver resolved library callees (`internal/semantic_analysis/call_graph.go`)
+and then dropped them: no `call_graph` edge, and the emitter left the call node's `callee` `null`.
+Python and TS emit these; Java emits them behind `--external-calls` (always under
+`--emit neo4j`). Go now emits them at L2:
 
 - **`application.external_symbols{}`** (the Python/Java name) — one entry per distinct external
   callee: `id` (`can://<app>/@external/<import-path>/<sig>`, §6), `kind:"external"`, `name`,
   `module` (import path), `signature`. Parameters/return type are added here too (cheap from
-  `go/types`; span-less `{name, type, is_variadic?}`); the L4 `body{}` vertices come in Phase 2.
+  `go/types`; span-less `{name, type, is_variadic?}`, unnamed → `_<i>`, receiver excluded). The
+  receiver is not recorded today (`recordExternal` drops it); Phase 2 adds the optional
+  `receiver {name, type}` leaf and the L4 `body{}` vertices (§6).
   An external id may name a library *interface* method (e.g. `@external/io/Writer.Write`), and a
   method on a generic library type records the declared (origin) signature.
 - **`call_graph`** keeps edges to external targets (`dst` = external id, `prov:["go/types"]`).
@@ -559,29 +742,39 @@ and then drops them: no `call_graph` edge, and the emitter leaves the call node'
   statement defining the LHS uses `b`. (Builtins likewise: L3 "call uses every argument, defines its
   LHS".)
 - This is an intended **L2 output change shipped in Phase 0** (more `call_graph` edges, non-null
-  `callee` on library calls, a new `external_symbols` map).
-- Neo4j: the existing `:GoExternal` ghost path in `project.go` (`callEndpoint`) starts receiving
-  rows; `GO_RESOLVES_TO` extends to external callees. `GO_CALLS` endpoint set already allows
-  `GoExternal`.
-- Gate update: the L2 fixture gate (`gate_l2_test.go`) currently asserts external callees stay
-  `null`; it changes to assert the external id plus a matching `external_symbols` entry, and no
-  dangling endpoint.
+  `callee` on library calls, a new `external_symbols` map; README Upgrading).
+- Neo4j: the `:GoExternal` ghost path in `project.go` (`callEndpoint`) receives these rows;
+  `GO_RESOLVES_TO` extends to external callees; `GO_CALLS` endpoints include `GoExternal`.
+- Gate: the L2 fixture gate (`gate_l2_test.go`) asserts the external id plus a matching
+  `external_symbols` entry, and no dangling endpoint.
 
 ### 4.15 Degradation marker [user]
 
-When `-a 4` cannot build what L4 needs — SSA/VTA construction fails, or some packages failed to
-type-check and got no SSA — the analyzer still emits (L3 + derived vertices + `go/types` dispatch)
-but marks the envelope:
+When `-a 4` cannot build what L4 needs — SSA/VTA construction fails, some packages failed to
+type-check and got no SSA, or some callables or constructs were not analysed — the analyzer still
+emits (L3 + derived vertices + `go/types` dispatch, with pass-through summaries for unanalysed
+callables) but marks the envelope:
 
 ```json
 "degraded": [{"code": "no_vta", "detail": "...", "packages": ["example.com/x/pkg"]}]
 ```
 
 - Envelope leaf, sibling of `max_level`; **absent** when nothing degraded (absence = no fact).
-  Codes (open vocabulary, plain strings): `no_ssa` (SSA build failed entirely), `no_vta` (VTA
-  failed), `partial_ssa` (listed packages had type errors / no SSA), `partial_types` (packages with
-  `go/packages` errors at any level). `max_level` still states the requested level.
-- Projected to Neo4j as a `degraded_json` property on `:GoApplication`.
+  Entry shape `{code, detail?, packages[]?, callables[]?}` (`callables[]` = `can://` ids).
+  `max_level` still states the requested level.
+- Codes (open vocabulary, plain strings):
+  - `no_ssa` — SSA build failed entirely.
+  - `no_vta` — VTA failed (incl. a recovered VTA panic).
+  - `partial_ssa` — listed packages had type errors (`pkg.IllTyped`) or a recovered per-package
+    build panic, so no SSA.
+  - `partial_types` — packages with `go/packages` errors at any level.
+  - `unmapped_ssa` — SSA functions or call instructions that map to no callable or call node
+    (§4.8); counted, listed where nameable (A16).
+  - `l3_skipped` — callables whose L3 result was dropped (contained panic, call-count mismatch);
+    listed in `callables[]`; they get formals and a pass-through summary (§4.9, A16).
+  - `range_func` — the program uses range-over-func, which is not modelled (§4.6, D8); listed
+    in `callables[]`.
+- Projected to Neo4j as a `degraded_json` property on `:GoApplication` (§4.11).
 - `--strict` turns any degradation into a non-zero exit.
 - **SDK:** the Go backends read it at attach. When present, `taint()` returns **no `exhausted`
   pairs** and adds an `unresolved` diagnostic naming the degradation (`complete=False`), so a
@@ -591,17 +784,44 @@ but marks the envelope:
   shared `commons/` unchanged).
 - Go-only leaf now; candidate for the keystone alongside the cross-language taint revisit (§11).
 
+### 4.16 Decisions of the 2026-10-25 re-check
+
+The L4 design was re-checked against the shipped L1–L3 code (`3504445`) and the siblings; the
+amendments are folded into the sections above. Decisions:
+
+- **D1 (#22) [user]:** all three L3 gaps are closed at L3, and L4 still adds capture ports; the
+  `go/ssa` def-use differential is built with the L4 SSA join and does not gate (§4.5).
+- **D2 [call]:** SSA comes from `ssautil.Packages` over the same load, built per package with
+  `ssa.InstantiateGenerics|ssa.BuildSerially` under `recover` (§4.8).
+- **D3 [user]:** `-a 4` peak RSS ≤ 1.5× `-a 3` on the Kubernetes root, measured by the spike; if
+  blown, record it in the ledger and keep going; export-data loading is a separate follow-up (§4.13).
+- **D4 [user]:** `--emit neo4j` runs at max implemented depth = L4; `-a`/`--graph-field-depth`
+  with it stay an error, as in Python and Java v2 (§4.12).
+- **D5 [call]:** a lazy Bolt push upserts every L4 row on every push; removing stale L4 rows needs
+  `--eager`, documented in the README (§4.11).
+- **D6 [call]:** `of` = `<return>` / `<return>:<i>` (never user names); unnamed or `_` params
+  `_<i>` (declared-param index, receiver excluded); unnamed or `_` receiver `_recv`; captures
+  `<capture>:<name>`; globals `<global>:<pkgpath>::<Name>` (§4.6).
+- **D7 [call]:** an interface call always binds to the interface method (pass-through summary)
+  **and** to every VTA target (§4.8).
+- **D8 [user]:** range-over-func is not modelled; a program that uses it gets degraded code
+  `range_func`, and a fixture pins the gap (§4.6, §4.15).
+- **D9 [user]:** L4 is whole-program; `-a 1..3 -t` unchanged; `-a 4 -t` (JSON) is an error;
+  `--emit neo4j -t` projects at L3 with a one-line stderr warning; exact texts and the full rule in
+  §4.12; incremental L4 deferred to the CLDK roadmap (§11).
+
 ## 5. Flow coverage map (user goal 4 → mechanism)
 
 | Flow | Mechanism | Level |
 |---|---|---|
 | (1) through calls | formal/actual vertices, `param_in/out`, `summary`, port wiring | L4 |
 | (3) interface / func-value dispatch | VTA targets → per-target `param_in/out` | L4 |
-| (2) fields & pointers | k-limited access paths; weak-def through reference args; type-based may-alias `points-to` delta | L3 + L4 |
-| closures | captures as `<capture>:` formals; nested callable's own SDG; capture bound at the `FuncLit` statement as `actual_in` (Python precedent) | L4 |
+| (2) fields & pointers | k-limited access paths; weak-def through reference args and "may hold a reference" value structs/arrays (D1 gap 2); type-based may-alias `points-to` delta | L3 + L4 |
+| closures | L3: the literal's host weak-defines the captures it may write (D1 gap 1). L4: captures as `<capture>:` formals; nested callable's own SDG; capture site at the direct call node or the literal (A6), wired flow-insensitively incl. into `@formal_out` (A7) | L3 + L4 |
 | goroutines | `go f(x)` is a call for data purposes (vertices + edges); no interleaving | L4 |
 | channels | `ch[*]` container path; cross-goroutine via args/captures/fields | L3 + L4 |
 | library calls | stand-ins with default pass-through summary | L4 |
+| range-over-func iterators | **not modelled** (D8): degraded code `range_func`, fixture pins the gap | — |
 
 ## 6. Library stand-ins (sinks/sources naming library functions) [user]
 
@@ -617,14 +837,18 @@ addition now; the cross-language SDK taint revisit is deferred (§11).
   **extended** on Go with `callables`-like content: each external entry carries `kind:"external"`,
   `name`, `module` (import path), `signature`, `parameters[]` (real names from `go/types`; unnamed
   → `_<i>`), `return_type`, and at L4 a `body{}` holding only its `@formal_in:<i>` /
-  `@formal_out[:i]` vertices. The map itself lands at L2 in Phase 0 (§4.14); Phase 2 adds only
-  `body`. Reachable by containment from `application` ⇒ keystone-legal.
+  `@formal_out[:i]` vertices. The map itself landed at L2 in Phase 0 (§4.14). **Amended (A19):**
+  Phase 2 adds two optional leaves — `receiver {name, type}` (a method's receiver; it gives
+  `formal_in:0`'s `of`, `_recv` when unnamed) and `body{}`. `ExternalParameter` (span-less, `_<i>`)
+  fits unchanged. Externals only VTA finds are added at `-a 4` (§4.8; monotone). Reachable by
+  containment from `application` ⇒ keystone-legal.
 - **Id:** `can://<app>/@external/<import-path>/<sig>` where `<sig>` is the existing
   `calleeSignatureOf` canonical form minus the package path (`DB.Query`, `Sprintf`). Language-neutral
   `@external` per Python/TS/Java.
-- **Vertices:** `formal_in` per receiver+param (`of` = real name), `formal_out` per result
-  (`<return>` / `<return>:<i>`), plus by-ref `formal_out` for each pointer/slice/map/interface param
-  and pointer receiver (library may write through them — `json.Unmarshal(data, &v)`, `buf.Write`).
+- **Vertices:** `formal_in` per receiver+param (`of` = real name, else `_recv` / `_<i>`, D6),
+  `formal_out` per result (`<return>` / `<return>:<i>`), plus by-ref `formal_out` for each param and
+  receiver satisfying the shared by-ref predicate (§4.6) (library may write through them —
+  `json.Unmarshal(data, &v)`, `buf.Write`). Indexing per §4.6 (A9).
 - **Stand-in summary (pass-through default):** every `formal_in` → every `formal_out`. Materialized
   as `summary` edges at each **caller's** call site (`actual_in:i → actual_out:j`), *not* as edges
   inside the stand-in. The stand-in has no outgoing `param_out` into unrelated callers beyond the
@@ -648,10 +872,28 @@ addition now; the cross-language SDK taint revisit is deferred (§11).
 ## 7. SDK (python-sdk) [user: in scope; Claude may write it]
 
 Build on python-sdk PR #434 (L1/L2 Go support: models, ABC, local + Neo4j backends, facade, factory;
-unmerged as of 2026-10-23), fixing it first against the v2-only analyzer. `add-go-support` is obsolete.
+branch `pr-434-v3`, unmerged as of 2026-10-25), fixing it first against the v2-only analyzer.
+`add-go-support` is obsolete.
 
-- **Models** `cldk/models/go/`: `extra="ignore"` (PR #434's choice, matching TS #386) mirror of Go v2 (module/type/field/callable/body
-  node/edges/external symbols), mirroring how `cldk/models/python` and `java` model L3/L4.
+- **Phase 3 prerequisites (amended, A22)** — on `pr-434-v3` today:
+  - `GoType.kind: Literal["struct","interface"]` **rejects** `alias`/`defined`, which the analyzer
+    emits today (`extra="ignore"` does not help with a Literal mismatch). Fix first, so the SDK can
+    parse current output at all.
+  - `GoBodyNode` lacks `id`/`parent`/`of`/`is_deferred`; there is no `external_symbols`/
+    `param_in`/`summary`/`degraded`, and no `_ports_carry_dependence`. Add the L3 fields first (so
+    `-a 3` output parses), then L4.
+  - `extra` policy is reconciled to **`ignore`** (§2 previously said `forbid`).
+- **Id splitting (A22).** External ids contain `/@external/` before the vertex `@`, so the Go
+  backend must **never split a body-node id on its first `@`**; strip the known callable id prefix
+  instead.
+- **Global names (A22).** `value_candidate` turns `<global>:example.com/lib::V` into
+  `example.com/lib.V`, so a `lib.V` query fails `segment_match` (dot-separated). The Go backend
+  normalises the import path, or matches on `/` as well (D6 keeps `<global>:<pkgpath>::<Name>`).
+- **`of`, not `parameters[]` (A9).** Go backends resolve formals by `of`; `formal_in:0` is the
+  receiver for a method.
+- **Models** `cldk/models/go/`: `extra="ignore"` (PR #434's choice, matching TS/Java since #386)
+  mirror of Go v2 (module/type/field/callable/body node/edges/external symbols incl. `receiver` and
+  `body`, `degraded`), mirroring how `cldk/models/python` and `java` model L3/L4.
 - **Facade** `GoAnalysis` via `CLDK.go(...)` and the legacy shim; `GoAnalysisBackend` ABC with
   `N="Go"`, `P="GO_"`.
 - **Surface:** the decided CLAUDE.md SDK facade (type-centric: `get_types`/`get_type`,
@@ -696,6 +938,12 @@ library pass-through and library sink (`database/sql`, `os/exec`, `fmt`); generi
 `testdata/generics`: instantiation → `Origin()` mapping, generic interface dispatch); an HTTP-handler →
 SQL-sink end-to-end taint fixture with a sanitizer variant (the "done" fixture).
 
+**Added by the 2026-10-25 re-check (A23):** a Go 1.23+ module (range-over-func — pins the D8 gap —
+and range over int; `testdata/dataflow` declares `go 1.21`, #28); a method value (A8); a directly
+called literal with captures (A6); a deferred closure that writes a named result (A7); a value
+struct holding a slice (D1 gap 2); a forced L3-skipped callable (A16); an interface call whose
+concrete target is a library type (A19); one fixture per SSA wrapper kind (§4.8 unwrap list).
+
 **Analyzer gates** (each level gated before advancing — `codeanalyzer-backend` HARD-GATE):
 CFG gate, dominance gate (exact CDG), PDG-slice gate (exact set), DFG gates, L4 gates (no dangling;
 arity; summary exists for known transitive flow; `points-to` ⊇ adds-only; ports carry dependence),
@@ -713,25 +961,30 @@ fixture, `taint()` finds the flow from a handler's request parameter to `databas
 `query` through an interface call; a callable sanitizer cuts it; an unrelated pair is `exhausted`;
 identical answers from the JSON and Neo4j backends.
 
-**Real-world evaluation** (non-gating metrics + crash/determinism/time gates): the prior eval set —
-cobra (small), dae, openbao, cockroach (scale) — plus listmonk and memos (HTTP → SQL; memos through
-the `store.Driver` interface) and nats-server (concurrency / CFG stress) [user, 2026-10-23]. dae and
-cockroach need their code-generation step (bpf2go, protobuf) before analysis.  Record per app: wall time and peak RSS at `-a 3`/`-a 4`, body/edge counts, % call
-sites with resolved targets (go/types vs VTA), % externals with stand-ins, determinism. Gate: all
-four complete `-a 4` without crash and deterministically; no hard time budget, but timings are
-reported and a regression budget is set after the first measurement.
+**Real-world evaluation** (non-gating metrics + crash/determinism/time gates; amended, A23): the six
+apps — cobra (small), dae, openbao, listmonk and memos (HTTP → SQL; memos through the
+`store.Driver` interface), nats-server (concurrency / CFG stress) — plus **Kubernetes as the scale
+benchmark**, run as two modules: the root module `kubernetes` and `k8s-api`
+(`docs/design/notes/l3-dataflow-metrics.md` § Corpus). cockroach is no longer a benchmark. dae
+needs its code-generation step (bpf2go) before analysis (`scripts/eval_l3.sh --prepare`). Record per
+app: wall time and peak RSS at `-a 3`/`-a 4`, body/edge counts, % call sites with resolved targets
+(go/types vs VTA), % externals with stand-ins, `<global>:` formal volume (A5), determinism. Gate:
+the six apps and both Kubernetes modules complete `-a 4` without crash and deterministically
+(`-j 1`/`-j N` and two runs on Kubernetes, not just fixtures); the D3 memory budget is reported
+against (§4.13); no hard time budget, but timings are reported and a regression budget is set after
+the first measurement. Results go in `l3-dataflow-metrics.md` § L4.
 
 ## 9. Phasing and release
 
 | Phase | Repo | Content | Release |
 
-> **Phases 0 and 1 ship together in one PR / one release** [user, 2026-10-23]; they stay separate rows for traceability.
+> **Phases 0 and 1 ship together in one PR / one release** [user, 2026-10-23]; they stay separate rows for traceability. **Both have shipped, in PR #16.**
 
 |---|---|---|---|
-| 0 | analyzer | id grammar `can://<app>/go/…`; **L2 external calls (§4.14)**; L1 co-positioned call keys; `is_deferred`; `typeKind` alias/defined; `GO_DDG` `_k`; call-site position index (perf) | analyzer next **breaking** version (wheel is at 0.1.0 with no local tags — builder confirms the released version and bumps the major, or the minor if still 0.x) |
-| 1 | analyzer | L3: body statements, CFG (+defer chain, panic), CDG, syntactic DDG, CLI `-a 3`/`--graph-field-depth`, Neo4j CFG/CDG/DDG, gates | minor |
-| 2 | analyzer | L4: SSA+VTA, `degraded` marker (§4.15), external stand-ins (`external_symbols`), vertices, param edges, summaries, port wiring, type-based alias delta, Neo4j L4 overlay, `--emit neo4j` at L4, real-app eval | minor |
-| 3 | python-sdk | Go v2 models, facade, local + Neo4j backends, L1–L4 accessors, taint e2e | minor; pins the analyzer only after Phase 2 is released |
+| 0 | analyzer | **shipped (PR #16).** id grammar `can://<app>/go/…`; **L2 external calls (§4.14)**; L1 co-positioned call keys; `is_deferred`; `typeKind` alias/defined; `GO_DDG` `_k`; call-site position index (perf) | analyzer next **breaking** version (wheel is at 0.1.0 with no local tags — builder confirms the released version and bumps the major, or the minor if still 0.x) |
+| 1 | analyzer | **shipped (PR #16).** L3: body statements, CFG (+defer chain, panic), CDG, syntactic DDG, CLI `-a 3`/`--graph-field-depth`, Neo4j CFG/CDG/DDG, gates | minor |
+| 2 | analyzer | **Prerequisites, in order (A24):** (1) #26 shared call/closure walker (incl. `//line` spans), first — returns `(*ast.CallExpr, key)`, `(*ast.FuncLit, closure name)` and call → host maps, replacing the index-paired L1/L3 walks; (2) #17 closure call resolution, after #26 — closures carry a declaring `Path` and `call_graph` gains edges from closures; (3) the #22 L3 fixes (D1, §4.5), then the #28 satellite-`parent` tests and a Go 1.23+ fixture — before L4 port wiring (changing L3 after L4 would re-baseline every L4 gate); (4) #27 streaming JSON and AST release — before the real-app L4 eval, can run in parallel with the L4 core; (5) schema and CLI scaffolding (A14, A18, A19, A17 declarations, a `-a 1..4` monotonicity harness) — the first L4 task. Dependencies: #26 → #17 → (VTA, summaries); #22 fixes → port wiring and gates; scaffolding → all of L4; #27 → the Kubernetes eval. **Then L4:** SSA spike (D3 budget) and build (D2), SSA → L3 join, VTA, `degraded` marker (§4.15), external stand-ins (`external_symbols` `receiver`/`body`), vertices, param edges, summaries, port wiring, type-based alias delta, Neo4j L4 overlay, `--emit neo4j` at L4 (per D4), real-app eval | minor |
+| 3 | python-sdk | Go v2 models (first the §7 prerequisites: `GoType.kind`, L3 fields), facade, local + Neo4j backends, L1–L4 accessors, taint e2e | minor; pins the analyzer only after Phase 2 is released |
 
 Tracking: `codellm-devkit/.github` parent issue + one sub-issue per PR (Phase 0+1 as one) (filed just-in-time),
 per `issue-and-pr-tracking.md`. Each phase gets its own implementation plan.
@@ -758,12 +1011,19 @@ dispatch + type-based may-alias).
 - Library callback modelling (`sort.Slice`, `http.HandleFunc`).
 - Promote `callable.source_file` to the keystone (existing deferral).
 - Struct-tag modelling (existing deferral).
+- **Incremental L4 / incremental Neo4j analysis — CLDK roadmap** (D9): re-analysis after a PR merges
+  without a whole-program run.
+- Range-over-func modelling (D8): `for … range f` as a call site of `f`, wiring data reaching the
+  iterator's `yield` arguments to the loop variables.
+- App-wide L4 purge-and-rewrite on a lazy Bolt push (D5 option (c)).
+- Loading dependencies from export data instead of source (drop `NeedDeps` syntax) — a large RSS
+  cut at every level, but it changes the L1/L2 load path (D3).
 
 ## 12. Risks
 
 | Risk | Mitigation |
 |---|---|
-| SSA/VTA cost on cockroach-scale | SSA only at `-a 4`; measure in Phase 2 eval; `--strict` / degrade path |
+| SSA/VTA cost at Kubernetes scale | SSA only at `-a 4`, project packages only (D2); early SSA+VTA spike sets the D3 budget; #27 streaming; `--strict` / degrade path |
 | False refutations from a missed construct | over-approximation posture; "ports carry dependence" probe; per-construct fixtures; unresolved-call intra-caller pass-through |
 | Over-approximation noise (defer chain, pass-through, CDG in summaries) | acceptable by anti-goal; library models file narrows hot spots |
 | Breaking id change disrupts users | ship alone in Phase 0, before SDK pin; no released SDK consumes Go output |
