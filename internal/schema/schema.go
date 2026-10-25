@@ -215,6 +215,10 @@ type GoExternalCallee struct {
 	Name       string        `json:"name"`
 	Params     []GoParameter `json:"parameters"`
 	ReturnType string        `json:"return_type,omitempty"`
+	// Receiver is the method receiver (nil for a plain function): named by the
+	// receiver variable, or "_recv" when unnamed or "_"; typed by the origin's
+	// receiver type string.
+	Receiver *GoParameter `json:"receiver,omitempty"`
 }
 
 // GoEntrypoint marks a callable as a framework entry point.

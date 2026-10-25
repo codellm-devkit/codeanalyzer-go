@@ -6,9 +6,11 @@
 // The model is ONE additive containment tree
 // (application → module → type → callable → body) with typed edge overlays
 // laid over it (a Code Property Graph). This package declares the L1 tree, the
-// L2 refinement/edge slots and the L3 body completion (statement nodes, body
-// node id/parent, the callable's cfg/cdg/ddg). L4 fields (param_*) are not
-// declared here — they arrive in their own train and reuse these ids/spans
+// L2 refinement/edge slots, the L3 body completion (statement nodes, body
+// node id/parent, the callable's cfg/cdg/ddg) and the L4 fields (the envelope's
+// degraded marker, body node `of`, a callable's summary, the application's
+// param_in/param_out, an external symbol's receiver and body). The L4 fields
+// are all omitempty and absent below -a 4; they reuse the L1-L3 ids/spans
 // unchanged.
 //
 // Conventions from the keystone, held here:
@@ -55,6 +57,19 @@ type Analysis struct {
 	KLimit        int         `json:"k_limit,omitempty"`
 	Analyzer      AnalyzerTag `json:"analyzer"`
 	Application   Application `json:"application"`
+	// Degraded records the L4 degradation markers (spec §4.15); absent when
+	// the run degraded nothing and below -a 4.
+	Degraded []Degraded `json:"degraded,omitempty"`
+}
+
+// Degraded is one degradation marker: an L4 step that fell back to a coarser
+// result. Code is a closed vocabulary; Detail, Packages and Callables say what
+// was affected.
+type Degraded struct {
+	Code      string   `json:"code"`
+	Detail    string   `json:"detail,omitempty"`
+	Packages  []string `json:"packages,omitempty"`
+	Callables []string `json:"callables,omitempty"`
 }
 
 // AnalyzerTag identifies the producing analyzer and version.
@@ -78,6 +93,19 @@ type Application struct {
 	// reaches, keyed by their `can://<app>/@external/<import-path>/<sig>` id.
 	// Absent when the analysis saw no library call.
 	ExternalSymbols map[string]ExternalSymbol `json:"external_symbols,omitempty"`
+	// ParamIn and ParamOut are the L4 interprocedural parameter edges between
+	// global body-node ids. Absent below -a 4.
+	ParamIn  []ParamEdge `json:"param_in,omitempty"`
+	ParamOut []ParamEdge `json:"param_out,omitempty"`
+}
+
+// ParamEdge is an L4 interprocedural parameter edge (call-site actual →
+// callee formal for param_in, callee formal/return → call-site result for
+// param_out) on the access path Var.
+type ParamEdge struct {
+	Src string `json:"src"`
+	Dst string `json:"dst"`
+	Var string `json:"var"`
 }
 
 // ExternalSymbol is a library callable that call-graph edges and call nodes
@@ -93,6 +121,12 @@ type ExternalSymbol struct {
 	Signature  string              `json:"signature"`
 	Parameters []ExternalParameter `json:"parameters"`
 	ReturnType string              `json:"return_type,omitempty"`
+	// Receiver is the method receiver (absent on a plain function): the name
+	// is the receiver variable, or _recv when unnamed or `_`; the type is the
+	// origin's receiver type string.
+	Receiver *ExternalParameter `json:"receiver,omitempty"`
+	// Body holds the L4 stand-in body nodes of a library callee (spec §6).
+	Body map[string]BodyNode `json:"body,omitempty"`
 }
 
 // ExternalParameter is a library callee's formal parameter. It has no span: the
@@ -197,6 +231,9 @@ type Callable struct {
 	Cfg []CfgEdge `json:"cfg,omitempty"`
 	Cdg []CdgEdge `json:"cdg,omitempty"`
 	Ddg []DdgEdge `json:"ddg,omitempty"`
+	// Summary is the L4 summary edge list (formal-in → formal-out through the
+	// callable); endpoints are local body keys. Absent below -a 4.
+	Summary []SummaryEdge `json:"summary,omitempty"`
 	// Callables are nested closures / function literals, each with its own
 	// can:// id (replaces v1 InnerCallables).
 	Callables map[string]Callable `json:"callables,omitempty"`
@@ -238,6 +275,16 @@ type BodyNode struct {
 	IsGoroutine bool `json:"is_goroutine,omitempty"`
 	// IsDeferred is true when the call is preceded by `defer` (net-new vs v1).
 	IsDeferred bool `json:"is_deferred,omitempty"`
+	// Of names the value an L4 vertex carries (<return>, <return>:<i>, a
+	// parameter name, <capture>:<name>, <global>:<pkg>::<Name>). Absent below
+	// -a 4 and on L1-L3 nodes.
+	Of string `json:"of,omitempty"`
+}
+
+// SummaryEdge is an L4 summary edge between two local body keys of one callable.
+type SummaryEdge struct {
+	Src string `json:"src"`
+	Dst string `json:"dst"`
 }
 
 // MarshalJSON writes the callee key on call nodes only: it is the call

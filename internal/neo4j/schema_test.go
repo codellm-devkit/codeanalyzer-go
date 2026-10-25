@@ -252,3 +252,41 @@ func TestContract_L3OverlayNotReserved(t *testing.T) {
 		}
 	}
 }
+
+// TestContract_L4RelsCarryVar: the L4 param relationships declare the `var`
+// property they will carry, and stay Reserved until the L4 projection lands;
+// :GoApplication declares degraded_json for the degradation marker.
+func TestContract_L4RelsCarryVar(t *testing.T) {
+	seen := map[string]bool{}
+	for _, r := range Rels {
+		switch r.Type {
+		case RelParamIn, RelParamOut:
+			seen[r.Type] = true
+			if len(r.Props) != 1 || r.Props[0] != "var" {
+				t.Errorf("%s Props = %v, want [var]", r.Type, r.Props)
+			}
+			if !r.Reserved {
+				t.Errorf("%s must stay Reserved until Task 16", r.Type)
+			}
+		case RelSummary:
+			if !r.Reserved {
+				t.Errorf("%s must stay Reserved until Task 16", r.Type)
+			}
+		}
+	}
+	if len(seen) != 2 {
+		t.Errorf("param relationships declared: %v", seen)
+	}
+	for _, n := range Nodes {
+		if n.Label != LabelApplication {
+			continue
+		}
+		found := false
+		for _, p := range n.Props {
+			found = found || p == "degraded_json"
+		}
+		if !found {
+			t.Errorf(":GoApplication props %v lack degraded_json", n.Props)
+		}
+	}
+}

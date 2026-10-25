@@ -289,12 +289,22 @@ func (cg *CallGraphBuilder) recordExternal(fn *types.Func, fullSig string) {
 		ret = "(" + strings.Join(rets, ", ") + ")"
 	}
 
+	var receiver *schema.GoParameter
+	if recv := sig.Recv(); recv != nil {
+		name := recv.Name()
+		if name == "" || name == "_" {
+			name = "_recv"
+		}
+		receiver = &schema.GoParameter{Name: name, Type: types.TypeString(recv.Type(), nil)}
+	}
+
 	cg.externals[fullSig] = schema.GoExternalCallee{
 		ImportPath: importPath,
 		Sig:        strings.TrimPrefix(fullSig, importPath+"."),
 		Name:       fn.Name(),
 		Params:     params,
 		ReturnType: ret,
+		Receiver:   receiver,
 	}
 }
 

@@ -162,13 +162,13 @@ Aliases:
   cango, codeanalyzer-go
 
 Flags:
-  -a, --analysis-level int      Analysis level: 1=symbol table, 2=+call graph, 3=+intraprocedural cfg/cdg/ddg (default 1)
+  -a, --analysis-level int      Analysis level: 1=symbol table, 2=+call graph, 3=+intraprocedural cfg/cdg/ddg, 4=+interprocedural SDG (default 1)
       --app-name string         Application anchor name for can:// ids and Neo4j :Application (default: input dir name)
   -c, --cache-dir string        Cache directory (default: ~/.cldk/go-cache)
       --eager                   Force clean rebuild (ignore cache)
       --emit string             Output projection: json|neo4j|schema (default "json")
   -f, --format string           Output format: json|msgpack (default "json")
-      --graph-field-depth int   Field-path depth bound for L3 dataflow nodes (k limit; applies at -a 3 only) (default 3)
+      --graph-field-depth int   Field-path depth bound for L3 dataflow nodes (k limit; applies at -a 3 and -a 4) (default 3)
   -h, --help                    help for cango
   -i, --input string            Project root to analyze (required)
   -j, --jobs int                Worker parallelism (default: CPU cores)
@@ -178,6 +178,7 @@ Flags:
       --neo4j-user string       Neo4j username (env NEO4J_USERNAME, default neo4j)
   -o, --output string           Output directory for analysis.json (default: stdout)
       --skip-tests              Skip *_test.go files (default true)
+      --strict                  Fail non-zero on any L4 degradation (default: degrade and record it)
   -t, --target-files strings    Restrict analysis to specific files (incremental mode)
   -v, --verbose count           Verbosity (repeat for more detail)
       --version                 Print version and exit

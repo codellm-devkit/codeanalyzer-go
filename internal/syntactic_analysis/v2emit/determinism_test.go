@@ -138,3 +138,61 @@ func firstDiff(a, b []byte) int {
 	}
 	return min(len(a), len(b))
 }
+
+// TestEncode_L4EnvelopeFieldsByteIdentical: the L4 envelope and tree fields
+// (degraded after application, param_in/out inside it, summary, of, receiver,
+// external body) go through the streaming writer's envelope split unchanged.
+func TestEncode_L4EnvelopeFieldsByteIdentical(t *testing.T) {
+	call := "x"
+	a := &v2.Analysis{
+		SchemaVersion: v2.SchemaVersion, Language: v2.Language, MaxLevel: 4, KLimit: 3,
+		Analyzer: v2.AnalyzerTag{Name: "codeanalyzer-go", Version: "t"},
+		Degraded: []v2.Degraded{{Code: "ssa_build", Detail: `has "symbol_table":{} & <x>`, Packages: []string{"p"}, Callables: []string{"c"}}},
+		Application: v2.Application{
+			ID: "can://app", Kind: "application",
+			SymbolTable: map[string]v2.Module{
+				"a.go": {ID: "m", Functions: map[string]v2.Callable{"f": {
+					ID: "f", Summary: []v2.SummaryEdge{{Src: "a", Dst: "b"}},
+					Body: map[string]v2.BodyNode{
+						"@fin": {Kind: "formal_in", Of: "p0"},
+						"c1":   {Kind: "call", Callee: &call},
+					},
+				}}},
+			},
+			ExternalSymbols: map[string]v2.ExternalSymbol{"e": {
+				ID: "e", Kind: "external",
+				Receiver: &v2.ExternalParameter{Name: "_recv", Type: "*strings.Builder"},
+				Body:     map[string]v2.BodyNode{"@entry": {Kind: "entry"}},
+			}},
+			ParamIn:  []v2.ParamEdge{{Src: "s", Dst: "d", Var: "v"}},
+			ParamOut: []v2.ParamEdge{{Src: "d", Dst: "s", Var: "<return>"}},
+		},
+	}
+	want, err := json.Marshal(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{`"degraded":`, `"param_in":`, `"param_out":`, `"summary":`, `"of":"p0"`, `"receiver":`} {
+		if !bytes.Contains(want, []byte(k)) {
+			t.Errorf("marshalled tree lacks %s", k)
+		}
+	}
+	var enc bytes.Buffer
+	if err := Encode(&enc, a); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(enc.Bytes(), want) {
+		t.Errorf("Encode differs from json.Marshal at byte %d", firstDiff(enc.Bytes(), want))
+	}
+	// And absent when empty.
+	plain, _ := json.Marshal(&v2.Analysis{})
+	for _, k := range []string{"degraded", "param_in", "param_out", "summary", `"of"`, "receiver"} {
+		if bytes.Contains(plain, []byte(k)) {
+			t.Errorf("empty analysis serialises %s", k)
+		}
+	}
+	n, _ := json.Marshal(v2.BodyNode{Kind: "statement"})
+	if bytes.Contains(n, []byte(`"of"`)) {
+		t.Errorf("empty Of serialised: %s", n)
+	}
+}

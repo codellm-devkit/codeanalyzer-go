@@ -353,22 +353,6 @@ func TestRootCmd_Level3Accepted(t *testing.T) {
 	}
 }
 
-func TestRootCmd_Level4RejectedInThisRelease(t *testing.T) {
-	td := cliTestdataDir()
-
-	_, _, err := runCmd(
-		"--input", filepath.Join(td, "greeter"),
-		"--analysis-level", "4",
-		"--cache-dir", t.TempDir(),
-	)
-	if err == nil {
-		t.Fatal("expected error for -a 4, got nil")
-	}
-	if err.Error() != "analysis level 4 is not implemented yet" {
-		t.Errorf("error = %q, want %q", err.Error(), "analysis level 4 is not implemented yet")
-	}
-}
-
 func TestRootCmd_UnsupportedLevelRejected(t *testing.T) {
 	td := cliTestdataDir()
 
@@ -501,5 +485,151 @@ func TestRootCmd_MalformedSourceDoesNotPanic(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// ── L4 scaffolding ───────────────────────────────────────────────────────────
+
+const (
+	errL4WithTargetFiles = "--target-files is not supported at analysis level 4 (whole-program); run without -t, or use -a 3"
+	warnNeo4jTargetFiles = "--target-files: projecting the graph at level 3 (level 4 is whole-program); L4 rows keep the last full run's facts until a full run"
+)
+
+func TestCLI_Level4Accepted(t *testing.T) {
+	td := cliTestdataDir()
+	out, _, err := runCmd(
+		"--input", filepath.Join(td, "greeter"),
+		"--analysis-level", "4",
+		"--graph-field-depth", "2",
+		"--cache-dir", t.TempDir(),
+	)
+	if err != nil {
+		t.Fatalf("-a 4 should succeed; got %v", err)
+	}
+	var v struct {
+		MaxLevel int `json:"max_level"`
+		KLimit   int `json:"k_limit"`
+	}
+	if jsonErr := json.Unmarshal([]byte(out), &v); jsonErr != nil {
+		t.Fatalf("stdout is not valid JSON: %v", jsonErr)
+	}
+	if v.MaxLevel != 4 {
+		t.Errorf("max_level = %d, want 4", v.MaxLevel)
+	}
+	if v.KLimit != 2 {
+		t.Errorf("k_limit = %d, want 2 (--graph-field-depth is valid at -a 4)", v.KLimit)
+	}
+}
+
+func TestCLI_Level4WithTargetFilesRejected(t *testing.T) {
+	td := cliTestdataDir()
+	_, _, err := runCmd(
+		"--input", filepath.Join(td, "multipackage"),
+		"--analysis-level", "4",
+		"--target-files", filepath.Join(td, "multipackage", "server", "server.go"),
+		"--cache-dir", t.TempDir(),
+	)
+	if err == nil {
+		t.Fatal("expected an error for -a 4 -t, got nil")
+	}
+	if err.Error() != errL4WithTargetFiles {
+		t.Errorf("error = %q, want %q", err.Error(), errL4WithTargetFiles)
+	}
+}
+
+func TestCLI_Level3WithTargetFilesStillWorks(t *testing.T) {
+	td := cliTestdataDir()
+	out, _, err := runCmd(
+		"--input", filepath.Join(td, "multipackage"),
+		"--analysis-level", "3",
+		"--target-files", filepath.Join(td, "multipackage", "server", "server.go"),
+		"--cache-dir", t.TempDir(),
+	)
+	if err != nil {
+		t.Fatalf("-a 3 -t should succeed; got %v", err)
+	}
+	if !strings.Contains(out, `"server/server.go"`) {
+		t.Error("-a 3 -t: server/server.go should appear in output")
+	}
+}
+
+func TestCLI_Neo4jWithTargetFilesFallsBackToL3(t *testing.T) {
+	td := cliTestdataDir()
+	out := t.TempDir()
+	var runErr error
+	stderr := captureStderr(t, func() {
+		_, _, runErr = runCmd(
+			"--input", filepath.Join(td, "multipackage"),
+			"--emit", "neo4j",
+			"--target-files", filepath.Join(td, "multipackage", "server", "server.go"),
+			"--output", out,
+			"--cache-dir", t.TempDir(),
+		)
+	})
+	if runErr != nil {
+		t.Fatalf("--emit neo4j -t should succeed; got %v", runErr)
+	}
+	if n := strings.Count(stderr, warnNeo4jTargetFiles); n != 1 {
+		t.Errorf("D9 warning appeared %d times, want exactly 1; stderr:\n%s", n, stderr)
+	}
+	data, err := os.ReadFile(filepath.Join(out, "graph.cypher"))
+	if err != nil {
+		t.Fatalf("graph.cypher not written: %v", err)
+	}
+	cy := string(data)
+	// Effective level 3: the :GoApplication node carries max_level 3 and the
+	// L3 overlay is present.
+	if !strings.Contains(cy, "max_level: 3") && !strings.Contains(cy, `"max_level":3`) && !strings.Contains(cy, "max_level = 3") {
+		t.Errorf("graph.cypher does not record max_level 3")
+	}
+	for _, rel := range []string{"GO_CFG_NEXT", "GO_DDG"} {
+		if !strings.Contains(cy, rel) {
+			t.Errorf("graph.cypher should carry the L3 %s relationship", rel)
+		}
+	}
+	// No L4 rows. Trivially true until the L4 projection lands (Task 16),
+	// where it becomes the real guard.
+	for _, rel := range []string{"GO_PARAM_IN", "GO_PARAM_OUT", "GO_SUMMARY"} {
+		if strings.Contains(cy, rel) {
+			t.Errorf("graph.cypher must carry no %s rows under -t", rel)
+		}
+	}
+}
+
+func TestCLI_Neo4jWithoutTargetFilesWarnsNothing(t *testing.T) {
+	td := cliTestdataDir()
+	var runErr error
+	stderr := captureStderr(t, func() {
+		_, _, runErr = runCmd(
+			"--input", filepath.Join(td, "greeter"),
+			"--emit", "neo4j",
+			"--output", t.TempDir(),
+			"--cache-dir", t.TempDir(),
+		)
+	})
+	if runErr != nil {
+		t.Fatalf("--emit neo4j should succeed; got %v", runErr)
+	}
+	if strings.Contains(stderr, "projecting the graph at level 3") {
+		t.Errorf("the D9 warning must appear only under -t; stderr:\n%s", stderr)
+	}
+}
+
+func TestCLI_StrictFlag(t *testing.T) {
+	td := cliTestdataDir()
+	if rootCmd().Flags().Lookup("strict") == nil {
+		t.Fatal("--strict flag is not declared")
+	}
+	out, _, err := runCmd(
+		"--input", filepath.Join(td, "greeter"),
+		"--analysis-level", "4",
+		"--strict",
+		"--cache-dir", t.TempDir(),
+	)
+	if err != nil {
+		t.Fatalf("-a 4 --strict should succeed on a clean project; got %v", err)
+	}
+	if !json.Valid([]byte(out)) {
+		t.Error("stdout is not valid JSON")
 	}
 }

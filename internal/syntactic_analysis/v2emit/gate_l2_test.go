@@ -337,6 +337,26 @@ func F() string {
 	if len(sym.Parameters) != 1 || sym.Parameters[0].Name != "s" {
 		t.Errorf("params = %+v, want exactly [s] (receiver excluded)", sym.Parameters)
 	}
+	if sym.Receiver == nil || sym.Receiver.Name != "b" || sym.Receiver.Type != "*strings.Builder" {
+		t.Errorf("receiver = %+v, want {b *strings.Builder}", sym.Receiver)
+	}
+}
+
+// TestGateL2_ExternalFunctionHasNoReceiver: only methods carry a receiver.
+func TestGateL2_ExternalFunctionHasNoReceiver(t *testing.T) {
+	out := emitTemp(t, `package p
+
+import "strings"
+
+func F() string { return strings.ToUpper("x") }
+`)
+	sym, ok := out.Application.ExternalSymbols[v2.ExternalID(out.Application.ID, "strings", "ToUpper")]
+	if !ok {
+		t.Fatalf("external_symbols missing strings.ToUpper")
+	}
+	if sym.Receiver != nil {
+		t.Errorf("function has receiver %+v", sym.Receiver)
+	}
 }
 
 // TestGateL2_ConversionIsNotACall locks that a type conversion is not minted as

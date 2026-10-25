@@ -40,6 +40,7 @@ func rootCmd() *cobra.Command {
 		appName       string
 		level         int
 		fieldDepth    int
+		strict        bool
 		targetFiles   []string
 		skipTests     bool
 		eager         bool
@@ -79,6 +80,9 @@ via CLDK(language="go").analysis(project_path=...).`,
 				if err := validateAnalysisLevel(level); err != nil {
 					return err
 				}
+				if level == int(options.LevelSDG) && len(targetFiles) > 0 {
+					return fmt.Errorf("--target-files is not supported at analysis level 4 (whole-program); run without -t, or use -a 3")
+				}
 				if err := validateFieldDepth(cmd, level, fieldDepth); err != nil {
 					return err
 				}
@@ -91,8 +95,13 @@ via CLDK(language="go").analysis(project_path=...).`,
 				}
 				// Force full depth: the graph carries every implemented
 				// level's facts in both projections. (Output is always the
-				// canonical v2 tree.)
-				level = int(options.LevelDataflow)
+				// canonical v2 tree.) L4 is whole-program, so a targeted run
+				// projects at L3 and says so.
+				level = int(options.LevelSDG)
+				if len(targetFiles) > 0 {
+					level = int(options.LevelDataflow)
+					utils.Warn("--target-files: projecting the graph at level 3 (level 4 is whole-program); L4 rows keep the last full run's facts until a full run")
+				}
 			case options.EmitSchema:
 				path, err := neo4j.EmitSchema(outputDir)
 				if err != nil {
@@ -136,6 +145,7 @@ via CLDK(language="go").analysis(project_path=...).`,
 				Emit:            options.EmitTarget(emit),
 				AppName:         appName,
 				Level:           options.AnalysisLevel(level),
+				Strict:          strict,
 				AnalyzerVersion: version,
 				TargetFiles:     targetFiles,
 				SkipTests:       skipTests,
@@ -195,9 +205,10 @@ via CLDK(language="go").analysis(project_path=...).`,
 	f.StringVar(&appName, "app-name", "",
 		"Application anchor name for can:// ids and Neo4j :Application (default: input dir name)")
 	f.IntVarP(&level, "analysis-level", "a", 1,
-		"Analysis level: 1=symbol table, 2=+call graph, 3=+intraprocedural cfg/cdg/ddg")
+		"Analysis level: 1=symbol table, 2=+call graph, 3=+intraprocedural cfg/cdg/ddg, 4=+interprocedural SDG")
 	f.IntVar(&fieldDepth, "graph-field-depth", 3,
-		"Field-path depth bound for L3 dataflow nodes (k limit; applies at -a 3 only)")
+		"Field-path depth bound for L3 dataflow nodes (k limit; applies at -a 3 and -a 4)")
+	f.BoolVar(&strict, "strict", false, "Fail non-zero on any L4 degradation (default: degrade and record it)")
 	f.StringSliceVarP(&targetFiles, "target-files", "t", nil,
 		"Restrict analysis to specific files (incremental mode)")
 	f.BoolVar(&skipTests, "skip-tests", true, "Skip *_test.go files")
@@ -216,17 +227,12 @@ via CLDK(language="go").analysis(project_path=...).`,
 	return cmd
 }
 
-// validateAnalysisLevel accepts the implemented levels (1..3). Level 4 is
-// reserved for a later release and gets its own message.
+// validateAnalysisLevel accepts the implemented levels (1..4).
 func validateAnalysisLevel(level int) error {
-	switch {
-	case level >= 1 && level <= int(options.LevelDataflow):
+	if level >= 1 && level <= int(options.LevelSDG) {
 		return nil
-	case level == 4:
-		return fmt.Errorf("analysis level 4 is not implemented yet")
-	default:
-		return fmt.Errorf("analysis level %d is not supported; use 1, 2 or 3", level)
 	}
+	return fmt.Errorf("analysis level %d is not supported; use 1, 2, 3 or 4", level)
 }
 
 // validateFieldDepth checks --graph-field-depth. The flag only means something

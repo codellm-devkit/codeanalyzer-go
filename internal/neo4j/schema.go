@@ -184,7 +184,7 @@ type RelSpec struct {
 var Nodes = []NodeSpec{
 	{
 		Label: LabelApplication, MergeLabel: LabelApplication, Key: "id", CanNode: true,
-		Props: []string{"schema_version", "language", "max_level", "analyzer_name", "analyzer_version"},
+		Props: []string{"schema_version", "language", "max_level", "analyzer_name", "analyzer_version", "degraded_json"},
 	},
 	{
 		Label: LabelModule, MergeLabel: LabelModule, Key: "id", CanNode: true,
@@ -269,7 +269,7 @@ var Rels = []RelSpec{
 	{Type: RelDDG, From: []string{LabelBodyNode}, To: []string{LabelBodyNode}, Props: []string{"var", "prov"}, Discriminant: "var|prov"},
 
 	// Reserved L4 overlay (zero rows until L4 lands).
-	{Type: RelParamIn, From: []string{LabelBodyNode}, To: []string{LabelBodyNode}, Reserved: true},
-	{Type: RelParamOut, From: []string{LabelBodyNode}, To: []string{LabelBodyNode}, Reserved: true},
+	{Type: RelParamIn, From: []string{LabelBodyNode}, To: []string{LabelBodyNode}, Props: []string{"var"}, Reserved: true},
+	{Type: RelParamOut, From: []string{LabelBodyNode}, To: []string{LabelBodyNode}, Props: []string{"var"}, Reserved: true},
 	{Type: RelSummary, From: []string{LabelBodyNode}, To: []string{LabelBodyNode}, Reserved: true},
 }

@@ -399,10 +399,14 @@ func emitExternalSymbols(appID string, externals map[string]schema.GoExternalCal
 		for _, p := range ext.Params {
 			params = append(params, v2.ExternalParameter{Name: p.Name, Type: p.Type, IsVariadic: p.IsVariadic})
 		}
-		out[id] = v2.ExternalSymbol{
+		sym := v2.ExternalSymbol{
 			ID: id, Kind: "external", Name: ext.Name, Module: ext.ImportPath,
 			Signature: ext.Sig, Parameters: params, ReturnType: ext.ReturnType,
 		}
+		if ext.Receiver != nil {
+			sym.Receiver = &v2.ExternalParameter{Name: ext.Receiver.Name, Type: ext.Receiver.Type}
+		}
+		out[id] = sym
 	}
 	return out
 }
