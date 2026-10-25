@@ -31,12 +31,13 @@ func (c *collector) callReads(call *ast.CallExpr, captures bool) {
 	}
 }
 
-// callWrites collects the weak defs of call itself: a.* for each
-// reference-typed argument (&x gives x.*), recv.* for a reference-typed
-// receiver or a pointer-receiver method, and the element writes of append,
-// copy, delete and clear. append(dst, …) may write into dst's backing array
-// (spare capacity, or dst[:0]), so it weak-defines dst[*] besides its result
-// flowing to the assignment. Conversions and other builtins write nothing.
+// callWrites collects the weak defs of call itself: a.* for each argument
+// that may hold a reference (MayHoldRef: &x gives x.*), recv.* for a
+// receiver that may hold one or is bound to a pointer-receiver method, and
+// the element writes of append, copy, delete and clear. append(dst, …) may
+// write into dst's backing array (spare capacity, or dst[:0]), so it
+// weak-defines dst[*] besides its result flowing to the assignment.
+// Conversions and other builtins write nothing.
 func (c *collector) callWrites(call *ast.CallExpr) {
 	if isType(call.Fun, c.info) {
 		return
@@ -55,16 +56,25 @@ func (c *collector) callWrites(call *ast.CallExpr) {
 	}
 	if sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr); ok {
 		if s := c.info.Selections[sel]; s != nil && s.Kind() == types.MethodVal {
-			if ptrRecv(s.Obj()) || refTyped(c.info.TypeOf(sel.X)) {
+			if ptrRecv(s.Obj()) || c.holdsRef(c.info.TypeOf(sel.X)) {
 				c.writeThrough(sel.X)
 			}
 		}
 	}
 	for _, a := range call.Args {
-		if refTyped(c.info.TypeOf(a)) {
+		if c.holdsRef(c.info.TypeOf(a)) {
 			c.writeThrough(a)
 		}
 	}
+}
+
+// holdsRef is the call rule's write-through predicate: MayHoldRef, or the
+// reference kinds alone (refTyped) for the pre-D1 gate sets.
+func (c *collector) holdsRef(t types.Type) bool {
+	if c.preD1 {
+		return refTyped(t)
+	}
+	return MayHoldRef(t)
 }
 
 // writeThrough weak-defines a.* (x.* for &x) when a is a path, and base[*]
@@ -150,13 +160,52 @@ func isPointer(t types.Type) bool {
 	return ok
 }
 
-// refTyped reports whether a value of type t lets a callee write state the
-// caller sees: pointer, slice, map, chan, func or interface (a type
-// parameter's underlying type is its constraint interface, so it counts).
+// refTyped reports whether t is itself a reference kind: pointer, slice,
+// map, chan, func or interface (a type parameter's underlying type is its
+// constraint interface, so it counts).
 func refTyped(t types.Type) bool {
 	switch underlying(t).(type) {
 	case *types.Pointer, *types.Slice, *types.Map, *types.Chan, *types.Signature, *types.Interface:
 		return true
+	}
+	return false
+}
+
+// MayHoldRef reports whether a value of type t, passed by value, lets a
+// callee write state the caller sees (spec §4.5 Calls, D1 gap 2): t is a
+// reference kind (refTyped), or a struct or array any of whose fields or
+// elements, transitively through named types, may hold one (a value
+// cfg{items []int} shares items' backing array with its copy). A struct or
+// array that holds no reference is copied whole and is false. Cycle-safe: a
+// named type already on the walk is not re-entered (a value-only cycle,
+// possible only in a package with type errors, holds nothing new). The call
+// rule and the L4 by-ref formal_out rule share it.
+func MayHoldRef(t types.Type) bool {
+	return mayHoldRef(t, map[*types.Named]bool{})
+}
+
+func mayHoldRef(t types.Type, seen map[*types.Named]bool) bool {
+	if t == nil {
+		return false
+	}
+	if n, ok := types.Unalias(t).(*types.Named); ok {
+		if seen[n] {
+			return false
+		}
+		seen[n] = true
+	}
+	if refTyped(t) {
+		return true
+	}
+	switch u := t.Underlying().(type) {
+	case *types.Struct:
+		for i := 0; i < u.NumFields(); i++ {
+			if mayHoldRef(u.Field(i).Type(), seen) {
+				return true
+			}
+		}
+	case *types.Array:
+		return mayHoldRef(u.Elem(), seen)
 	}
 	return false
 }

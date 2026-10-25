@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 
@@ -1296,4 +1297,67 @@ func TestCFG_DifferentialCatchesMissingEdge(t *testing.T) {
 	if !strings.Contains(strings.Join(errs, "\n"), lbInit+" → "+lbRet) {
 		t.Errorf("differential missed the cut edges; got %v", errs)
 	}
+}
+
+// TestCFG_RangeIntAndRangeFunc (#28): exact CFGs for the Go 1.23 range forms
+// in testdata/rangefunc (a go 1.23 module: testdata/dataflow is go 1.21). A
+// range over an integer is a plain loop header; a range over an iterator
+// function calls the iterator on every trip, so its header may panic as well
+// (canPanic): an exception edge to @exit. Both agree with go/cfg.
+func TestCFG_RangeIntAndRangeFunc(t *testing.T) {
+	_, thisFile, _, _ := runtime.Caller(0)
+	fset, cases := loadDiffCases(t, filepath.Join(filepath.Dir(thisFile), "..", "..", "testdata", "rangefunc"))
+	want := map[string][]dataflow.CfgEdge{
+		"example.com/rangefunc.RangeInt": {
+			e(entry, "8:2", "fallthrough"),
+			e("8:2", "9:2", "fallthrough"),
+			e("9:2", "10:3", "true"),
+			e("9:2", "12:2", "false"),
+			e("10:3", "9:2", "loop_back"),
+			e("12:2", exit, "return"),
+		},
+		"example.com/rangefunc.RangeFunc": {
+			e(entry, "18:2", "fallthrough"),
+			e("18:2", "19:2", "fallthrough"),
+			e("19:2", "20:3", "true"),
+			e("19:2", "22:2", "false"),
+			e("19:2", exit, "exception"),
+			e("20:3", "19:2", "loop_back"),
+			e("22:2", exit, "return"),
+		},
+	}
+	seen := 0
+	for _, c := range cases {
+		w, ok := want[c.name]
+		if !ok {
+			continue
+		}
+		seen++
+		nodes, keyOf := dataflow.BuildNodes(fset, c.body, gateCallKeys(fset, c.body))
+		kept, got := dataflow.BuildCFG(nodes, keyOf, c.body, c.info)
+		checkContract(t, c.name, kept, got)
+		sortCfg(w) // BuildCFG orders by (src, dst, kind) as strings
+		if !reflect.DeepEqual(got, w) {
+			t.Errorf("%s:\n got %v\nwant %v", c.name, got, w)
+		}
+		if diffOne(t.Errorf, c.name, c.body, c.info, keyOf, got) == 0 {
+			t.Errorf("%s: differential checked no pairs", c.name)
+		}
+	}
+	if seen != len(want) {
+		t.Errorf("rangefunc: found %d of %d functions", seen, len(want))
+	}
+}
+
+func sortCfg(es []dataflow.CfgEdge) {
+	sort.Slice(es, func(i, j int) bool {
+		a, b := es[i], es[j]
+		if a.Src != b.Src {
+			return a.Src < b.Src
+		}
+		if a.Dst != b.Dst {
+			return a.Dst < b.Dst
+		}
+		return a.Kind < b.Kind
+	})
 }

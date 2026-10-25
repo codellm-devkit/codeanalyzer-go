@@ -2,6 +2,7 @@ package dataflow_test
 
 import (
 	"go/ast"
+	"go/parser"
 	"go/token"
 	"go/types"
 	"path/filepath"
@@ -414,5 +415,63 @@ func TestBuildNodes_PairsByLparenNotIndex(t *testing.T) {
 		if n != len(calls) {
 			t.Errorf("%s: %d call expressions keyed, want %d", fn, n, len(calls))
 		}
+	}
+}
+
+// TestBuildNodes_EndClampedToFile (#28): in testdata/malformed the parser
+// recovers from each syntax error with nodes whose End lies one past the end
+// of the file: in the shared FileSet it has no file (the last file) or is the
+// next file's base. BuildNodes clamps such an End to the end of Pos's file
+// (and an End before Pos to Pos), so every node's [StartLC, EndLC] is a
+// non-inverted range inside the node's own file.
+func TestBuildNodes_EndClampedToFile(t *testing.T) {
+	_, thisFile, _, _ := runtime.Caller(0)
+	dir := filepath.Join(filepath.Dir(thisFile), "..", "..", "testdata", "malformed")
+	fset := token.NewFileSet()
+	// Parse in name order into one FileSet, as go/packages does, so a bad
+	// End of one file is the next file's base.
+	var files []*ast.File
+	for _, name := range []string{"case.go", "doc.go", "if.go", "range.go", "recv.go"} {
+		f, _ := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.SkipObjectResolution)
+		if f == nil {
+			t.Fatalf("parse %s: no file", name)
+		}
+		files = append(files, f)
+	}
+	bad, checked := 0, 0
+	for _, f := range files {
+		tf := fset.File(f.Pos())
+		for _, d := range f.Decls {
+			fd, ok := d.(*ast.FuncDecl)
+			if !ok || fd.Body == nil {
+				continue
+			}
+			if fset.File(fd.End()) != tf {
+				bad++
+			}
+			nodes, _ := dataflow.BuildNodes(fset, fd.Body, gateCallKeys(fset, fd.Body))
+			for _, n := range nodes {
+				if n.Pos == token.NoPos {
+					continue
+				}
+				checked++
+				p := fset.PositionFor(n.Pos, false)
+				if fset.File(n.End) != tf && n.End != tf.Pos(tf.Size()) {
+					t.Errorf("%s %s: End %v is outside Pos's file", p.Filename, n.Key, n.End)
+				}
+				if n.End < n.Pos {
+					t.Errorf("%s %s: End %v before Pos %v", p.Filename, n.Key, n.End, n.Pos)
+				}
+				if n.EndLC[0] < n.StartLC[0] || n.EndLC[0] == n.StartLC[0] && n.EndLC[1] < n.StartLC[1] {
+					t.Errorf("%s %s: EndLC %v before StartLC %v", p.Filename, n.Key, n.EndLC, n.StartLC)
+				}
+				if n.EndLC[0] > tf.LineCount() || n.EndLC[0] == 0 {
+					t.Errorf("%s %s: EndLC %v outside the file's %d lines", p.Filename, n.Key, n.EndLC, tf.LineCount())
+				}
+			}
+		}
+	}
+	if bad < 4 || checked == 0 {
+		t.Errorf("malformed fixture: %d functions with a bad End, %d nodes checked; want ≥ 4 and > 0", bad, checked)
 	}
 }

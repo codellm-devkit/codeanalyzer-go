@@ -53,6 +53,9 @@ import (
 // synthetic nodes have NoPos and a nil Stmt. A nil body yields an empty slice
 // and an empty map (no entry/exit: a bodyless callable has no flow).
 //
+// Spans: a node's End is clampEnd'ed to Pos's file (a malformed file's
+// recovered nodes can end past it).
+//
 // The returned map keys every node's Stmt to its key. It also maps the AST
 // nodes folded into a node to that node's key: a bare or `go` call's
 // *ast.CallExpr, an if/for/switch init, a for post, a type switch guard, a comm
@@ -76,12 +79,36 @@ func BuildNodes(fset *token.FileSet, body *ast.BlockStmt, calls []UnitCall) ([]N
 	out := make([]Node, 0, len(b.nodes)+2)
 	out = append(out, Node{Key: EntryKey, Kind: KindEntry})
 	for _, n := range b.nodes {
+		n.End = clampEnd(fset, n.Pos, n.End)
 		p, e := fset.PositionFor(n.Pos, false), fset.PositionFor(n.End, false)
 		n.StartLC, n.EndLC = [2]int{p.Line, p.Column}, [2]int{e.Line, e.Column}
 		out = append(out, n)
 	}
 	out = append(out, Node{Key: ExitKey, Kind: KindExit})
 	return out, b.keyOf
+}
+
+// clampEnd keeps a node's End inside the file its Pos is in (#28). The
+// parser recovers from a syntax error with nodes whose End is one past the
+// end of their file: in a shared FileSet that position has no file (the last
+// file) or is the next file's base. Such an End is clamped to the end of
+// Pos's file: the recovered node really runs to there (recovery swallowed
+// the rest of the file), so the span keeps all of its text and stays in its
+// own file. An End before Pos in the same file (no known source of one) is
+// clamped to Pos, an empty span: no text is invented. A Pos with no file is
+// left as it is.
+func clampEnd(fset *token.FileSet, pos, end token.Pos) token.Pos {
+	tf := fset.File(pos)
+	if tf == nil {
+		return end
+	}
+	if fset.File(end) != tf {
+		return tf.Pos(tf.Size())
+	}
+	if end < pos {
+		return pos
+	}
+	return end
 }
 
 // RecordedCallCount is the number of L1 call sites body records

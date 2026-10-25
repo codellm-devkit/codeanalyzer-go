@@ -493,3 +493,199 @@ func TestDDG_DeferOperandAfterReassign(t *testing.T) {
 func TestDDG_AppendKeepsElementDefs(t *testing.T) {
 	hasDDG(t, "AppendKeepsElems", dd("603:2", "605:2", "s[*]"))
 }
+
+// TestDDG_ValueStructWithSliceIsWrittenThrough (D1 gap 2): fillCfg(c) with a
+// value struct c whose field items is a slice may write c.items[*]; the call
+// weak-defines c.*, which reaches the later read of c.items[0].
+func TestDDG_ValueStructWithSliceIsWrittenThrough(t *testing.T) {
+	wantDDG(t, "FillCfg",
+		dd(entry, "651:2", "c"),
+		dd(entry, "652:2", "c.items[*]"),
+		dd("651:2", "652:2", "c.items[*]"),
+	)
+	// A value receiver over a slice field (c.reset()) and value arguments
+	// that may hold a reference (n nests one, a is an array of slices) are
+	// written through; p (ints only) and b ([2]int) are not.
+	hasDDG(t, "ValueRefs",
+		dd("659:2", "662:2", "c.items[*]"),
+		dd("661:2", "662:2", "n.in.items[*]"),
+		dd("661:2", "662:2", "a[*][*]"),
+	)
+	_, _, got := ddgOf(t, "ValueRefs")
+	for _, g := range got {
+		if g.Src != entry && (g.Var == "p.a" || g.Var == "b[*]") {
+			t.Errorf("ValueRefs: a reference-free value operand is written through: %v", g)
+		}
+	}
+}
+
+// flatDDG is a reference reaching-definitions DDG with the kill rule of
+// BuildDDG tested against every definition of the body (no bucketing), on
+// plain map sets: the oracle TestDDG_KillBucketsMatchFlat compares against.
+func flatDDG(nodes []dataflow.Node, cfg []dataflow.CfgEdge, du map[string]dataflow.DefUse) []dataflow.DdgEdge {
+	type def struct {
+		node string
+		path dataflow.Path
+	}
+	isNode := map[string]bool{}
+	for _, n := range nodes {
+		if n.Parent == "" {
+			isNode[n.Key] = true
+		}
+	}
+	pred := map[string][]string{}
+	for _, e := range cfg {
+		if isNode[e.Src] && isNode[e.Dst] {
+			pred[e.Dst] = append(pred[e.Dst], e.Src)
+		}
+	}
+	var all []def
+	for k := range isNode {
+		d := du[k]
+		for _, list := range [][]dataflow.Path{d.Defs, d.WeakDefs} {
+			for _, p := range list {
+				all = append(all, def{k, p})
+			}
+		}
+	}
+	killed := func(k string, d def) bool {
+		shallow := map[dataflow.Path]bool{}
+		for _, p := range du[k].Shallow {
+			shallow[p] = true
+		}
+		for _, p := range du[k].Defs {
+			if p == d.path || !shallow[p] && p.Covers(d.path) {
+				return true
+			}
+		}
+		return false
+	}
+	in, out := map[string]map[def]bool{}, map[string]map[def]bool{}
+	for k := range isNode {
+		in[k], out[k] = map[def]bool{}, map[def]bool{}
+	}
+	for changed := true; changed; {
+		changed = false
+		for k := range isNode {
+			for _, p := range pred[k] {
+				for d := range out[p] {
+					in[k][d] = true
+				}
+			}
+			next := map[def]bool{}
+			for d := range in[k] {
+				if !killed(k, d) {
+					next[d] = true
+				}
+			}
+			for _, d := range all {
+				if d.node == k {
+					next[d] = true
+				}
+			}
+			if len(next) != len(out[k]) {
+				changed = true
+			} else {
+				for d := range next {
+					if !out[k][d] {
+						changed = true
+						break
+					}
+				}
+			}
+			out[k] = next
+		}
+	}
+	edges := map[dataflow.DdgEdge]bool{}
+	for k := range isNode {
+		for d := range in[k] {
+			for _, u := range du[k].Uses {
+				if d.path.Covers(u) || u.Covers(d.path) {
+					edges[dataflow.DdgEdge{Src: d.node, Dst: k, Var: u.Spell}] = true
+				}
+			}
+		}
+	}
+	res := []dataflow.DdgEdge{}
+	for e := range edges {
+		res = append(res, e)
+	}
+	sort.Slice(res, func(i, j int) bool { return ddgLess(res[i], res[j]) })
+	return res
+}
+
+// TestDDG_KillBucketsMatchFlat (#27 item 1): BuildDDG tests kills only within
+// the bucket of a def's base (nil-base paths by spelling head); it equals the
+// flat reference over the whole flow and chi corpus and over a hand-built
+// line mixing shadowed bases, unresolved (nil-base) paths sharing a spelling
+// with a real base, and pseudo paths.
+func TestDDG_KillBucketsMatchFlat(t *testing.T) {
+	_, thisFile, _, _ := runtime.Caller(0)
+	root := filepath.Join(filepath.Dir(thisFile), "..", "..", "testdata")
+	total := 0
+	for _, dir := range []string{"dataflow", "chi"} {
+		fset, cases := loadDiffCases(t, filepath.Join(root, dir))
+		for _, c := range cases {
+			nodes, keyOf := dataflow.BuildNodes(fset, c.body, gateCallKeys(fset, c.body))
+			kept, es := dataflow.BuildCFG(nodes, keyOf, c.body, c.info)
+			du := duMap(kept, c.info, c.fn, keyOf)
+			got, want := dataflow.BuildDDG(kept, es, du), flatDDG(kept, es, du)
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("%s: bucketed DDG (%d edges) != flat (%d edges)", c.name, len(got), len(want))
+			}
+			total += len(got)
+		}
+	}
+	if total < 1000 {
+		t.Errorf("kill-bucket gate covered only %d edges", total)
+	}
+
+	// Hand-built: x (outer), x (shadowing inner, same spelling), the
+	// unresolved x and u (nil base), and a <defer>: pseudo path.
+	xo := types.NewVar(token.NoPos, nil, "x", types.Typ[types.Int])
+	xi := types.NewVar(token.NoPos, nil, "x", types.Typ[types.Int])
+	P := func(b types.Object, s ...string) []dataflow.Path {
+		var out []dataflow.Path
+		for _, sp := range s {
+			out = append(out, dataflow.Path{Base: b, Spell: sp})
+		}
+		return out
+	}
+	cat := func(ps ...[]dataflow.Path) []dataflow.Path {
+		var out []dataflow.Path
+		for _, p := range ps {
+			out = append(out, p...)
+		}
+		return out
+	}
+	keys := []string{entry, "1:1", "1:2", "1:3", "1:4", "1:5", "1:6", exit}
+	var nodes []dataflow.Node
+	var cfg []dataflow.CfgEdge
+	for i, k := range keys {
+		nodes = append(nodes, dataflow.Node{Key: k})
+		if i > 0 {
+			cfg = append(cfg, dataflow.CfgEdge{Src: keys[i-1], Dst: k, Kind: "fallthrough"})
+		}
+	}
+	cfg = append(cfg, dataflow.CfgEdge{Src: "1:5", Dst: "1:2", Kind: "loop_back"})
+	du := map[string]dataflow.DefUse{
+		entry: {Defs: cat(P(xo, "x"), P(xi, "x.f"))},
+		"1:1": {Defs: P(nil, "x", "u.f"), WeakDefs: P(nil, "<defer>:9:9", "u.*")},
+		"1:2": {Defs: P(xi, "x"), Uses: cat(P(xo, "x"), P(nil, "x", "u"))},
+		"1:3": {Defs: P(nil, "u.f"), Uses: cat(P(xi, "x.f"), P(nil, "u.f.g"))},
+		"1:4": {Defs: cat(P(xo, "x"), P(nil, "<defer>:9:9", "u")), Shallow: P(xo, "x"), WeakDefs: P(xo, "x[*]")},
+		"1:5": {Uses: cat(P(xo, "x[*]"), P(nil, "x", "u", "<defer>:9:9"), P(xi, "x"))},
+		"1:6": {Defs: P(nil, "u"), Uses: cat(P(xo, "x"), P(nil, "u.f", "<defer>:9:9"))},
+	}
+	got, want := dataflow.BuildDDG(nodes, cfg, du), flatDDG(nodes, cfg, du)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("hand-built kills:\n got %v\nwant %v", got, want)
+	}
+	// The unresolved u (1:4) kills u.f of 1:1 and 1:3 by spelling head: only
+	// 1:4's own u reaches 1:6's u.f.
+	for _, g := range got {
+		if g.Dst == "1:6" && g.Var == "u.f" && g.Src != "1:4" {
+			t.Errorf("hand-built kills: %v survives the unresolved u = … at 1:4", g)
+		}
+	}
+}

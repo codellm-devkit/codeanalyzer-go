@@ -95,9 +95,12 @@ const DeferPrefix = "<defer>:"
 // weak-defines a.* for each argument of pointer, slice, map, chan, func or
 // interface type (`&x` gives x.*; a slice expression of a path gives its
 // base's elements: buf[:n], arr[:] and (*pa)[i:] give buf[*], arr[*], pa[*])
-// and recv.* for a receiver that is
-// reference-typed (the same kinds) or bound to a pointer-receiver method. A value-typed struct
-// argument is not weak-defined. Conversions write nothing; builtins write
+// and recv.* for a receiver that is reference-typed (the same kinds) or bound
+// to a pointer-receiver method. A value struct or array argument or receiver
+// that may hold a reference (MayHoldRef: a field or element, transitively, of
+// a reference kind) weak-defines a.* too, the whole base, never per field
+// (D1 gap 2); one that holds no reference is copied and not weak-defined.
+// Conversions write nothing; builtins write
 // nothing except append(dst, …), copy(dst, …), delete(m, …) and clear(x),
 // which weak-define dst[*], m[*], x[*] (copy(dst[i:], …) and append(dst[:0],
 // …) give dst[*] too: append may write into dst's backing array); append's
@@ -149,9 +152,11 @@ func defUses(nodes []Node, info *types.Info, k int, entryBases []types.Object, f
 }
 
 // defUseOf is DefUseOf with the callable-level facts given; nil facts apply
-// none of the callable-level rules (the pre-D1 sets, for the gates).
+// none of the D1 rules (the pre-D1 sets, for the gates): no callable-level
+// rule, and the call rule writes through reference kinds only (refTyped, not
+// MayHoldRef).
 func defUseOf(n Node, info *types.Info, k int, entryBases []types.Object, fn ast.Node, keyOf map[ast.Node]string, f *facts) DefUse {
-	c := &collector{info: info, k: k, seen: map[pathKind]bool{}}
+	c := &collector{info: info, k: k, seen: map[pathKind]bool{}, preD1: f == nil}
 	switch {
 	case n.Kind == KindEntry:
 		for _, b := range entryBases {
@@ -237,11 +242,12 @@ type collector struct {
 	seen     map[pathKind]bool
 	shallow  map[Path]bool
 	weakOnly bool // record every def as weak (a range with `=`)
+	preD1    bool // call rule over reference kinds only (the pre-D1 gate sets)
 }
 
 // fork returns an empty collector with c's settings.
 func (c *collector) fork() *collector {
-	return &collector{info: c.info, k: c.k, fn: c.fn, keyOf: c.keyOf, facts: c.facts, seen: map[pathKind]bool{}}
+	return &collector{info: c.info, k: c.k, fn: c.fn, keyOf: c.keyOf, facts: c.facts, seen: map[pathKind]bool{}, preD1: c.preD1}
 }
 
 // mergeLoop adds a's facts to c, keeping a strong def strong only when other

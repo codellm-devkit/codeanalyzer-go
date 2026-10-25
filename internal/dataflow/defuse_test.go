@@ -163,13 +163,15 @@ func TestDefUse_FieldDefIsPrefixDef(t *testing.T) {
 func TestDefUse_CallWeakDefsRefArgs(t *testing.T) {
 	fx := loadDU(t)
 	du, _ := fx.du(t, "Calls", "mut(&req", 0)
-	wantDU(t, "mut(...)", du, nil, ss("m.*", "p.*", "req.*", "s.*"), ss("m", "p", "req", "s", "t"))
+	// t is a value T, whose field s is a slice: it may hold a reference, so
+	// the callee may write through it (D1 gap 2).
+	wantDU(t, "mut(...)", du, nil, ss("m.*", "p.*", "req.*", "s.*", "t.*"), ss("m", "p", "req", "s", "t"))
 	du, _ = fx.du(t, "Calls", "t.Ptr()", 0)
 	wantDU(t, "t.Ptr()", du, nil, ss("t.*"), ss("t"))
 	du, _ = fx.du(t, "Calls", "p.Ptr()", 0)
 	wantDU(t, "p.Ptr()", du, nil, ss("p.*"), ss("p"))
 	du, _ = fx.du(t, "Calls", "t.Val()", 0)
-	wantDU(t, "t.Val()", du, nil, nil, ss("t"))
+	wantDU(t, "t.Val()", du, nil, ss("t.*"), ss("t")) // value receiver holding T.s (D1 gap 2)
 	du, _ = fx.du(t, "Calls", "n := len(s)", 0)
 	wantDU(t, "n := len(s)", du, ss("n"), nil, ss("s"))
 	du, _ = fx.du(t, "Calls", "s = append(s, n)", 0)
@@ -393,7 +395,7 @@ func TestDefUse_ReferenceTypedReceiverIsWeakDefined(t *testing.T) {
 	du, _ = fx.du(t, "Recv", "h.Set(", 0)
 	wantDU(t, "h.Set(...)", du, nil, ss("h.*"), ss("h"))
 	du, _ = fx.du(t, "Recv", "\tt.Val()\n}\n\nfunc IfShadow", 1)
-	wantDU(t, "t.Val() value struct", du, nil, nil, ss("t"))
+	wantDU(t, "t.Val() value struct", du, nil, ss("t.*"), ss("t")) // T.s is a slice (D1 gap 2)
 }
 
 func TestDefUse_IfInitShadows(t *testing.T) {
@@ -482,4 +484,127 @@ func TestDefUse_DeferOperandWrites(t *testing.T) {
 	wantDU(t, "DeferReassign 595:2", flowDU(t, "DeferReassign", "595:2"), nil, ss("<defer>:595:8"), ss("b"))
 	wantDU(t, "DeferReassign 595:8", flowDU(t, "DeferReassign", "595:8"), nil, ss("b.*"), ss("<defer>:595:8", "b.*"))
 	wantDU(t, "DeferReassign @entry", flowDU(t, "DeferReassign", dataflow.EntryKey), ss("b", "o", "s"), nil, nil)
+}
+
+// TestMayHoldRef (D1 gap 2): the reference kinds, and structs and arrays
+// whose fields or elements transitively may hold one, through named types,
+// cycle-safe; a reference-free struct or array, a string and a basic do not.
+func TestMayHoldRef(t *testing.T) {
+	i := types.Typ[types.Int]
+	sl := types.NewSlice(i)
+	st := func(ts ...types.Type) *types.Struct {
+		var fs []*types.Var
+		for n, ft := range ts {
+			fs = append(fs, types.NewField(0, nil, "f"+string(rune('a'+n)), ft, false))
+		}
+		return types.NewStruct(fs, nil)
+	}
+	named := func(name string, u types.Type) *types.Named {
+		n := types.NewNamed(types.NewTypeName(0, nil, name, nil), nil, nil)
+		if u != nil {
+			n.SetUnderlying(u)
+		}
+		return n
+	}
+	empty := types.NewInterfaceType(nil, nil)
+	tp := types.NewTypeParam(types.NewTypeName(0, nil, "P", nil), empty)
+
+	// A cycle through value types only (invalid Go, but go/types builds it in
+	// a package with type errors): A{b B}, B{a A, n int}.
+	a, b := named("A", nil), named("B", nil)
+	a.SetUnderlying(st(b))
+	b.SetUnderlying(st(a, i))
+	// The same cycle with a slice two levels down: C{d D}, D{c C, s []int}.
+	c, d := named("C", nil), named("D", nil)
+	c.SetUnderlying(st(d))
+	d.SetUnderlying(st(c, sl))
+
+	for _, tc := range []struct {
+		name string
+		t    types.Type
+		want bool
+	}{
+		{"pointer", types.NewPointer(i), true},
+		{"slice", sl, true},
+		{"map", types.NewMap(i, i), true},
+		{"chan", types.NewChan(types.SendRecv, i), true},
+		{"func", types.NewSignatureType(nil, nil, nil, nil, nil, false), true},
+		{"interface", empty, true},
+		{"type parameter", tp, true},
+		{"int", i, false},
+		{"string", types.Typ[types.String], false},
+		{"nil", nil, false},
+		{"plain struct", st(i, types.Typ[types.String]), false},
+		{"struct with slice", st(i, sl), true},
+		{"named struct with slice", named("Cfg", st(sl)), true},
+		{"struct nesting a struct with a map", st(st(i, types.NewMap(i, i))), true},
+		{"array of int", types.NewArray(i, 2), false},
+		{"array of slices", types.NewArray(sl, 2), true},
+		{"array of structs with a pointer", types.NewArray(st(types.NewPointer(i)), 3), true},
+		{"struct of arrays of int", st(types.NewArray(i, 4)), false},
+		{"value cycle, no reference", a, false},
+		{"value cycle, reference below", c, true},
+	} {
+		if got := dataflow.MayHoldRef(tc.t); got != tc.want {
+			t.Errorf("MayHoldRef(%s) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestDefUse_ValueStructMayHoldRef (D1 gap 2): a value argument or receiver
+// that may hold a reference weak-defines a.* (whole base, never per field);
+// a reference-free one is only read.
+func TestDefUse_ValueStructMayHoldRef(t *testing.T) {
+	wantDU(t, "FillCfg 651:2", flowDU(t, "FillCfg", "651:2"), nil, ss("c.*"), ss("c"))
+	wantDU(t, "ValueRefs 659:2", flowDU(t, "ValueRefs", "659:2"), nil, ss("c.*"), ss("c"))
+	wantDU(t, "ValueRefs 660:2", flowDU(t, "ValueRefs", "660:2"), nil, nil, ss("p"))
+	wantDU(t, "ValueRefs 661:2", flowDU(t, "ValueRefs", "661:2"), nil, ss("a.*", "n.*"), ss("a", "b", "n"))
+	// A value receiver holding no reference is a copy: read only.
+	wantDU(t, "PlainRecv 698:2", flowDU(t, "PlainRecv", "698:2"), nil, nil, ss("p"))
+}
+
+// TestDefUse_SatelliteParents (#28): a call in a folded for init, cond or
+// post, a case list, a select comm clause (send value, receive operand) or a
+// range key or expression is a satellite of the header or clause head that
+// expression folds into, and carries an empty DefUse.
+func TestDefUse_SatelliteParents(t *testing.T) {
+	_, byKey, _ := build(t, "SatParents")
+	want := map[string]string{
+		"674:11": "674:2", "674:21": "674:2", "674:31": "674:2", // for init, cond, post
+		"678:7": "678:2", "678:13": "678:2", // case f(1), g(2):
+		"682:13": "682:2",                    // case ch <- f(s):
+		"683:14": "683:2",                    // case v := <-chanOf(ch):
+		"687:9":  "687:2", "687:26": "687:2", // for xs[f(2)], x = range ids(xs)
+	}
+	calls := 0
+	for k, n := range byKey {
+		if n.Kind != dataflow.KindCall {
+			continue
+		}
+		calls++
+		p, ok := want[k]
+		if !ok {
+			t.Errorf("SatParents: unexpected call node %s (parent %q)", k, n.Parent)
+			continue
+		}
+		if n.Parent != p {
+			t.Errorf("SatParents: call %s Parent = %q, want %q", k, n.Parent, p)
+		}
+		wantDU(t, "SatParents "+k, flowDU(t, "SatParents", k), nil, nil, nil)
+	}
+	if calls != len(want) {
+		t.Errorf("SatParents: %d call nodes, want %d", calls, len(want))
+	}
+	// The hosts carry their satellites' flow.
+	wantKind(t, "SatParents", byKey, "674:2", dataflow.KindLoop)
+	wantKind(t, "SatParents", byKey, "678:2", dataflow.KindStatement)
+	wantKind(t, "SatParents", byKey, "682:2", dataflow.KindStatement)
+	wantKind(t, "SatParents", byKey, "683:2", dataflow.KindStatement)
+	wantKind(t, "SatParents", byKey, "687:2", dataflow.KindLoop)
+	wantDU(t, "SatParents 682:2", flowDU(t, "SatParents", "682:2"), nil, ss("ch[*]"), ss("ch", "s"))
+	// <-chanOf(ch) receives from a call, not a path: the call reads ch and
+	// writes through it.
+	wantDU(t, "SatParents 683:2", flowDU(t, "SatParents", "683:2"), ss("v"), ss("ch.*"), ss("ch"))
+	// `=` range: weak key and value; ids(xs) writes through xs.
+	wantDU(t, "SatParents 687:2", flowDU(t, "SatParents", "687:2"), nil, ss("x", "xs.*", "xs[*]"), ss("xs"))
 }

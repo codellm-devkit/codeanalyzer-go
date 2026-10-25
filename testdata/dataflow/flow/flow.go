@@ -627,3 +627,74 @@ func CaptureGo(ch chan int) int {
 	go func() { x = <-ch }()
 	return x
 }
+
+type cfg struct{ items []int }
+
+func fillCfg(c cfg) { c.items[0] = 1 }
+
+func (c cfg) reset() { c.items[0] = 0 }
+
+type plain struct{ a, b int }
+
+func usePlain(p plain) { _ = p }
+
+type nest struct {
+	in  cfg
+	arr [2][]int
+}
+
+func useNest(n nest, a [2][]int, b [2]int) { _, _, _ = n, a, b }
+
+// FillCfg passes a value struct holding a slice (D1 gap 2): the callee may
+// write c.items[*], so the call weak-defines c.*, which reaches the read.
+func FillCfg(c cfg) int {
+	fillCfg(c)
+	return c.items[0]
+}
+
+// ValueRefs passes value operands that may hold a reference (a value
+// receiver over a slice field, a struct nesting one, an array of slices) and
+// two that cannot (a struct and an array of ints).
+func ValueRefs(c cfg, p plain, n nest, a [2][]int, b [2]int) int {
+	c.reset()
+	usePlain(p)
+	useNest(n, a, b)
+	return c.items[0] + p.a + n.in.items[0] + a[0][0] + b[0]
+}
+
+func chanOf(ch chan int) chan int { return ch }
+
+func ids(xs []int) []int { return xs }
+
+// SatParents puts calls in a folded for init and post, a case list, select
+// comm clauses and a range key and expression (#28): each call is a
+// satellite of the header or clause head its expression folds into.
+func SatParents(n int, ch chan int, xs []int) int {
+	s := 0
+	for i := f(0); i < g(n); i = f(i) + 1 {
+		s += i
+	}
+	switch n {
+	case f(1), g(2):
+		s++
+	}
+	select {
+	case ch <- f(s):
+	case v := <-chanOf(ch):
+		s += v
+	}
+	var x int
+	for xs[f(2)], x = range ids(xs) {
+		s += x
+	}
+	return s
+}
+
+func (p plain) sum() int { return p.a + p.b }
+
+// PlainRecv calls a value-receiver method on a struct that holds no
+// reference: a copy, so nothing is written through it.
+func PlainRecv(p plain) int {
+	p.sum()
+	return p.a
+}

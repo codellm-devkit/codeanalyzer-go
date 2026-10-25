@@ -1,6 +1,7 @@
 package dataflow
 
 import (
+	"go/types"
 	"math/bits"
 	"sort"
 )
@@ -22,6 +23,9 @@ import (
 //     A deferred call node only weak-defines (R11), so nothing is killed
 //     through the exit chain. GEN is applied after KILL, so a node's own weak
 //     def (the s[*] of `s = append(s, …)`) survives its own strong def.
+//     Covers needs equal bases (and, for a nil base, equal spelling heads),
+//     so p is tested only against the defs of its kill bucket (#27 item 1):
+//     O(defs per base) per strong def, not O(defs in the body).
 //
 // A node's uses read IN — the defs reaching it before its own defs apply —
 // so `y = y + 1` in a loop links to itself across the back edge, never
@@ -63,6 +67,16 @@ func BuildDDG(nodes []Node, cfg []CfgEdge, du map[string]DefUse) []DdgEdge {
 		}
 	}
 
+	// Kill index (#27 item 1): p.Covers(d) and p == d both need the same
+	// Base, so a strong def is tested only against the defs of its bucket.
+	// A nil-base path (a pseudo path, an unresolved identifier) is bucketed
+	// by its spelling head: equal heads are necessary for Covers.
+	buckets := map[killBucket][]int{}
+	for i, d := range defs {
+		b := bucketOf(d.path)
+		buckets[b] = append(buckets[b], i)
+	}
+
 	words := (len(defs) + 63) / 64
 	newSet := func() []uint64 { return make([]uint64, words) }
 	gen := make([][]uint64, n)
@@ -77,8 +91,8 @@ func BuildDDG(nodes []Node, cfg []CfgEdge, du map[string]DefUse) []DdgEdge {
 			shallow[p] = true
 		}
 		for _, p := range du[k].Defs {
-			for i, d := range defs {
-				if p == d.path || !shallow[p] && p.Covers(d.path) {
+			for _, i := range buckets[bucketOf(p)] {
+				if d := defs[i]; p == d.path || !shallow[p] && p.Covers(d.path) {
 					kill[v][i/64] |= 1 << (i % 64)
 				}
 			}
@@ -157,4 +171,20 @@ func BuildDDG(nodes []Node, cfg []CfgEdge, du map[string]DefUse) []DdgEdge {
 		return a.Var < b.Var
 	})
 	return res
+}
+
+// killBucket is the kill index key of a path: its Base, or for a nil Base
+// its spelling head (splitSpell's base spelling; a pseudo path is all head).
+// Two paths in different buckets never cover one another.
+type killBucket struct {
+	base types.Object
+	head string
+}
+
+func bucketOf(p Path) killBucket {
+	if p.Base != nil {
+		return killBucket{base: p.Base}
+	}
+	head, _ := splitSpell(p.Spell)
+	return killBucket{head: head}
 }
