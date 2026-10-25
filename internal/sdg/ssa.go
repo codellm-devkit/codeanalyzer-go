@@ -17,6 +17,20 @@ import (
 // for the recovered-panic path).
 var buildHook func(*ssa.Package)
 
+// callHook, when set, runs on the static callee of every call instruction SSA
+// emits, inside the build (a test seam for panics mid-build: after a builder
+// has created shared generic instances, or while a wrapper is built on demand).
+var callHook func(*types.Func)
+
+// installCallHook wires callHook into prog through the builder's no-return
+// predicate, which SSA consults on every static call it emits. Production
+// runs never set callHook, so prog keeps its nil predicate.
+func installCallHook(prog *ssa.Program) {
+	if hook := callHook; hook != nil {
+		prog.SetNoReturn(func(f *types.Func) bool { hook(f); return false })
+	}
+}
+
 // buildSSA builds go/ssa over the project packages of in.Pkgs (spec §4.8, D2).
 //
 // ssautil.Packages gets only the project packages, so SSA bodies exist for
@@ -26,9 +40,16 @@ var buildHook func(*ssa.Package)
 // under recover:
 //
 //   - A package that is ill-typed (pkg.IllTyped, which also covers a broken
-//     dependency) or that ssautil left nil, or whose Build panicked, gets no
-//     SSA: it is listed under one partial_ssa entry.
-//   - When no package built, no_ssa follows.
+//     dependency) or that ssautil left nil gets no SSA.
+//   - A package whose Build panics gets no SSA either, and the whole program
+//     is discarded and rebuilt without it (it then enters from types, as a
+//     dependency). A builder that panics never marks the generic instances
+//     and wrappers it created as done, so any later build or method lookup
+//     sharing one would block forever — not a panic, and not recoverable.
+//     The rebuild repeats until a pass builds every remaining package, at
+//     most once per package.
+//   - Every package that got no SSA is listed under one partial_ssa entry;
+//     when no package built, no_ssa follows.
 //
 // It returns the built packages in path order.
 func buildSSA(in Input) (*ssa.Program, []*ssa.Package, []Degraded) {
@@ -45,21 +66,34 @@ func buildSSA(in Input) (*ssa.Program, []*ssa.Package, []Degraded) {
 
 	var prog *ssa.Program
 	var built []*ssa.Package
-	if len(ok) > 0 {
+	for len(ok) > 0 {
 		var spkgs []*ssa.Package
 		prog, spkgs = ssautil.Packages(ok, ssa.InstantiateGenerics|ssa.BuildSerially)
+		installCallHook(prog)
+		built = built[:0]
+		var good []*packages.Package
+		panicked := -1
 		for i, sp := range spkgs {
 			if sp == nil {
 				failed = append(failed, ok[i].PkgPath)
 				continue
 			}
 			if err := buildPackage(sp); err != nil {
-				utils.Warn("L4: SSA build of %s failed: %v", ok[i].PkgPath, err)
+				utils.Debug("L4: SSA build of %s failed: %v; rebuilding without it", ok[i].PkgPath, err)
 				failed = append(failed, ok[i].PkgPath)
-				continue
+				panicked = i
+				break
 			}
+			good = append(good, ok[i])
 			built = append(built, sp)
 		}
+		if panicked < 0 {
+			break
+		}
+		// Drop this (possibly wedged) program; rebuild from the packages not
+		// yet known bad: the ones that built, and the ones not reached.
+		ok = append(good, ok[panicked+1:]...)
+		prog, built = nil, nil
 	}
 
 	var deg []Degraded

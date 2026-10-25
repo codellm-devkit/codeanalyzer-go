@@ -1,11 +1,13 @@
 package sdg
 
 import (
+	"go/types"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/tools/go/callgraph"
 	"golang.org/x/tools/go/ssa"
@@ -221,5 +223,80 @@ func TestProjectFuncs_CoversClosuresAndMethods(t *testing.T) {
 	}
 	if !funcs[prog.ImportedPackage("example.com/dataflow/flow").Func("IfElse")] {
 		t.Error("flow.IfElse is not in the VTA function set")
+	}
+}
+
+// panicOn returns a callHook that panics on a call to the function named name.
+func panicOn(name string) func(*types.Func) {
+	return func(f *types.Func) {
+		if f.Name() == name {
+			panic("boom in " + name)
+		}
+	}
+}
+
+// withTimeout runs f, failing the test if it does not return within d (a
+// deadlocked SSA program blocks forever; recover cannot catch that).
+func withTimeout(t *testing.T, d time.Duration, f func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() { defer close(done); f() }()
+	select {
+	case <-done:
+	case <-time.After(d):
+		t.Fatalf("did not finish within %s: the SSA program deadlocked", d)
+	}
+}
+
+// TestSSA_MidBuildPanicDoesNotDeadlock: testdata/ssapanic packages a and b
+// share the instance g.Map[int]. Building a creates it under a's builder,
+// then panics on the call to Boom, so a's builder never marks that instance
+// done. Package b, built next in the same program, would wait on it forever.
+// buildSSA must instead drop the program and rebuild without a: the run
+// finishes, partial_ssa names a alone, and b keeps its SSA body.
+func TestSSA_MidBuildPanicDoesNotDeadlock(t *testing.T) {
+	in := loadInput(t, "ssapanic")
+	callHook = panicOn("Boom")
+	defer func() { callHook = nil }()
+
+	var prog *ssa.Program
+	var pkgs []*ssa.Package
+	var deg []Degraded
+	withTimeout(t, 30*time.Second, func() { prog, pkgs, deg = buildSSA(in) })
+
+	if len(deg) != 1 || deg[0].Code != "partial_ssa" || !slices.Equal(deg[0].Packages, []string{"example.com/ssapanic/a"}) {
+		t.Fatalf("degraded = %+v, want one partial_ssa naming example.com/ssapanic/a", deg)
+	}
+	var built []string
+	for _, p := range pkgs {
+		built = append(built, p.Pkg.Path())
+	}
+	if want := []string{"example.com/ssapanic/b", "example.com/ssapanic/g", "example.com/ssapanic/w"}; !slices.Equal(built, want) {
+		t.Fatalf("built = %v, want %v", built, want)
+	}
+	useB := prog.ImportedPackage("example.com/ssapanic/b").Func("UseB")
+	if useB == nil || len(useB.Blocks) == 0 {
+		t.Fatal("b.UseB has no SSA body after a's build panicked")
+	}
+	if a := prog.ImportedPackage("example.com/ssapanic/a"); a != nil {
+		t.Errorf("the rebuilt program still holds package a (%d members)", len(a.Members))
+	}
+	if res := Run(in); len(res.Degraded) != 1 || res.Degraded[0].Code != "partial_ssa" {
+		t.Errorf("Run degraded = %+v, want only partial_ssa (VTA runs on the rebuilt program)", res.Degraded)
+	}
+}
+
+// TestRun_FuncSetPanicDegradesToNoVTA: building the VTA function set builds
+// method wrappers on demand ((*w.V).Never, which nothing calls, so the package
+// build never made it). A panic there is recovered as no_vta.
+func TestRun_FuncSetPanicDegradesToNoVTA(t *testing.T) {
+	in := loadInput(t, "ssapanic")
+	callHook = panicOn("Never")
+	defer func() { callHook = nil }()
+
+	var res Result
+	withTimeout(t, 30*time.Second, func() { res = Run(in) })
+	if len(res.Degraded) != 1 || res.Degraded[0].Code != "no_vta" {
+		t.Fatalf("degraded = %+v, want one no_vta", res.Degraded)
 	}
 }
