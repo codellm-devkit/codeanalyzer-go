@@ -600,7 +600,7 @@ func (b *SymbolTableBuilder) buildCallable(
 		callable.Code = b.nodeSource(decl)
 		callable.CallSites = b.buildCallSites(pkg, decl.Body)
 		callable.LocalVariables = b.buildLocalVars(pkg, decl.Body)
-		callable.InnerCallables = b.buildInnerCallables(pkg, sig, decl.Body)
+		callable.InnerCallables = b.buildInnerCallables(pkg, sig, callable.Path, decl.Body)
 	}
 
 	return callable
@@ -830,8 +830,10 @@ func (b *SymbolTableBuilder) buildLocalVars(pkg *packages.Package, body *ast.Blo
 // buildInnerCallables collects the outermost function literals of body as
 // named closures (astwalk.Literals: closure_1, closure_2, … in ast.Inspect
 // order). A nested literal is its enclosing closure's own inner callable,
-// built by the recursion on lit.Body.
-func (b *SymbolTableBuilder) buildInnerCallables(pkg *packages.Package, outerSig string, body *ast.BlockStmt) map[string]schema.GoCallable {
+// built by the recursion on lit.Body. Every closure carries the enclosing
+// callable's declaring file as its Path (Go has no cross-file closures), so
+// the resolver keys its call sites and edges like any other callable's.
+func (b *SymbolTableBuilder) buildInnerCallables(pkg *packages.Package, outerSig, path string, body *ast.BlockStmt) map[string]schema.GoCallable {
 	inner := map[string]schema.GoCallable{}
 	for _, l := range astwalk.Literals(body) {
 		lit, name := l.Lit, l.Name
@@ -843,6 +845,7 @@ func (b *SymbolTableBuilder) buildInnerCallables(pkg *packages.Package, outerSig
 
 		ic := schema.GoCallable{
 			Name:           name,
+			Path:           path,
 			Signature:      sig,
 			Parameters:     b.buildParams(pkg, lit.Type),
 			ReturnType:     retType,
@@ -857,7 +860,7 @@ func (b *SymbolTableBuilder) buildInnerCallables(pkg *packages.Package, outerSig
 			ic.Code = b.nodeSource(lit)
 			ic.CallSites = b.buildCallSites(pkg, lit.Body)
 			ic.LocalVariables = b.buildLocalVars(pkg, lit.Body)
-			ic.InnerCallables = b.buildInnerCallables(pkg, sig, lit.Body)
+			ic.InnerCallables = b.buildInnerCallables(pkg, sig, path, lit.Body)
 		}
 		inner[name] = ic
 	}

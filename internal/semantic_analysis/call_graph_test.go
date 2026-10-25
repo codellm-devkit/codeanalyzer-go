@@ -161,3 +161,42 @@ func firstDiff(a, b []string) string {
 	}
 	return fmt.Sprintf("length differs (%d vs %d)", len(a), len(b))
 }
+
+// TestCallGraph_ClosureSitesResolve: call sites inside function literals are
+// backfilled and produce edges whose source is the closure signature and whose
+// SourcePath is the declaring file (#17).
+func TestCallGraph_ClosureSitesResolve(t *testing.T) {
+	dir, err := filepath.Abs("../../testdata/dataflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := syntactic_analysis.NewSymbolTableBuilder(dir)
+	st, err := b.Build(nil, true)
+	if err != nil {
+		t.Fatalf("symbol table build failed: %v", err)
+	}
+	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
+	edges := cg.Build(st)
+
+	const outer = "example.com/dataflow/flow.Closure"
+	lit, ok := st["flow/flow.go"].Functions[outer].InnerCallables["closure_1"]
+	if !ok {
+		t.Fatal("Closure has no closure_1")
+	}
+	if lit.Path != "flow/flow.go" {
+		t.Errorf("closure Path = %q, want flow/flow.go", lit.Path)
+	}
+	if len(lit.CallSites) != 1 || lit.CallSites[0].CalleeSignature == nil ||
+		*lit.CallSites[0].CalleeSignature != "example.com/dataflow/flow.f" {
+		t.Fatalf("closure call site not resolved: %+v", lit.CallSites)
+	}
+	for _, e := range edges {
+		if e.Source == outer+".closure_1" && e.Target == "example.com/dataflow/flow.f" {
+			if e.SourcePath != "flow/flow.go" {
+				t.Errorf("edge SourcePath = %q, want flow/flow.go", e.SourcePath)
+			}
+			return
+		}
+	}
+	t.Error("no edge from the closure to flow.f")
+}

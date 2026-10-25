@@ -121,6 +121,8 @@ func buildKnownSigs(symbolTable map[string]schema.GoFile) map[string]bool {
 }
 
 // resolveCallable backfills callee_signature on each call site and produces edges.
+// It then does the same for the callable's closures (InnerCallables) in sorted
+// key order, recursively, after the callable's own sites.
 //
 // An in-project callee (in knownSigs) gets an edge. A library callee (a package
 // outside the project) is recorded in cg.externals, its site is tagged with the
@@ -179,6 +181,15 @@ func (cg *CallGraphBuilder) resolveCallable(
 			// call site. See schema.GoCallEdge.SourcePath.
 			SourcePath: callable.Path,
 		})
+	}
+
+	// Closures: their own sites, then theirs in turn. Each carries its enclosing
+	// callable's declaring file as Path, so the site index and the edge dedup
+	// treat it like any other callable.
+	for _, name := range sortedKeys(callable.InnerCallables) {
+		inner, innerEdges := cg.resolveCallable(pkg, callable.InnerCallables[name], seen, knownSigs)
+		callable.InnerCallables[name] = inner
+		edges = append(edges, innerEdges...)
 	}
 
 	return callable, edges

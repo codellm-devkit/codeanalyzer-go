@@ -294,15 +294,24 @@ func TestCaching_EagerForcesRebuild(t *testing.T) {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+// allSignatures collects every callable signature, closures included (a closure
+// is a call-graph edge source).
 func allSignatures(app *schema.GoApplication) map[string]bool {
 	sigs := map[string]bool{}
+	var add func(sig string, c schema.GoCallable)
+	add = func(sig string, c schema.GoCallable) {
+		sigs[sig] = true
+		for _, ic := range c.InnerCallables {
+			add(ic.Signature, ic)
+		}
+	}
 	for _, f := range app.SymbolTable {
-		for sig := range f.Functions {
-			sigs[sig] = true
+		for sig, c := range f.Functions {
+			add(sig, c)
 		}
 		for _, t := range f.Types {
-			for sig := range t.Methods {
-				sigs[sig] = true
+			for sig, c := range t.Methods {
+				add(sig, c)
 			}
 		}
 	}

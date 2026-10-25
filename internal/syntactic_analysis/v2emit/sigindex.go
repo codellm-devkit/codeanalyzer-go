@@ -80,8 +80,14 @@ func (idx sigIndex) addCallable(parentID, relPath string, c schema.GoCallable) {
 	}
 
 	// Precise entry: a callable's declaring file plus its signature is unique
-	// even for init, because at most one init exists per file.
+	// even for init, because at most one init exists per file. Call-graph
+	// edges carry the declaring file (c.Path), which differs from relPath for
+	// a method declared apart from its receiver type, and for the closures in
+	// one; index both so either resolves.
 	idx.bySigPath[sigPathKey{sig: c.Signature, path: relPath}] = callID
+	if c.Path != "" && c.Path != relPath {
+		idx.bySigPath[sigPathKey{sig: c.Signature, path: c.Path}] = callID
+	}
 
 	for _, inner := range c.InnerCallables {
 		idx.addCallable(callID, relPath, inner)

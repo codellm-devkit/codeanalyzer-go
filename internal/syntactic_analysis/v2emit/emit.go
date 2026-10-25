@@ -141,8 +141,8 @@ func emitType(modID, modRel string, t schema.GoType, idx sigIndex, srcs *sourceC
 // module its outermost enclosing callable nests under). declRel and declLI are
 // the file the callable's positions are relative to and its lineIndex: the
 // nesting file for a top-level callable, the enclosing callable's declaring
-// file for a closure (Go has no cross-file closures; v1 closures carry no
-// Path). A callable's own c.Path, when set, is its declaring file.
+// file for a closure (Go has no cross-file closures; a v1 closure's Path is
+// that same file). A callable's own c.Path, when set, is its declaring file.
 //
 // When the declaring file differs from the containing module — a method whose
 // receiver type is in another file, and every closure (nested ones included)
