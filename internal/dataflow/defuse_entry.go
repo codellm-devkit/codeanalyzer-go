@@ -109,6 +109,10 @@ func EntryBases(fn ast.Node, info *types.Info) []types.Object {
 	return append(out, globals...)
 }
 
+// FreeVars is freeVars, exported for the L4 capture formals (spec §4.6):
+// one capture list, in one order, for L3's @entry and L4's ports.
+func FreeVars(lit *ast.FuncLit, info *types.Info) []types.Object { return freeVars(lit, info) }
+
 // freeVars returns the variables function literal lit captures: every
 // variable its body (nested literals included) uses that is declared outside
 // lit and not at package scope, by position, then name.

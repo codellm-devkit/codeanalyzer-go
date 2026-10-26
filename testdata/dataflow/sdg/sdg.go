@@ -165,3 +165,124 @@ func takeInner(p *Inner) {}
 func unusedRef(p *Inner, v int) int {
 	return v
 }
+
+// multiT is a value receiver type that holds no reference.
+type multiT struct{ n int }
+
+// Multi has a receiver, a named and a blank param, and two results.
+func (s multiT) Multi(a int, _ string) (int, error) {
+	return a + s.n, nil
+}
+
+// Named has one named result: its formal_out is <return>, never n.
+func Named() (n int) {
+	n = 1
+	return
+}
+
+// Variadic collapses excess actuals onto xs.
+func Variadic(xs ...int) int {
+	return len(xs)
+}
+
+func pair() (int, int) { return 1, 2 }
+
+func takeTwo(a, b int) int { return a + b }
+
+// CallVariadic passes three values, then pair's two results, to Variadic,
+// and pair's results to takeTwo.
+func CallVariadic() int {
+	a := Variadic(1, 2, 3)
+	b := Variadic(pair())
+	c := takeTwo(pair())
+	return a + b + c
+}
+
+// MethodValue calls s.Get through a bound method value.
+func MethodValue(s *sqlStore, k string) string {
+	f := s.Get
+	return f(k)
+}
+
+// MethodExpr calls Get as a method expression: s binds the receiver.
+func MethodExpr(s *sqlStore, k string) string {
+	return (*sqlStore).Get(s, k)
+}
+
+// CaptureSite stores a literal that reads and writes the captured x.
+func CaptureSite(v int) func() int {
+	x := v
+	f := func() int {
+		x++
+		return x
+	}
+	return f
+}
+
+// DirectLit calls a literal in place: a binds v, and the capture y binds at
+// the call.
+func DirectLit(v int) int {
+	y := 0
+	func(a int) {
+		y = a
+	}(v)
+	return y
+}
+
+func upper(t string) string { return t }
+
+// MixedValue calls a function value that is either a plain function or a
+// bound method: only the method binds the function value as its receiver.
+func MixedValue(s *sqlStore, b bool) string {
+	f := upper
+	if b {
+		f = s.Get
+	}
+	return f("k")
+}
+
+// PrunedCall's second return is unreachable: its call node is pruned.
+func PrunedCall(v int) int {
+	return v
+	return double(v)
+}
+
+// callUnknown calls a function value no caller supplies: unresolved.
+func callUnknown(f func(int) int) int {
+	return f(1)
+}
+
+// ChainLit starts a statement with a called literal whose result is
+// written: the call holds the literal's line:col, the statement its /2.
+func ChainLit(v int) {
+	x := 0
+	func() *Inner { _ = x; return &Inner{} }().n = v
+}
+
+func apply(f func() int) int { return f() }
+
+// CaptureArg passes a capturing literal to a call nested in an assignment:
+// the assignment, not the satellite call, hosts the capture site.
+func CaptureArg(v int) int {
+	n := apply(func() int { return v })
+	return n
+}
+
+// DeadLit stores a capturing literal after a return, inside a kept branch:
+// the literal is dead and has no capture site.
+func DeadLit(v int) {
+	if v > 0 {
+		return
+		_ = func() int { return v }
+	}
+}
+
+type sumT struct{}
+
+func (sumT) Sum(xs ...int) int { return len(xs) }
+
+// MethodExprVariadic passes only the receiver to a variadic method
+// expression: nothing reaches xs.
+func MethodExprVariadic(v sumT) int {
+	return sumT.Sum(v)
+}

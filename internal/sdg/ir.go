@@ -25,7 +25,15 @@ type Target struct {
 }
 
 // VertexKind is an L4 port vertex kind.
-type VertexKind string // "formal_in" | "formal_out" | "actual_in" | "actual_out"
+type VertexKind string
+
+// The L4 port vertex kinds (shared vocabulary).
+const (
+	KindFormalIn  VertexKind = "formal_in"
+	KindFormalOut VertexKind = "formal_out"
+	KindActualIn  VertexKind = "actual_in"
+	KindActualOut VertexKind = "actual_out"
+)
 
 // Vertex is one L4 port vertex of a callable, keyed by its local key.
 type Vertex struct {

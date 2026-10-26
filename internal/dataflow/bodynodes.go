@@ -290,14 +290,23 @@ func (b *builder) folded(k string, s ast.Stmt) {
 // earlier node) already holds it.
 func (b *builder) add(kind NodeKind, n ast.Node, pos, end token.Pos) string {
 	p := b.fset.PositionFor(pos, false)
-	base := v2.LocalID(p.Line, p.Column)
-	key := base
-	for i := 2; b.taken[key]; i++ {
-		key = base + "/" + strconv.Itoa(i)
-	}
-	b.taken[key] = true
+	key := NextFreeKey(v2.LocalID(p.Line, p.Column), b.taken)
 	b.nodes = append(b.nodes, Node{Key: key, Kind: kind, Pos: pos, End: end, Stmt: n})
 	b.keyOf[n] = key
+	return key
+}
+
+// NextFreeKey returns base, or base + "/n" for the least n ≥ 2 that taken
+// does not hold, and marks it taken. It is the one rule for keying a node at
+// a position an L1 call (or an earlier node) may already hold: body nodes
+// (BuildNodes) and the L4 capture sites both use it, so neither ever moves
+// an L1 call key.
+func NextFreeKey(base string, taken map[string]bool) string {
+	key := base
+	for i := 2; taken[key]; i++ {
+		key = base + "/" + strconv.Itoa(i)
+	}
+	taken[key] = true
 	return key
 }
 

@@ -32,6 +32,7 @@ type l2Edge struct{ path, src, dst string }
 // nothing (unmapped_ssa, already reported) is not a target.
 type dispatch struct {
 	sites  map[siteKey][]Target      // each sorted by compareTarget, no duplicates
+	static map[siteKey]Target        // the L2 static callee of a site, when it maps to a target
 	bySig  map[string]dataflow.L3Key // symbol-table callable of each signature (init excepted)
 	l2     map[l2Edge]bool
 	l2Ext  map[string]schema.GoExternalCallee // in.Externals, read-only
@@ -55,6 +56,7 @@ func compareTarget(a, b Target) int {
 func newDispatch(in Input) *dispatch {
 	d := &dispatch{
 		sites:  map[siteKey][]Target{},
+		static: map[siteKey]Target{},
 		l2:     make(map[l2Edge]bool, len(in.CallGraph)),
 		l2Ext:  in.Externals,
 		newExt: map[string]schema.GoExternalCallee{},
@@ -107,11 +109,16 @@ func newDispatch(in Input) *dispatch {
 			}
 			sig := *cs.CalleeSignature
 			site := siteKey{u.Key, u.Calls[i].Key}
-			if cs.CalleeImportPath != "" {
-				d.add(site, Target{External: sig})
-			} else if k, ok := bySig[sig]; ok {
-				d.add(site, Target{Callable: k})
+			t := Target{External: sig}
+			if cs.CalleeImportPath == "" {
+				k, ok := bySig[sig]
+				if !ok {
+					continue
+				}
+				t = Target{Callable: k}
 			}
+			d.add(site, t)
+			d.static[site] = t
 		}
 	}
 	return d
