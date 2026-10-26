@@ -698,3 +698,8 @@ func PlainRecv(p plain) int {
 	p.sum()
 	return p.a
 }
+
+// Bump is a method declared above its receiver type (L1 used to drop it).
+func (e *early) Bump() int { return f(e.n) }
+
+type early struct{ n int }

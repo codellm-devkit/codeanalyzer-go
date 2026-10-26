@@ -494,3 +494,64 @@ func TestGateL3_LineDirectiveRealPositions(t *testing.T) {
 		t.Error("Caller: empty cfg")
 	}
 }
+
+// TestSymbolTable_MethodDeclaredAboveItsType: a method declared above its
+// receiver type in the same file is kept. It has its call site at L1, the
+// call to f resolves at -a 2 (callee id and call_graph edge), and at -a 3 it
+// has body nodes and a ddg.
+func TestSymbolTable_MethodDeclaredAboveItsType(t *testing.T) {
+	fx := buildL3(t, "dataflow")
+	const sig = "example.com/dataflow/flow.early.Bump"
+	const fID = "example.com/dataflow/flow.f"
+
+	find := func(out *v2.Analysis) (v2.Callable, bool) {
+		for _, mod := range out.Application.SymbolTable {
+			for _, ty := range mod.Types {
+				for _, m := range ty.Callables {
+					if strings.HasSuffix(m.ID, "/"+sig) {
+						return m, true
+					}
+				}
+			}
+		}
+		return v2.Callable{}, false
+	}
+
+	bump, ok := find(fx.l2)
+	if !ok {
+		t.Fatalf("no callable %s under type early at -a 2", sig)
+	}
+	var call *v2.BodyNode
+	for _, n := range bump.Body {
+		n := n
+		if n.Kind == "call" {
+			call = &n
+		}
+	}
+	if call == nil {
+		t.Fatalf("%s has no call site", sig)
+	}
+	if call.Callee == nil || !strings.HasSuffix(*call.Callee, "/"+fID) {
+		t.Fatalf("call to f not resolved at -a 2: callee = %v", call.Callee)
+	}
+	sawEdge := false
+	for _, e := range fx.l2.Application.CallGraph {
+		if e.Src == bump.ID && e.Dst == *call.Callee {
+			sawEdge = true
+		}
+	}
+	if !sawEdge {
+		t.Errorf("no call_graph edge %s -> %s", bump.ID, *call.Callee)
+	}
+
+	b3, ok := find(fx.l3)
+	if !ok {
+		t.Fatalf("no callable %s at -a 3", sig)
+	}
+	if _, ok := b3.Body["@entry"]; !ok {
+		t.Errorf("%s has no @entry body node at -a 3 (keys %d)", sig, len(b3.Body))
+	}
+	if len(b3.Ddg) == 0 {
+		t.Errorf("%s has no ddg at -a 3", sig)
+	}
+}

@@ -242,7 +242,14 @@ func (b *SymbolTableBuilder) buildGoFile(
 		FileSize:     fileSize,
 	}
 
-	// Walk top-level declarations.
+	// Walk top-level declarations. A method may be declared above its receiver
+	// type, so methods are collected here and attached once every type of the
+	// file is known.
+	type pendingMethod struct {
+		typeName string
+		callable *schema.GoCallable
+	}
+	var methods []pendingMethod
 	for _, decl := range astFile.Decls {
 		switch d := decl.(type) {
 		case *ast.GenDecl:
@@ -253,16 +260,20 @@ func (b *SymbolTableBuilder) buildGoFile(
 				continue
 			}
 			if d.Recv != nil {
-				// Method — attach to its type.
 				if typeName := b.receiverTypeName(d.Recv); typeName != "" {
-					if gt, ok := gf.Types[typeName]; ok {
-						gt.Methods[callable.Signature] = *callable
-						gf.Types[typeName] = gt
-					}
+					methods = append(methods, pendingMethod{typeName, callable})
 				}
 			} else {
 				gf.Functions[callable.Signature] = *callable
 			}
+		}
+	}
+	// Attach in source order. A receiver type in another file is left to
+	// reconcileCrossFileMethods.
+	for _, m := range methods {
+		if gt, ok := gf.Types[m.typeName]; ok {
+			gt.Methods[m.callable.Signature] = *m.callable
+			gf.Types[m.typeName] = gt
 		}
 	}
 

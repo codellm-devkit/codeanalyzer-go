@@ -117,9 +117,7 @@ func inDropped(fn *ssa.Function, dropped map[ast.Node]bool) bool {
 // http2FancyWriter.Push is declared before its receiver type). Every unit is
 // the image of at least one SSA function.
 func TestJoin_EveryProjectFunctionMaps(t *testing.T) {
-	wantDropped := map[string][]string{
-		"chi": {"(*github.com/go-chi/chi/v5/middleware.http2FancyWriter).Push"},
-	}
+	wantDropped := map[string][]string{}
 	for _, name := range []string{"dataflow", "chi", "generics", "rangefunc"} {
 		t.Run(name, func(t *testing.T) {
 			in := loadInput(t, name)
