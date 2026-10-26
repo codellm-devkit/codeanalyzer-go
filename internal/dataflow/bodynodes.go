@@ -124,13 +124,8 @@ func assignCallKeys(body *ast.BlockStmt, calls []UnitCall) map[*ast.CallExpr]str
 	return out
 }
 
-// unpairedCalls returns the number of recorded calls of body and how many of
-// them no entry of calls names by Lparen.
-func unpairedCalls(body *ast.BlockStmt, calls []UnitCall) (recorded, unpaired int) {
-	paired, recorded := pairCalls(body, calls)
-	return recorded, recorded - len(paired)
-}
-
+// pairCalls pairs each recorded call of body with the L1 key whose Lparen is
+// the call's, and returns the pairs and the number of recorded calls.
 func pairCalls(body *ast.BlockStmt, calls []UnitCall) (map[*ast.CallExpr]string, int) {
 	byLparen := make(map[token.Pos]string, len(calls))
 	for _, c := range calls {

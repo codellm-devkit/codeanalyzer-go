@@ -76,9 +76,20 @@ type CdgEdge struct{ Src, Dst string }
 type DdgEdge struct{ Src, Dst, Var string }
 
 // Result is the L3 overlay of one callable body.
+//
+// DefUse and CallKeys are side tables for L4 (ruling R-P2), filled only by
+// RunWithSideTables and dropped by Release; the emitters never read them:
+//
+//   - DefUse is DefUses over Nodes, keyed by node key.
+//   - CallKeys maps the raw Lparen of every call the body pairs with an L1
+//     call key to that key: the SSA join's call key (CallCommon.Pos() is the
+//     CallExpr's Lparen).
 type Result struct {
 	Nodes []Node
 	Cfg   []CfgEdge
 	Cdg   []CdgEdge
 	Ddg   []DdgEdge
+
+	DefUse   map[string]DefUse
+	CallKeys map[token.Pos]string
 }

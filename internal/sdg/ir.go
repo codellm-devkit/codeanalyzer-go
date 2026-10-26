@@ -95,7 +95,10 @@ type Models map[string][][2]string
 
 // Degraded codes (spec §4.15; an open vocabulary of plain strings).
 const (
-	CodeNoSSA      = "no_ssa"
-	CodePartialSSA = "partial_ssa"
-	CodeNoVTA      = "no_vta"
+	CodeNoSSA       = "no_ssa"
+	CodePartialSSA  = "partial_ssa"
+	CodeNoVTA       = "no_vta"
+	CodeUnmappedSSA = "unmapped_ssa"
+	CodeL3Skipped   = "l3_skipped"
+	CodeRangeFunc   = "range_func"
 )

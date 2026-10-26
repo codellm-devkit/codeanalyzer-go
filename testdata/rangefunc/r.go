@@ -21,3 +21,14 @@ func RangeFunc(seq func(func(int) bool)) int {
 	}
 	return s
 }
+
+func sink(int) {}
+
+// RangeFuncCall calls sink in the body of a range over an iterator: in SSA
+// the call sits in the synthetic yield function, which folds into
+// RangeFuncCall.
+func RangeFuncCall(seq func(func(int) bool)) {
+	for v := range seq {
+		sink(v)
+	}
+}

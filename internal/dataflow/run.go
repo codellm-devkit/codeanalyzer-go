@@ -56,6 +56,18 @@ type UnitCall struct {
 // keys and the body's recorded calls (RecordedCallCount) is a cross-check
 // only: it warns, and the unit is still built when every call is paired.
 func Run(fset *token.FileSet, units []Unit, k, jobs int) map[L3Key]Result {
+	return run(fset, units, k, jobs, false)
+}
+
+// RunWithSideTables is Run that also keeps each result's DefUse and CallKeys
+// (the -a 4 input). Below -a 4 nothing reads them, so Run drops them with the
+// rest of each callable's working state instead of holding them all until
+// Release.
+func RunWithSideTables(fset *token.FileSet, units []Unit, k, jobs int) map[L3Key]Result {
+	return run(fset, units, k, jobs, true)
+}
+
+func run(fset *token.FileSet, units []Unit, k, jobs int, keep bool) map[L3Key]Result {
 	if jobs < 1 {
 		jobs = runtime.GOMAXPROCS(0)
 	}
@@ -67,7 +79,7 @@ func Run(fset *token.FileSet, units []Unit, k, jobs int) map[L3Key]Result {
 		go func() {
 			defer wg.Done()
 			for i := range next {
-				results[i] = runOne(fset, units[i], k)
+				results[i] = runOne(fset, units[i], k, keep)
 			}
 		}()
 	}
@@ -90,7 +102,7 @@ func Run(fset *token.FileSet, units []Unit, k, jobs int) map[L3Key]Result {
 // CFG, def-use or DDG builders) is recovered: that callable stays at L1 with a
 // warning (and, at -vv, the panic's stack), and the rest of the run — and the
 // L1/L2 output — is unaffected.
-func runOne(fset *token.FileSet, u Unit, k int) (res *Result) {
+func runOne(fset *token.FileSet, u Unit, k int, keep bool) (res *Result) {
 	defer func() {
 		if r := recover(); r != nil {
 			utils.Warn("L3 skipped for %s (%s): %v", u.Key.Signature, u.Key.Path, r)
@@ -102,7 +114,8 @@ func runOne(fset *token.FileSet, u Unit, k int) (res *Result) {
 	if body == nil {
 		return nil
 	}
-	recorded, missing := unpairedCalls(body, u.Calls)
+	paired, recorded := pairCalls(body, u.Calls)
+	missing := recorded - len(paired)
 	if recorded != len(u.Calls) {
 		utils.Warn("L3 for %s (%s): %d L1 call keys for %d calls in the body", u.Key.Signature, u.Key.Path, len(u.Calls), recorded)
 	}
@@ -113,12 +126,20 @@ func runOne(fset *token.FileSet, u Unit, k int) (res *Result) {
 	nodes, keyOf := BuildNodes(fset, body, u.Calls)
 	kept, cfg := BuildCFG(nodes, keyOf, body, u.Info)
 	du := DefUses(kept, u.Info, k, EntryBases(u.Fn, u.Info), u.Fn, keyOf)
-	return &Result{
+	res = &Result{
 		Nodes: kept,
 		Cfg:   cfg,
 		Cdg:   BuildCDG(kept, cfg),
 		Ddg:   BuildDDG(kept, cfg, du),
 	}
+	if keep {
+		res.DefUse = du
+		res.CallKeys = make(map[token.Pos]string, len(paired))
+		for call, key := range paired {
+			res.CallKeys[call.Lparen] = key
+		}
+	}
+	return res
 }
 
 func funcBody(fn ast.Node) *ast.BlockStmt {
@@ -131,13 +152,24 @@ func funcBody(fn ast.Node) *ast.BlockStmt {
 	return nil
 }
 
-// Release drops the result's references into the AST (each Node.Stmt), so a
-// finished run no longer keeps the parsed packages reachable. Every other
-// field (keys, spans, edges) stays: they are all the emitter reads. Call it
-// once the last consumer of Stmt is done; Run's own stages are the only one
-// today.
-func (r Result) Release() {
+// Release drops the result's references into the AST (each Node.Stmt) and
+// its L4 side tables (DefUse, CallKeys), so a finished run no longer keeps
+// the parsed packages reachable. Every other field (keys, spans, edges)
+// stays: they are all the emitter reads. Call it once the last consumer is
+// done: dataflow.Run below -a 4, sdg.Run at -a 4. A Result held in a map is
+// a copy: release a map with ReleaseAll.
+func (r *Result) Release() {
 	for i := range r.Nodes {
 		r.Nodes[i].Stmt = nil
+	}
+	r.DefUse = nil
+	r.CallKeys = nil
+}
+
+// ReleaseAll releases every result of m in place.
+func ReleaseAll(m map[L3Key]Result) {
+	for k, r := range m {
+		r.Release()
+		m[k] = r
 	}
 }

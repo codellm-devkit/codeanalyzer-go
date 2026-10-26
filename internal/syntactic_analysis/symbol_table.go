@@ -366,7 +366,7 @@ func (b *SymbolTableBuilder) buildType(
 	var typSig string
 	if pkg.TypesInfo != nil {
 		if obj, ok := pkg.TypesInfo.Defs[spec.Name]; ok && obj != nil {
-			typSig = signatureOf(obj)
+			typSig = SignatureOf(obj)
 		}
 	}
 	if typSig == "" {
@@ -606,12 +606,12 @@ func (b *SymbolTableBuilder) buildCallable(
 	return callable
 }
 
-// declSignature is a FuncDecl's callable signature: signatureOf its object,
+// declSignature is a FuncDecl's callable signature: SignatureOf its object,
 // or, without type info, <pkgpath>[.<Recv>].<Name>.
 func (b *SymbolTableBuilder) declSignature(pkg *packages.Package, decl *ast.FuncDecl) string {
 	if pkg.TypesInfo != nil {
 		if obj, ok := pkg.TypesInfo.Defs[decl.Name]; ok && obj != nil {
-			if sig := signatureOf(obj); sig != "" {
+			if sig := SignatureOf(obj); sig != "" {
 				return sig
 			}
 		}

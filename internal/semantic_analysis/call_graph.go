@@ -2,7 +2,7 @@
 //
 // This stage uses the same golang.org/x/tools/go/packages load that built the
 // symbol table. For each recorded call site it resolves the callee to a
-// *types.Func, derives its signature via signatureOf(), backfills
+// *types.Func, derives its signature via SignatureOf(), backfills
 // callee_signature in place, and emits an identity-only GoCallEdge.
 //
 // Precision choice: declared-type dispatch (CHA-style). Pointer-receiver
@@ -23,6 +23,7 @@ import (
 	"golang.org/x/tools/go/packages"
 
 	"github.com/codellm-devkit/codeanalyzer-go/internal/schema"
+	"github.com/codellm-devkit/codeanalyzer-go/internal/syntactic_analysis"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/utils"
 )
 
@@ -148,7 +149,7 @@ func (cg *CallGraphBuilder) resolveCallable(
 			utils.Debug("unresolved call site: %s in %s", site.MethodName, callable.Signature)
 			continue
 		}
-		calleeSig := calleeSignatureOf(fn)
+		calleeSig := CalleeSignatureOf(fn)
 
 		// Backfill the site whether the callee is in-project or a library.
 		site.CalleeSignature = &calleeSig
@@ -360,38 +361,12 @@ func (cg *CallGraphBuilder) resolveCallExpr(pkg *packages.Package, call *ast.Cal
 	return nil
 }
 
-// calleeSignatureOf is the call-site mirror of signatureOf — same canonicalization.
-// Must produce byte-identical strings to signatureOf() in syntactic_analysis.
-func calleeSignatureOf(obj types.Object) string {
-	if obj == nil {
-		return ""
-	}
-	pkg := obj.Pkg()
-	pkgPath := ""
-	if pkg != nil {
-		pkgPath = pkg.Path()
-	}
-
-	switch o := obj.(type) {
-	case *types.Func:
-		sig := o.Type().(*types.Signature)
-		recv := sig.Recv()
-		if recv != nil {
-			recvType := recv.Type()
-			if ptr, ok := recvType.(*types.Pointer); ok {
-				recvType = ptr.Elem()
-			}
-			if named, ok := recvType.(*types.Named); ok {
-				typeName := named.Obj().Name()
-				return pkgPath + "." + typeName + "." + o.Name()
-			}
-		}
-		return pkgPath + "." + o.Name()
-	case *types.TypeName:
-		return pkgPath + "." + o.Name()
-	default:
-		return pkgPath + "." + obj.Name()
-	}
+// CalleeSignatureOf is the signature of a resolved callee, the call-site side
+// of the one canonicalizer (syntactic_analysis.SignatureOf), so caller-side
+// and callee-side ids are identical by construction. The L4 SSA join uses it
+// for external callees (ruling R-P5).
+func CalleeSignatureOf(obj types.Object) string {
+	return syntactic_analysis.SignatureOf(obj)
 }
 
 // packageForFile returns the *packages.Package that contains the given relative file path.

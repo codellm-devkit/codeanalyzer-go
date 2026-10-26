@@ -35,6 +35,9 @@ func TestAnalyze_Level4RunsSDG(t *testing.T) {
 				t.Fatalf("%v: node %s keeps its Stmt after -a 4", k, n.Key)
 			}
 		}
+		if r.DefUse != nil || r.CallKeys != nil {
+			t.Fatalf("%v keeps its L4 side tables after -a 4", k)
+		}
 	}
 
 	opts.Level = options.LevelDataflow

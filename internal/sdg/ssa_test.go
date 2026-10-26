@@ -13,13 +13,21 @@ import (
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/ssa/ssautil"
 
+	"github.com/codellm-devkit/codeanalyzer-go/internal/dataflow"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/syntactic_analysis"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/utils"
 )
 
-// loadInput loads testdata/<name> the way the analyzer does (symbol-table
-// builder, tests skipped) and returns the sdg input over it.
+// loadInput loads testdata/<name> the way the analyzer does at -a 4
+// (symbol-table builder, tests skipped, L3 with side tables) and returns the
+// sdg input over it.
 func loadInput(t *testing.T, name string) Input {
+	t.Helper()
+	return loadInputOpts(t, name, true)
+}
+
+// loadInputOpts is loadInput with the --skip-tests choice.
+func loadInputOpts(t *testing.T, name string, skipTests bool) Input {
 	t.Helper()
 	_, thisFile, _, _ := runtime.Caller(0)
 	dir, err := filepath.Abs(filepath.Join(filepath.Dir(thisFile), "..", "..", "testdata", name))
@@ -27,26 +35,15 @@ func loadInput(t *testing.T, name string) Input {
 		t.Fatal(err)
 	}
 	b := syntactic_analysis.NewSymbolTableBuilder(dir)
-	st, err := b.Build(nil, true)
+	st, err := b.Build(nil, skipTests)
 	if err != nil {
 		t.Fatalf("symbol table build failed: %v", err)
 	}
-	return Input{Fset: b.Fset(), Pkgs: b.Pkgs(), ProjectDir: dir, SymbolTable: st, K: 3, Jobs: 1}
-}
-
-// homePath is the import path of the package fn's code comes from: its own
-// package, its generic origin's, or (for a wrapper) the wrapped object's.
-func homePath(fn *ssa.Function) string {
-	if fn.Pkg != nil {
-		return fn.Pkg.Pkg.Path()
+	units := b.L3Units(st)
+	return Input{
+		Fset: b.Fset(), Pkgs: b.Pkgs(), ProjectDir: dir, SymbolTable: st,
+		Units: units, L3: dataflow.RunWithSideTables(b.Fset(), units, 3, 1), K: 3, Jobs: 1,
 	}
-	if o := fn.Origin(); o != nil && o.Pkg != nil {
-		return o.Pkg.Pkg.Path()
-	}
-	if obj := fn.Object(); obj != nil && obj.Pkg() != nil {
-		return obj.Pkg().Path()
-	}
-	return ""
 }
 
 // TestSSA_BuildsProjectPackagesOnly: bodies are built for the project's
@@ -65,7 +62,7 @@ func TestSSA_BuildsProjectPackagesOnly(t *testing.T) {
 	want := []string{
 		"example.com/dataflow/flow", "example.com/dataflow/generic", "example.com/dataflow/inits",
 		"example.com/dataflow/l1", "example.com/dataflow/linedir", "example.com/dataflow/vend",
-		"example.com/dataflow/xfile",
+		"example.com/dataflow/xfile", "example.com/dataflow/xtest", "example.com/dataflow/xtest/user",
 	}
 	if !slices.Equal(built, want) {
 		t.Fatalf("built packages = %v, want %v", built, want)
@@ -136,8 +133,8 @@ func TestSSA_PanicDegradesPackage(t *testing.T) {
 			t.Error("the panicked package is still returned as built")
 		}
 	}
-	if len(pkgs) != 6 {
-		t.Errorf("built %d packages, want the other 6", len(pkgs))
+	if len(pkgs) != 8 {
+		t.Errorf("built %d packages, want the other 8", len(pkgs))
 	}
 	if fn := prog.ImportedPackage("example.com/dataflow/l1"); fn == nil || len(fn.Members) == 0 {
 		t.Error("l1 was not built after flow panicked")
@@ -155,8 +152,8 @@ func TestSSA_PanicDegradesPackage(t *testing.T) {
 	if !slices.Equal(codes, []string{"partial_ssa", "no_ssa"}) {
 		t.Fatalf("codes = %v, want [partial_ssa no_ssa]", codes)
 	}
-	if len(deg[0].Packages) != 7 {
-		t.Errorf("partial_ssa lists %v, want all 7 packages", deg[0].Packages)
+	if len(deg[0].Packages) != 9 {
+		t.Errorf("partial_ssa lists %v, want all 9 packages", deg[0].Packages)
 	}
 	if res := Run(in); len(res.Degraded) != 2 || res.Degraded[1].Code != "no_ssa" {
 		t.Errorf("Run degraded = %+v, want partial_ssa + no_ssa and no VTA", res.Degraded)

@@ -6,17 +6,19 @@ import (
 	"go/types"
 )
 
-// signatureOf is the single canonicalizer for all signature strings in the analyzer.
+// SignatureOf is the single canonicalizer for all signature strings in the analyzer.
 // It produces the edge id used in GoCallable.signature, GoType.signature, and every
 // call-graph edge source/target. All callers must use this function — never build
 // signatures ad-hoc. Caller-side and callee-side ids are then guaranteed identical.
+// The call-graph builder (semantic_analysis.CalleeSignatureOf) and the L4 SSA join
+// (internal/sdg) reach it through that one exported entry point.
 //
 // Format:
 //   - Package function:  "pkg/path.FuncName"
 //   - Method:            "pkg/path.TypeName.MethodName"
 //   - Interface method:  "pkg/path.InterfaceName.MethodName"
 //   - Type:              "pkg/path.TypeName"
-func signatureOf(obj types.Object) string {
+func SignatureOf(obj types.Object) string {
 	if obj == nil {
 		return ""
 	}
@@ -48,4 +50,3 @@ func signatureOf(obj types.Object) string {
 		return fmt.Sprintf("%s.%s", pkgPath, obj.Name())
 	}
 }
-

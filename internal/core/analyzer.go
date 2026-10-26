@@ -124,7 +124,13 @@ func (a *Analyzer) Analyze() (*schema.GoApplication, error) {
 	var units []dataflow.Unit
 	if a.opts.Level >= options.LevelDataflow {
 		units = builder.L3Units(symbolTable)
-		a.l3 = dataflow.Run(builder.Fset(), units, KLimit(a.opts), a.opts.Jobs)
+		if a.opts.Level >= options.LevelSDG {
+			// L4 reads each result's def/use sets and call keys (the SSA
+			// join); Release drops them after sdg.Run.
+			a.l3 = dataflow.RunWithSideTables(builder.Fset(), units, KLimit(a.opts), a.opts.Jobs)
+		} else {
+			a.l3 = dataflow.Run(builder.Fset(), units, KLimit(a.opts), a.opts.Jobs)
+		}
 		utils.Info("dataflow: %d callables", len(a.l3))
 	}
 
@@ -147,14 +153,13 @@ func (a *Analyzer) Analyze() (*schema.GoApplication, error) {
 		}
 	}
 
-	// The last reader of Node.Stmt is done (dataflow.Run, or sdg.Run at L4,
-	// which binds call-site actuals from the AST; the emitters read keys,
-	// spans and edges only), so drop the AST references now: the parsed
-	// packages are then unreachable once Analyze returns, before the cache
-	// write and the emission. (#27)
-	for _, r := range a.l3 {
-		r.Release()
-	}
+	// The last reader of Node.Stmt and of the L4 side tables is done
+	// (dataflow.Run, or sdg.Run at L4, which joins SSA to them and binds
+	// call-site actuals from the AST; the emitters read keys, spans and
+	// edges only), so drop them now: the parsed packages are then
+	// unreachable once Analyze returns, before the cache write and the
+	// emission. (#27)
+	dataflow.ReleaseAll(a.l3)
 
 	return a.finalizeAndCache(app)
 }

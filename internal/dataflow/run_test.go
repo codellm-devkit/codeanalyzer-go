@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -422,8 +423,8 @@ func TestResult_ReleaseDropsASTs(t *testing.T) {
 				stmts++
 			}
 		}
-		r.Release()
 	}
+	dataflow.ReleaseAll(out)
 	if stmts == 0 {
 		t.Fatal("no node had a Stmt before Release")
 	}
@@ -436,5 +437,58 @@ func TestResult_ReleaseDropsASTs(t *testing.T) {
 	}
 	if !bytes.Equal(before, emit()) {
 		t.Error("-a 3 JSON changed after Release")
+	}
+	for key, r := range out {
+		if r.DefUse != nil || r.CallKeys != nil {
+			t.Errorf("%v: DefUse / CallKeys kept after Release", key)
+		}
+	}
+}
+
+// TestRun_KeepsDefUseAndCallKeys: with side tables (-a 4), until Release, a
+// result keeps its nodes' def/use sets (keyed by node key) and its call keys
+// by Lparen, which the L4 SSA join and the go/ssa differential read (ruling
+// R-P2). Plain Run (-a 3) keeps neither, and its graphs are the same.
+func TestRun_KeepsDefUseAndCallKeys(t *testing.T) {
+	fset, f, info := parseCheck(t, lineDirectiveSrc)
+	g := funcDecl(t, f, "g")
+	calls := gateCallKeys(fset, g.Body)
+	key := dataflow.L3Key{Path: "p.go", Signature: "p.g"}
+	units := []dataflow.Unit{{Key: key, Fn: g, Info: info, Calls: calls}}
+	res, ok := dataflow.RunWithSideTables(fset, units, 3, 1)[key]
+	if !ok {
+		t.Fatal("no result for g")
+	}
+	plain := dataflow.Run(fset, units, 3, 1)[key]
+	if plain.DefUse != nil || plain.CallKeys != nil {
+		t.Error("Run kept the L4 side tables")
+	}
+	if !reflect.DeepEqual(plain.Cfg, res.Cfg) || !reflect.DeepEqual(plain.Ddg, res.Ddg) || !reflect.DeepEqual(plain.Cdg, res.Cdg) {
+		t.Error("side tables changed the graphs")
+	}
+	if len(res.CallKeys) != len(calls) {
+		t.Fatalf("CallKeys = %v, want one per call (%d)", res.CallKeys, len(calls))
+	}
+	for _, c := range calls {
+		if res.CallKeys[c.Lparen] != c.Key {
+			t.Errorf("CallKeys[%v] = %q, want %q", c.Lparen, res.CallKeys[c.Lparen], c.Key)
+		}
+	}
+	if len(res.DefUse) != len(res.Nodes) {
+		t.Fatalf("DefUse has %d entries for %d nodes", len(res.DefUse), len(res.Nodes))
+	}
+	for _, n := range res.Nodes {
+		if _, ok := res.DefUse[n.Key]; !ok {
+			t.Errorf("node %s has no DefUse", n.Key)
+		}
+	}
+	res.Release()
+	if res.DefUse != nil || res.CallKeys != nil {
+		t.Error("Release kept DefUse / CallKeys")
+	}
+	for _, n := range res.Nodes {
+		if n.Stmt != nil {
+			t.Errorf("node %s keeps its Stmt after Release", n.Key)
+		}
 	}
 }
