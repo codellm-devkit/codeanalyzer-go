@@ -6,14 +6,17 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/codellm-devkit/codeanalyzer-go/internal/dataflow"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/schema"
 	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
+	"github.com/codellm-devkit/codeanalyzer-go/internal/sdg"
 )
 
 // Emit transforms the v1 GoApplication into the v2 Analysis payload. appName is
@@ -24,27 +27,35 @@ import (
 //
 // kLimit is the L3 access-path bound (--graph-field-depth), written as the
 // envelope's k_limit at maxLevel >= 3 only. l3 is dataflow.Run's side table,
-// nil below L3; see emit_l3.go for how it merges into each callable.
+// nil below L3; see emit_l3.go for how it merges into each callable. l4 is
+// sdg.Run's result, nil below L4 (and ignored there); see emit_l4.go for how
+// it merges into the tree and mints every L4 id.
 //
 // This is a pure re-serialization: every fact comes from the v1 model and the
-// L3 side table, except span byte offsets, which are derived from source via
-// lineIndex.
-func Emit(app *schema.GoApplication, appName, projectDir string, maxLevel int, analyzerVersion string, kLimit int, l3 map[dataflow.L3Key]dataflow.Result) *v2.Analysis {
-	e := newEmitter(app, appName, projectDir, maxLevel, l3)
+// L3/L4 side tables, except span byte offsets, which are derived from source
+// via lineIndex.
+func Emit(app *schema.GoApplication, appName, projectDir string, maxLevel int, analyzerVersion string, kLimit int, l3 map[dataflow.L3Key]dataflow.Result, l4 *sdg.Result) *v2.Analysis {
+	e := newEmitter(app, appName, projectDir, maxLevel, l3, l4)
 	out := e.envelope(app, maxLevel, analyzerVersion, kLimit)
 	out.Application.SymbolTable = make(map[string]v2.Module, len(app.SymbolTable))
 	for _, relPath := range sortedFileKeys(app.SymbolTable) {
 		out.Application.SymbolTable[relPath] = e.module(relPath, app.SymbolTable[relPath])
 	}
+	late := e.sdg.late()
+	out.Application.ParamIn = collectEdges(late.paramIn)
+	out.Application.ParamOut = collectEdges(late.paramOut)
+	out.Degraded = late.degraded
 	return out
 }
 
 // EmitTo writes the analysis.json bytes of Emit's payload to w — the same bytes
 // json.Marshal(Emit(...)) produces — without building the whole tree: each
 // module is emitted, marshalled and dropped in symbol_table key order, so peak
-// memory is the envelope plus the largest module, not the document.
-func EmitTo(w io.Writer, app *schema.GoApplication, appName, projectDir string, maxLevel int, analyzerVersion string, kLimit int, l3 map[dataflow.L3Key]dataflow.Result) error {
-	e := newEmitter(app, appName, projectDir, maxLevel, l3)
+// memory is the envelope plus the largest module, not the document. The L4
+// param edges follow the modules (they need every callable's id) and are
+// minted and written one at a time.
+func EmitTo(w io.Writer, app *schema.GoApplication, appName, projectDir string, maxLevel int, analyzerVersion string, kLimit int, l3 map[dataflow.L3Key]dataflow.Result, l4 *sdg.Result) error {
+	e := newEmitter(app, appName, projectDir, maxLevel, l3, l4)
 	out := e.envelope(app, maxLevel, analyzerVersion, kLimit)
 	return encode(w, out, func(yield func(string, v2.Module) bool) {
 		for _, relPath := range sortedFileKeys(app.SymbolTable) {
@@ -52,7 +63,19 @@ func EmitTo(w io.Writer, app *schema.GoApplication, appName, projectDir string, 
 				return
 			}
 		}
-	})
+	}, e.sdg.late)
+}
+
+// collectEdges is seq as a slice, nil when empty (omitempty).
+func collectEdges(seq iter.Seq[v2.ParamEdge]) []v2.ParamEdge {
+	if seq == nil {
+		return nil
+	}
+	var out []v2.ParamEdge
+	for e := range seq {
+		out = append(out, e)
+	}
+	return out
 }
 
 // Encode writes a to w as the exact bytes json.Marshal(a) produces (no
@@ -81,6 +104,15 @@ func Encode(w io.Writer, a *v2.Analysis) error {
 				return
 			}
 		}
+	}, func() lateFields {
+		lf := lateFields{degraded: a.Degraded}
+		if len(a.Application.ParamIn) > 0 {
+			lf.paramIn = slices.Values(a.Application.ParamIn)
+		}
+		if len(a.Application.ParamOut) > 0 {
+			lf.paramOut = slices.Values(a.Application.ParamOut)
+		}
+		return lf
 	})
 }
 
@@ -90,13 +122,18 @@ func Encode(w io.Writer, a *v2.Analysis) error {
 // follows 'e', so its first match is the field itself.
 const symbolTableHole = `"symbol_table":{}`
 
-// encode writes env (its SymbolTable ignored) with symbol_table filled from
-// modules, which must yield keys in sort.Strings order — the order
-// json.Marshal writes a map[string] in. Keys are marshalled as JSON strings,
-// which is how encoding/json writes a string map key (same escaping).
-func encode(w io.Writer, env *v2.Analysis, modules iter.Seq2[string, v2.Module]) error {
+// encode writes env (its SymbolTable, ParamIn, ParamOut and Degraded
+// ignored) with symbol_table filled from modules, which must yield keys in
+// sort.Strings order — the order json.Marshal writes a map[string] in — and
+// then the fields late returns, called once the modules are written:
+// param_in and param_out close the application (its last two fields) and
+// degraded closes the envelope (its last field), as json.Marshal orders
+// them. Keys are marshalled as JSON strings, which is how encoding/json
+// writes a string map key (same escaping).
+func encode(w io.Writer, env *v2.Analysis, modules iter.Seq2[string, v2.Module], late func() lateFields) error {
 	shell := *env
 	shell.Application.SymbolTable = map[string]v2.Module{}
+	shell.Application.ParamIn, shell.Application.ParamOut, shell.Degraded = nil, nil, nil
 	data, err := json.Marshal(&shell)
 	if err != nil {
 		return err
@@ -104,6 +141,11 @@ func encode(w io.Writer, env *v2.Analysis, modules iter.Seq2[string, v2.Module])
 	i := bytes.Index(data, []byte(symbolTableHole))
 	if i < 0 {
 		return fmt.Errorf("v2emit: no %s in the envelope", symbolTableHole)
+	}
+	// With param_in, param_out and degraded omitted, the shell ends with the
+	// application's closing '}' and then the envelope's.
+	if !bytes.HasSuffix(data, []byte("}}")) {
+		return fmt.Errorf("v2emit: the envelope does not end with the application")
 	}
 	split := i + len(symbolTableHole) - 1 // at the closing '}'
 	if _, err := w.Write(data[:split]); err != nil {
@@ -116,7 +158,32 @@ func encode(w io.Writer, env *v2.Analysis, modules iter.Seq2[string, v2.Module])
 		}
 		first = false
 	}
-	_, err = w.Write(data[split:])
+	if _, err := w.Write(data[split : len(data)-2]); err != nil {
+		return err
+	}
+	lf := late()
+	if err := writeParamList(w, "param_in", lf.paramIn); err != nil {
+		return err
+	}
+	if err := writeParamList(w, "param_out", lf.paramOut); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(w, "}"); err != nil {
+		return err
+	}
+	if len(lf.degraded) > 0 {
+		deg, err := json.Marshal(lf.degraded)
+		if err != nil {
+			return err
+		}
+		if _, err := io.WriteString(w, `,"degraded":`); err != nil {
+			return err
+		}
+		if _, err := w.Write(deg); err != nil {
+			return err
+		}
+	}
+	_, err = io.WriteString(w, "}")
 	return err
 }
 
@@ -158,13 +225,17 @@ type emitter struct {
 	idx   sigIndex
 	srcs  *sourceCache
 	flow  l3Overlay
+	sdg   *l4Overlay // nil below L4
 }
 
-func newEmitter(app *schema.GoApplication, appName, projectDir string, maxLevel int, l3 map[dataflow.L3Key]dataflow.Result) *emitter {
+func newEmitter(app *schema.GoApplication, appName, projectDir string, maxLevel int, l3 map[dataflow.L3Key]dataflow.Result, l4 *sdg.Result) *emitter {
 	appID := v2.AppID(appName)
 	idx := buildSigIndex(appID, app.SymbolTable)
 	idx.externals = externalIDs(appID, app.Externals)
-	return &emitter{appID: appID, idx: idx, srcs: newSourceCache(projectDir), flow: newL3Overlay(maxLevel, l3)}
+	return &emitter{
+		appID: appID, idx: idx, srcs: newSourceCache(projectDir),
+		flow: newL3Overlay(maxLevel, l3), sdg: newL4Overlay(maxLevel, l4, idx),
+	}
 }
 
 // envelope is the payload without its symbol_table (nil): the manifest, the
@@ -181,7 +252,7 @@ func (e *emitter) envelope(app *schema.GoApplication, maxLevel int, analyzerVers
 			CallGraph: emitCallGraph(app.CallGraph, e.idx),
 		},
 	}
-	out.Application.ExternalSymbols = emitExternalSymbols(e.appID, app.Externals)
+	out.Application.ExternalSymbols = emitExternalSymbols(e.appID, app.Externals, e.sdg.standIns())
 	if e.flow.on {
 		out.KLimit = kLimit
 	}
@@ -189,7 +260,7 @@ func (e *emitter) envelope(app *schema.GoApplication, maxLevel int, analyzerVers
 }
 
 func (e *emitter) module(relPath string, file schema.GoFile) v2.Module {
-	return emitModule(e.appID, relPath, file, e.idx, e.srcs, e.flow)
+	return emitModule(e.appID, relPath, file, e.idx, e.srcs, e.flow, e.sdg)
 }
 
 // emitModule builds a v2 module from a v1 GoFile, reading the file's source so
@@ -199,7 +270,7 @@ func (e *emitter) module(relPath string, file schema.GoFile) v2.Module {
 // modRel is this module's own file path (a symbol_table key). It is threaded to
 // callables so a method declared in another file can be detected and given a
 // span against its own source plus a source_file pointer.
-func emitModule(appID, modRel string, file schema.GoFile, idx sigIndex, srcs *sourceCache, flow l3Overlay) v2.Module {
+func emitModule(appID, modRel string, file schema.GoFile, idx sigIndex, srcs *sourceCache, flow l3Overlay, l4 *l4Overlay) v2.Module {
 	li := srcs.index(modRel)
 	source := li.source
 	modID := v2.ModuleID(appID, modRel)
@@ -219,10 +290,10 @@ func emitModule(appID, modRel string, file schema.GoFile, idx sigIndex, srcs *so
 	}
 
 	for name, t := range file.Types {
-		mod.Types[name] = emitType(modID, modRel, t, idx, srcs, flow)
+		mod.Types[name] = emitType(modID, modRel, t, idx, srcs, flow, l4)
 	}
 	for sig, fn := range file.Functions {
-		mod.Functions[sig] = emitCallable(modID, modRel, modRel, li, fn, idx, srcs, flow)
+		mod.Functions[sig] = emitCallable(modID, modRel, modRel, li, fn, idx, srcs, flow, l4)
 	}
 	return mod
 }
@@ -231,7 +302,7 @@ func emitModule(appID, modRel string, file schema.GoFile, idx sigIndex, srcs *so
 // kind and splitting embedding (base_types) from computed satisfaction. Methods
 // resolve into the type's callables{}. modRel is the module the type lives in;
 // its methods may be declared in other files (handled in emitCallable).
-func emitType(modID, modRel string, t schema.GoType, idx sigIndex, srcs *sourceCache, flow l3Overlay) v2.Type {
+func emitType(modID, modRel string, t schema.GoType, idx sigIndex, srcs *sourceCache, flow l3Overlay, l4 *l4Overlay) v2.Type {
 	li := srcs.index(modRel)
 	typeID := v2.TypeID(modID, t.Signature)
 	out := v2.Type{
@@ -253,7 +324,7 @@ func emitType(modID, modRel string, t schema.GoType, idx sigIndex, srcs *sourceC
 		}
 	}
 	for sig, m := range t.Methods {
-		out.Callables[sig] = emitCallable(typeID, modRel, modRel, li, m, idx, srcs, flow)
+		out.Callables[sig] = emitCallable(typeID, modRel, modRel, li, m, idx, srcs, flow, l4)
 	}
 	return out
 }
@@ -280,7 +351,10 @@ func emitType(modID, modRel string, t schema.GoType, idx sigIndex, srcs *sourceC
 // signature), completes its body and adds cfg/cdg/ddg (emit_l3.go). Its spans
 // use the same declaring-file lineIndex, so a cross-file callable's statement
 // spans index its declaring file's source, like its own span.
-func emitCallable(parentID, modRel, declRel string, declLI *lineIndex, c schema.GoCallable, idx sigIndex, srcs *sourceCache, flow l3Overlay) v2.Callable {
+//
+// At L4 the same key finds the callable's SDG overlay (emit_l4.go), applied
+// after the L3 one, and records the callable's id for the param edges.
+func emitCallable(parentID, modRel, declRel string, declLI *lineIndex, c schema.GoCallable, idx sigIndex, srcs *sourceCache, flow l3Overlay, l4 *l4Overlay) v2.Callable {
 	callID := v2.CallableID(parentID, c.Signature)
 
 	// Resolve the file this callable's positions are relative to.
@@ -315,10 +389,12 @@ func emitCallable(parentID, modRel, declRel string, declLI *lineIndex, c schema.
 		// Closures nest in the same containing module and are declared in the
 		// same file as their enclosing callable.
 		for sig, inner := range c.InnerCallables {
-			out.Callables[sig] = emitCallable(callID, modRel, declRel, li, inner, idx, srcs, flow)
+			out.Callables[sig] = emitCallable(callID, modRel, declRel, li, inner, idx, srcs, flow, l4)
 		}
 	}
-	flow.apply(&out, li, dataflow.L3Key{Path: declRel, Signature: c.Signature})
+	key := dataflow.L3Key{Path: declRel, Signature: c.Signature}
+	flow.apply(&out, li, key)
+	l4.apply(&out, key)
 	return out
 }
 
@@ -387,13 +463,20 @@ func externalIDs(appID string, externals map[string]schema.GoExternalCallee) map
 }
 
 // emitExternalSymbols builds application.external_symbols, keyed by @external
-// id. Nil (omitted from JSON) when no library callee was recorded.
-func emitExternalSymbols(appID string, externals map[string]schema.GoExternalCallee) map[string]v2.ExternalSymbol {
+// id. Nil (omitted from JSON) when no library callee was recorded. At L4
+// standIns (by full callee signature) gives each stand-in its body: its
+// formal vertices, id v2.GlobalOrdinal(external id, key).
+func emitExternalSymbols(appID string, externals map[string]schema.GoExternalCallee, standIns map[string][]sdg.Vertex) map[string]v2.ExternalSymbol {
+	for _, sig := range slices.Sorted(maps.Keys(standIns)) {
+		if _, ok := externals[sig]; !ok {
+			warnf("L4 emit: stand-in %s is not an external symbol; its body is dropped", sig)
+		}
+	}
 	if len(externals) == 0 {
 		return nil
 	}
 	out := make(map[string]v2.ExternalSymbol, len(externals))
-	for _, ext := range externals {
+	for fullSig, ext := range externals {
 		id := v2.ExternalID(appID, ext.ImportPath, ext.Sig)
 		params := make([]v2.ExternalParameter, 0, len(ext.Params))
 		for _, p := range ext.Params {
@@ -405,6 +488,12 @@ func emitExternalSymbols(appID string, externals map[string]schema.GoExternalCal
 		}
 		if ext.Receiver != nil {
 			sym.Receiver = &v2.ExternalParameter{Name: ext.Receiver.Name, Type: ext.Receiver.Type}
+		}
+		if vs := standIns[fullSig]; len(vs) > 0 {
+			sym.Body = make(map[string]v2.BodyNode, len(vs))
+			for _, v := range vs {
+				sym.Body[v.Key] = vertexNode(id, v)
+			}
 		}
 		out[id] = sym
 	}

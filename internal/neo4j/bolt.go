@@ -20,13 +20,24 @@ import (
 //     app's id; a mismatch forces a full re-UPSERT (never a delete — that is
 //     --eager's job);
 //  3. partition nodes by owning module (NodeRow.module); shared nodes (externals,
-//     neutral repo nodes) have none and are MERGE-only, always upserted;
+//     neutral repo nodes) have none and are MERGE-only, always upserted; L4
+//     vertex nodes (a callable's or a stand-in's formal/actual vertices) are
+//     their own group;
 //  4. --eager? scoped purge of everything under the app prefix, then rebuild;
 //  5. diff each module's content_hash against the DB → the changed set;
 //  6. per changed module: on --eager, purge its owned edges + stale decls, then
 //     upsert its nodes; WITHOUT --eager the push only adds/updates;
-//  7. upsert edges owned by a changed module (or shared);
-//  8. on a full --eager run, orphan-prune modules whose source vanished.
+//  7. upsert every L4 vertex node, changed module or not (D5, below);
+//  8. upsert every edge (an unchanged edge's MERGE is a no-op);
+//  9. on a full --eager run, orphan-prune modules whose source vanished.
+//
+// D5 (spec §4.11): L4 facts are not module-local — editing a callee changes
+// its callers' summary edges, actual vertices and even formal_in indices —
+// so the content_hash diff gates the L1–L3 rows only. A lazy push upserts
+// every L4 row on every push: the vertex nodes (step 7), the stand-in
+// bodies among them, and the GO_PARAM_IN / GO_PARAM_OUT / GO_SUMMARY rows
+// and the port GO_DDG rows (prov ≠ ssa) with every other edge (step 8). It
+// is additive: a stale L4 row stays until an --eager push.
 //
 // A push NEVER deletes by default (#171): steps 4/6/8 run under --eager only.
 // Every destructive statement is scoped on the can://<app>/ id prefix (#173),
@@ -95,9 +106,9 @@ func (w *boltWriter) run() error {
 		}
 	}
 
-	// Partition nodes by owning module; shared nodes (module == "") are always
-	// upserted.
-	byModule, shared := partitionNodes(w.rows.Nodes)
+	// Partition nodes by owning module; shared nodes (module == "") and L4
+	// vertex nodes are always upserted.
+	byModule, shared, l4 := partitionNodes(w.rows.Nodes)
 
 	// Diff content_hash per module unless a mismatch/eager forces everything.
 	changed := map[string]bool{}
@@ -129,12 +140,15 @@ func (w *boltWriter) run() error {
 			return err
 		}
 	}
+	// L4 vertex nodes, after the module purges so an --eager purge of a
+	// changed module cannot delete them (D5).
+	if err := w.upsertNodes(l4); err != nil {
+		return err
+	}
 
-	// Upsert edges owned by a changed module (owner = source node's module) or
-	// shared. Determining ownership precisely needs the source node's module; we
-	// conservatively upsert every edge whose source id is under a changed module
-	// prefix, plus all shared/app-level edges. A MERGE-upsert of an unchanged
-	// edge is a harmless no-op.
+	// Upsert every edge: the L4 rows must be (D5), and for the L1–L3 rows
+	// the precise owner (the source node's module) buys nothing — a
+	// MERGE-upsert of an unchanged edge is a harmless no-op.
 	if err := w.upsertEdges(w.rows.Edges); err != nil {
 		return err
 	}
@@ -418,16 +432,34 @@ func propsToAny(p Props) map[string]any {
 
 // ─── partitioning & hashing ───────────────────────────────────────────────────
 
-func partitionNodes(nodes []NodeRow) (byModule map[string][]NodeRow, shared []NodeRow) {
+// partitionNodes splits nodes into the module-owned L1–L3 nodes (by owning
+// module), the shared nodes (no module), and the L4 vertex nodes, owned by
+// a module or by a stand-in, which a push always upserts (D5).
+func partitionNodes(nodes []NodeRow) (byModule map[string][]NodeRow, shared, l4 []NodeRow) {
 	byModule = map[string][]NodeRow{}
 	for _, n := range nodes {
-		if n.Module == "" {
+		switch {
+		case isL4Node(n):
+			l4 = append(l4, n)
+		case n.Module == "":
 			shared = append(shared, n)
-			continue
+		default:
+			byModule[n.Module] = append(byModule[n.Module], n)
 		}
-		byModule[n.Module] = append(byModule[n.Module], n)
 	}
-	return byModule, shared
+	return byModule, shared, l4
+}
+
+// isL4Node reports an L4 vertex: a :GoBodyNode of a formal / actual kind.
+func isL4Node(n NodeRow) bool {
+	if n.Labels[0] != LabelBodyNode {
+		return false
+	}
+	switch n.Props["kind"] {
+	case "formal_in", "formal_out", "actual_in", "actual_out":
+		return true
+	}
+	return false
 }
 
 // moduleHash returns the content_hash the projector put on the :GoModule node in

@@ -41,7 +41,8 @@ type Analyzer struct {
 	// schema.GoApplication: schema must not depend on dataflow, and the
 	// cached v1 model has no L3 facts.
 	l3 map[dataflow.L3Key]dataflow.Result
-	// l4 is the Phase 6 result (nil below L4). Nothing emits it yet.
+	// l4 is the Phase 6 result (nil below L4). Pass it to RenderJSON /
+	// WriteOutput / v2emit.Emit with L3().
 	l4 *sdg.Result
 }
 
@@ -277,24 +278,25 @@ func checkFormat(opts options.AnalysisOptions) error {
 // streaming StreamJSON / WriteOutput paths are byte-identical to; the CLI
 // streams instead, so the document never exists in memory at once.
 //
-// l3 is the Analyzer's L3() side table (nil below level 3). At level 3 the
-// envelope carries k_limit = KLimit(opts) whether or not l3 is set.
-func RenderJSON(app *schema.GoApplication, l3 map[dataflow.L3Key]dataflow.Result, opts options.AnalysisOptions) ([]byte, error) {
+// l3 is the Analyzer's L3() side table (nil below level 3) and l4 its L4()
+// result (nil below level 4). At level 3 the envelope carries k_limit =
+// KLimit(opts) whether or not l3 is set.
+func RenderJSON(app *schema.GoApplication, l3 map[dataflow.L3Key]dataflow.Result, l4 *sdg.Result, opts options.AnalysisOptions) ([]byte, error) {
 	if err := checkFormat(opts); err != nil {
 		return nil, err
 	}
-	payload := v2emit.Emit(app, opts.AppName, opts.InputPath, int(opts.Level), opts.AnalyzerVersion, KLimit(opts), l3)
+	payload := v2emit.Emit(app, opts.AppName, opts.InputPath, int(opts.Level), opts.AnalyzerVersion, KLimit(opts), l3, l4)
 	return json.Marshal(payload)
 }
 
 // StreamJSON writes the bytes RenderJSON returns to w, emitting and encoding
 // one module at a time (v2emit.EmitTo) through a buffered writer.
-func StreamJSON(w io.Writer, app *schema.GoApplication, l3 map[dataflow.L3Key]dataflow.Result, opts options.AnalysisOptions) error {
+func StreamJSON(w io.Writer, app *schema.GoApplication, l3 map[dataflow.L3Key]dataflow.Result, l4 *sdg.Result, opts options.AnalysisOptions) error {
 	if err := checkFormat(opts); err != nil {
 		return err
 	}
 	bw := bufio.NewWriterSize(w, 1<<20)
-	if err := v2emit.EmitTo(bw, app, opts.AppName, opts.InputPath, int(opts.Level), opts.AnalyzerVersion, KLimit(opts), l3); err != nil {
+	if err := v2emit.EmitTo(bw, app, opts.AppName, opts.InputPath, int(opts.Level), opts.AnalyzerVersion, KLimit(opts), l3, l4); err != nil {
 		return err
 	}
 	return bw.Flush()
@@ -303,12 +305,12 @@ func StreamJSON(w io.Writer, app *schema.GoApplication, l3 map[dataflow.L3Key]da
 // WriteOutput streams the analysis to outputDir/analysis.json, or to stdout
 // when outputDir is empty. The file is written beside its destination and
 // renamed into place, so a failed run never leaves a truncated analysis.json.
-func WriteOutput(app *schema.GoApplication, l3 map[dataflow.L3Key]dataflow.Result, opts options.AnalysisOptions) error {
+func WriteOutput(app *schema.GoApplication, l3 map[dataflow.L3Key]dataflow.Result, l4 *sdg.Result, opts options.AnalysisOptions) error {
 	if err := checkFormat(opts); err != nil {
 		return err
 	}
 	if opts.OutputDir == "" {
-		return StreamJSON(os.Stdout, app, l3, opts)
+		return StreamJSON(os.Stdout, app, l3, l4, opts)
 	}
 	if err := utils.EnsureDir(opts.OutputDir); err != nil {
 		return err
@@ -319,7 +321,7 @@ func WriteOutput(app *schema.GoApplication, l3 map[dataflow.L3Key]dataflow.Resul
 		return err
 	}
 	tmp := f.Name()
-	err = StreamJSON(f, app, l3, opts)
+	err = StreamJSON(f, app, l3, l4, opts)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}

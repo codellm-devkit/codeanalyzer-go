@@ -50,7 +50,7 @@ func TestRun_JobsDeterminism(t *testing.T) {
 		if len(l3) != len(units) {
 			t.Errorf("-j %d: %d results for %d units", jobs, len(l3), len(units))
 		}
-		data, err := json.Marshal(v2emit.Emit(app, "chi", dir, 3, "det", 3, l3))
+		data, err := json.Marshal(v2emit.Emit(app, "chi", dir, 3, "det", 3, l3, nil))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -409,7 +409,7 @@ func TestResult_ReleaseDropsASTs(t *testing.T) {
 	app := &schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}
 	out := dataflow.Run(b.Fset(), b.L3Units(st), 3, 4)
 	emit := func() []byte {
-		data, err := json.Marshal(v2emit.Emit(app, "dataflow", dir, 3, "rel", 3, out))
+		data, err := json.Marshal(v2emit.Emit(app, "dataflow", dir, 3, "rel", 3, out, nil))
 		if err != nil {
 			t.Fatal(err)
 		}

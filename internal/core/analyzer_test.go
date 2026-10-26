@@ -3,6 +3,7 @@ package core_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -140,7 +141,7 @@ func TestCallGraph_CallSitesBackfilled(t *testing.T) {
 
 func TestWriteOutput_ValidJSON(t *testing.T) {
 	outDir := t.TempDir()
-	if err := core.WriteOutput(sharedGreeterL2, nil, options.AnalysisOptions{OutputDir: outDir, Format: "json"}); err != nil {
+	if err := core.WriteOutput(sharedGreeterL2, nil, nil, options.AnalysisOptions{OutputDir: outDir, Format: "json"}); err != nil {
 		t.Fatalf("WriteOutput: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(outDir, "analysis.json"))
@@ -162,7 +163,7 @@ func TestWriteOutput_ValidJSON(t *testing.T) {
 
 func TestWriteOutput_EmptyFormatDefaultsToJSON(t *testing.T) {
 	outDir := t.TempDir()
-	if err := core.WriteOutput(sharedGreeterL1, nil, options.AnalysisOptions{OutputDir: outDir, Format: ""}); err != nil {
+	if err := core.WriteOutput(sharedGreeterL1, nil, nil, options.AnalysisOptions{OutputDir: outDir, Format: ""}); err != nil {
 		t.Fatalf("WriteOutput with empty format: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(outDir, "analysis.json")); err != nil {
@@ -172,24 +173,32 @@ func TestWriteOutput_EmptyFormatDefaultsToJSON(t *testing.T) {
 
 func TestWriteOutput_MsgpackNotImplemented(t *testing.T) {
 	outDir := t.TempDir()
-	if err := core.WriteOutput(sharedGreeterL1, nil, options.AnalysisOptions{OutputDir: outDir, Format: "msgpack"}); err == nil {
+	if err := core.WriteOutput(sharedGreeterL1, nil, nil, options.AnalysisOptions{OutputDir: outDir, Format: "msgpack"}); err == nil {
 		t.Fatal("expected error for --format msgpack, got nil")
 	}
 }
 
 func TestWriteOutput_UnknownFormatErrors(t *testing.T) {
 	outDir := t.TempDir()
-	if err := core.WriteOutput(sharedGreeterL1, nil, options.AnalysisOptions{OutputDir: outDir, Format: "csv"}); err == nil {
+	if err := core.WriteOutput(sharedGreeterL1, nil, nil, options.AnalysisOptions{OutputDir: outDir, Format: "csv"}); err == nil {
 		t.Fatal("expected error for unknown format, got nil")
 	}
 }
 
 // TestWriteOutput_StreamsRenderJSONBytes: the streamed file and writer paths
-// write exactly RenderJSON's bytes at -a 3, and Analyze has already released
-// every L3 node's AST reference (#27).
+// write exactly RenderJSON's bytes at -a 3 and -a 4 (the L4 param edges and
+// degraded marker included), and Analyze has already released every L3
+// node's AST reference (#27).
 func TestWriteOutput_StreamsRenderJSONBytes(t *testing.T) {
+	for _, level := range []options.AnalysisLevel{options.LevelDataflow, options.LevelSDG} {
+		t.Run(fmt.Sprintf("a%d", level), func(t *testing.T) { streamsRenderJSONBytes(t, "dataflow", level) })
+	}
+	t.Run("a4-degraded", func(t *testing.T) { streamsRenderJSONBytes(t, "rangefunc", options.LevelSDG) })
+}
+
+func streamsRenderJSONBytes(t *testing.T, fixture string, level options.AnalysisLevel) {
 	opts := options.AnalysisOptions{
-		InputPath: filepath.Join(testdataDir(), "dataflow"), AppName: "dataflow", Level: options.LevelDataflow,
+		InputPath: filepath.Join(testdataDir(), fixture), AppName: fixture, Level: level,
 		SkipTests: true, CacheDir: t.TempDir(), OutputDir: t.TempDir(),
 	}
 	a := core.New(opts)
@@ -204,18 +213,27 @@ func TestWriteOutput_StreamsRenderJSONBytes(t *testing.T) {
 			}
 		}
 	}
-	want, err := core.RenderJSON(app, a.L3(), opts)
+	want, err := core.RenderJSON(app, a.L3(), a.L4(), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if level == options.LevelSDG {
+		key := `"param_in":[`
+		if fixture == "rangefunc" {
+			key = `"degraded":[`
+		}
+		if !bytes.Contains(want, []byte(key)) {
+			t.Fatalf("-a 4 JSON of %s has no %s", fixture, key)
+		}
+	}
 	var buf bytes.Buffer
-	if err := core.StreamJSON(&buf, app, a.L3(), opts); err != nil {
+	if err := core.StreamJSON(&buf, app, a.L3(), a.L4(), opts); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(buf.Bytes(), want) {
 		t.Error("StreamJSON bytes differ from RenderJSON")
 	}
-	if err := core.WriteOutput(app, a.L3(), opts); err != nil {
+	if err := core.WriteOutput(app, a.L3(), a.L4(), opts); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(filepath.Join(opts.OutputDir, "analysis.json"))

@@ -1,14 +1,17 @@
 package neo4j
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/codellm-devkit/codeanalyzer-go/internal/dataflow"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/schema"
 	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
+	"github.com/codellm-devkit/codeanalyzer-go/internal/sdg"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/semantic_analysis"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/syntactic_analysis"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/syntactic_analysis/v2emit"
@@ -36,7 +39,7 @@ func buildMultipackageL2(t *testing.T) *v2.Analysis {
 	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 	edges := cg.Build(st)
 	app := &schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}
-	return v2emit.Emit(app, "multipackage", dir, 2, "neo4j-gate", 0, nil)
+	return v2emit.Emit(app, "multipackage", dir, 2, "neo4j-gate", 0, nil, nil)
 }
 
 func TestProject_NoDanglingEndpoints(t *testing.T) {
@@ -216,7 +219,7 @@ func buildDataflowL3(t *testing.T) *v2.Analysis {
 	edges := cg.Build(st)
 	app := &schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}
 	res := dataflow.Run(b.Fset(), b.L3Units(st), 3, 4)
-	return v2emit.Emit(app, "dataflow", dir, 3, "neo4j-gate", 3, res)
+	return v2emit.Emit(app, "dataflow", dir, 3, "neo4j-gate", 3, res, nil)
 }
 
 // walkCallables visits every callable (methods and nested closures included).
@@ -496,5 +499,226 @@ func TestProject_CallNodeResolvesWithinOwner(t *testing.T) {
 	}
 	if checked < 10 {
 		t.Errorf("only %d call_node props checked", checked)
+	}
+}
+
+// ─── L4 overlay ──────────────────────────────────────────────────────────────
+
+var (
+	l4Once     sync.Once
+	l4Analysis *v2.Analysis
+)
+
+// buildDataflowL4 builds testdata/dataflow through the real -a 4 wiring
+// (symbol table, resolver, dataflow, sdg.Run merged into the application)
+// and emits the v2 L4 analysis. Built once: the projection never mutates it.
+func buildDataflowL4(t *testing.T) *v2.Analysis {
+	t.Helper()
+	l4Once.Do(func() {
+		_, thisFile, _, _ := runtime.Caller(0)
+		dir, err := filepath.Abs(filepath.Join(filepath.Dir(thisFile), "..", "..", "testdata", "dataflow"))
+		if err != nil {
+			t.Fatalf("resolving fixture dir: %v", err)
+		}
+		b := syntactic_analysis.NewSymbolTableBuilder(dir)
+		st, err := b.Build(nil, true)
+		if err != nil {
+			t.Fatalf("symbol table build failed: %v", err)
+		}
+		cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
+		edges := cg.Build(st)
+		app := &schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}
+		units := b.L3Units(st)
+		res := dataflow.RunWithSideTables(b.Fset(), units, 3, 4)
+		l4 := sdg.Run(sdg.Input{
+			Fset: b.Fset(), Pkgs: b.Pkgs(), ProjectDir: dir, SymbolTable: st,
+			Externals: app.Externals, CallGraph: app.CallGraph, Units: units, L3: res, K: 3, Jobs: 4,
+		})
+		l4.ApplyTo(app)
+		l4Analysis = v2emit.Emit(app, "dataflow", dir, 4, "neo4j-gate", 3, res, &l4)
+	})
+	if l4Analysis == nil {
+		t.Fatal("L4 fixture build failed")
+	}
+	return l4Analysis
+}
+
+func isVertex(kind string) bool {
+	switch kind {
+	case "formal_in", "formal_out", "actual_in", "actual_out":
+		return true
+	}
+	return false
+}
+
+// TestProject_L4CountsMatchJSON is the cross-projection gate at -a 4: per
+// kind, the graph carries exactly the JSON's facts — GO_PARAM_IN / OUT per
+// param edge, GO_SUMMARY per summary edge, GO_DDG per ddg edge (port edges
+// included), one :GoBodyNode and one GO_HAS_BODY_NODE per body node of a
+// callable or a stand-in.
+func TestProject_L4CountsMatchJSON(t *testing.T) {
+	a := buildDataflowL4(t)
+	rows := Project(a)
+	var ddg, port, summary, body, vertices int
+	walkCallables(a, func(c v2.Callable) {
+		ddg += len(c.Ddg)
+		for _, e := range c.Ddg {
+			if strings.Join(e.Prov, ",") != "ssa" {
+				port++
+			}
+		}
+		summary += len(c.Summary)
+		body += len(c.Body)
+		for _, n := range c.Body {
+			if isVertex(n.Kind) {
+				vertices++
+			}
+		}
+	})
+	standIns := 0
+	for _, ext := range a.Application.ExternalSymbols {
+		standIns += len(ext.Body)
+	}
+	if port == 0 || summary == 0 || vertices == 0 || standIns == 0 || len(a.Application.ParamIn) == 0 || len(a.Application.ParamOut) == 0 {
+		t.Fatalf("fixture has no L4 content: port=%d summary=%d vertices=%d stand-ins=%d param_in=%d param_out=%d",
+			port, summary, vertices, standIns, len(a.Application.ParamIn), len(a.Application.ParamOut))
+	}
+	portRows := 0
+	for _, e := range rows.Edges {
+		if e.Type == RelDDG {
+			if p, _ := e.Props["prov"].([]string); strings.Join(p, ",") != "ssa" {
+				portRows++
+				if e.Key != e.Props["var"].(string)+"|"+strings.Join(p, ",") {
+					t.Errorf("port GO_DDG _k = %q", e.Key)
+				}
+			}
+		}
+	}
+	nodes, vertexRows := 0, 0
+	for _, n := range rows.Nodes {
+		if n.Labels[0] == LabelBodyNode {
+			nodes++
+			if k, _ := n.Props["kind"].(string); isVertex(k) {
+				vertexRows++
+			}
+		}
+	}
+	for _, c := range []struct {
+		name      string
+		got, want int
+	}{
+		{RelParamIn, countEdges(rows, RelParamIn), len(a.Application.ParamIn)},
+		{RelParamOut, countEdges(rows, RelParamOut), len(a.Application.ParamOut)},
+		{RelSummary, countEdges(rows, RelSummary), summary},
+		{RelDDG, countEdges(rows, RelDDG), ddg},
+		{"GO_DDG (port)", portRows, port},
+		{RelHasBodyNode, countEdges(rows, RelHasBodyNode), body + standIns},
+		{":GoBodyNode", nodes, body + standIns},
+		{":GoBodyNode (vertex)", vertexRows, vertices + standIns},
+	} {
+		if c.got != c.want {
+			t.Errorf("%s rows = %d, JSON = %d", c.name, c.got, c.want)
+		}
+	}
+}
+
+// TestProject_L4VertexProps: a vertex projects as a :GoBodyNode with var =
+// its `of` and call_node = its JSON parent (the local key); a stand-in's
+// vertices hang off its :GoExternal ghost by GO_HAS_BODY_NODE; param edges
+// carry var and join two :GoBodyNode ids.
+func TestProject_L4VertexProps(t *testing.T) {
+	a := buildDataflowL4(t)
+	rows := Project(a)
+	byID := map[string]NodeRow{}
+	for _, n := range rows.Nodes {
+		byID[n.Labels[0]+"\x00"+n.Value] = n
+	}
+	walkCallables(a, func(c v2.Callable) {
+		for _, n := range c.Body {
+			if !isVertex(n.Kind) {
+				continue
+			}
+			row, ok := byID[LabelBodyNode+"\x00"+n.ID]
+			if !ok {
+				t.Errorf("vertex %s not projected", n.ID)
+				continue
+			}
+			if row.Props["var"] != n.Of {
+				t.Errorf("%s var = %v, want %q", n.ID, row.Props["var"], n.Of)
+			}
+			if cn, has := row.Props["call_node"]; (n.Parent != "") != has || (has && cn != n.Parent) {
+				t.Errorf("%s call_node = %v, want parent %q", n.ID, cn, n.Parent)
+			}
+			if _, has := row.Props["span_json"]; has {
+				t.Errorf("%s carries span_json", n.ID)
+			}
+		}
+	})
+	owner := map[string]NodeRef{}
+	for _, e := range rows.Edges {
+		if e.Type == RelHasBodyNode {
+			owner[e.To.Value] = e.From
+		}
+	}
+	checked := 0
+	for id, ext := range a.Application.ExternalSymbols {
+		if _, ok := byID[SymbolLabel+"\x00"+id]; len(ext.Body) > 0 && !ok {
+			t.Errorf("stand-in %s has no :GoExternal node", id)
+		}
+		for _, n := range ext.Body {
+			if from := owner[n.ID]; from.Value != id || from.Label != SymbolLabel {
+				t.Errorf("stand-in vertex %s: GO_HAS_BODY_NODE from %+v, want %s", n.ID, from, id)
+			}
+			if row := byID[LabelBodyNode+"\x00"+n.ID]; row.Props["var"] != n.Of || row.Module != "" {
+				t.Errorf("stand-in vertex %s row = %+v", n.ID, row)
+			}
+			checked++
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no stand-in vertex checked")
+	}
+	for _, e := range rows.Edges {
+		if e.Type != RelParamIn && e.Type != RelParamOut {
+			continue
+		}
+		if e.From.Label != LabelBodyNode || e.To.Label != LabelBodyNode || e.Props["var"] == nil {
+			t.Errorf("%s row %+v", e.Type, e)
+		}
+	}
+}
+
+// TestProject_DegradedJSONOnApplication: the envelope's degraded[] rides
+// :GoApplication as the JSON string prop degraded_json, absent when the
+// run degraded nothing.
+func TestProject_DegradedJSONOnApplication(t *testing.T) {
+	a := overlayFixture()
+	a.MaxLevel = 4
+	a.Degraded = []v2.Degraded{
+		{Code: "no_vta", Detail: "panic: x"},
+		{Code: "range_func", Packages: []string{"example.com/p"}, Callables: []string{"can://go/x/a.go/f()"}},
+	}
+	want, err := json.Marshal(a.Degraded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := func(rows GraphRows) NodeRow {
+		for _, n := range rows.Nodes {
+			if n.Labels[0] == LabelApplication {
+				return n
+			}
+		}
+		t.Fatal("no :GoApplication row")
+		return NodeRow{}
+	}
+	if got := app(Project(a)).Props["degraded_json"]; got != string(want) {
+		t.Errorf("degraded_json = %v, want %s", got, want)
+	}
+	a.Degraded = nil
+	if got, has := app(Project(a)).Props["degraded_json"]; has {
+		t.Errorf("clean run carries degraded_json %v", got)
+	}
+	if _, has := app(Project(buildDataflowL4(t))).Props["degraded_json"]; has {
+		t.Errorf("dataflow (clean) carries degraded_json")
 	}
 }

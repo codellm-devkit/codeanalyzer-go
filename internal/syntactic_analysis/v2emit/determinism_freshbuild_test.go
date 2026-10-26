@@ -64,7 +64,7 @@ func buildChiL2Fresh(t *testing.T, dir string) *v2.Analysis {
 	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 	edges := cg.Build(st)
 	app := &schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}
-	return Emit(app, "chi", dir, 2, "gate-test", 0, nil)
+	return Emit(app, "chi", dir, 2, "gate-test", 0, nil, nil)
 }
 
 // TestDeterminism_FreshBuildsByteIdentical locks that independent from-disk

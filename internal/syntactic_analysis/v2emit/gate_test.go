@@ -58,7 +58,7 @@ func buildMultipackageV2(t *testing.T) *v2.Analysis {
 		t.Fatalf("symbol table build failed: %v", err)
 	}
 	app := &schema.GoApplication{SymbolTable: st, CallGraph: []schema.GoCallEdge{}}
-	return Emit(app, "multipackage", dir, 1, "gate-test", 0, nil)
+	return Emit(app, "multipackage", dir, 1, "gate-test", 0, nil, nil)
 }
 
 // mustModule fetches a module by relative path or fails.
@@ -322,7 +322,7 @@ func TestGateL1_SupersetOfV1(t *testing.T) {
 		t.Fatalf("symbol table build failed: %v", err)
 	}
 	app := &schema.GoApplication{SymbolTable: st, CallGraph: []schema.GoCallEdge{}}
-	out := Emit(app, "multipackage", dir, 1, "gate-test", 0, nil)
+	out := Emit(app, "multipackage", dir, 1, "gate-test", 0, nil, nil)
 
 	// Every v1 file, type, method and function reappears in v2.
 	for rel, v1file := range st {
@@ -387,7 +387,7 @@ func buildDataflowL1V2(t *testing.T) *v2.Analysis {
 		t.Fatalf("symbol table build failed: %v", err)
 	}
 	app := &schema.GoApplication{SymbolTable: st, CallGraph: []schema.GoCallEdge{}}
-	return Emit(app, "dataflow", dir, 1, "gate-test", 0, nil)
+	return Emit(app, "dataflow", dir, 1, "gate-test", 0, nil, nil)
 }
 
 func TestGateL1_TypeKindsAliasAndDefined(t *testing.T) {
@@ -478,7 +478,7 @@ func buildDataflowL2V2(t *testing.T) *v2.Analysis {
 	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 	edges := cg.Build(st)
 	app := &schema.GoApplication{SymbolTable: st, CallGraph: edges}
-	return Emit(app, "dataflow", dir, 2, "gate-test", 0, nil)
+	return Emit(app, "dataflow", dir, 2, "gate-test", 0, nil, nil)
 }
 
 // TestGateL2_CoPositionedCallsResolveSeparately: in s.A().B() the outer call
@@ -638,7 +638,7 @@ func TestGate_LineDirectiveSpansSliceToText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("symbol table build failed: %v", err)
 	}
-	out := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: []schema.GoCallEdge{}}, "dataflow", dir, 1, "gate-test", 0, nil)
+	out := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: []schema.GoCallEdge{}}, "dataflow", dir, 1, "gate-test", 0, nil, nil)
 	const rel = "linedir/linedir.go"
 	mod := mustModule(t, out, rel)
 	calls := 0

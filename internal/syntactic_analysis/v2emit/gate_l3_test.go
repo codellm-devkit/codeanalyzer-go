@@ -69,8 +69,8 @@ func buildL3(t *testing.T, name string) *l3Fixture {
 	res := dataflow.Run(b.Fset(), b.L3Units(st), 3, 4)
 	fx := &l3Fixture{
 		st:  st,
-		l2:  Emit(app, name, dir, 2, "gate-test", 3, nil),
-		l3:  Emit(app, name, dir, 3, "gate-test", 3, res),
+		l2:  Emit(app, name, dir, 2, "gate-test", 3, nil, nil),
+		l3:  Emit(app, name, dir, 3, "gate-test", 3, res, nil),
 		res: res,
 	}
 	l3Cache[name] = fx

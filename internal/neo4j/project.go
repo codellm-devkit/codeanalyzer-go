@@ -18,9 +18,9 @@ import (
 // every id the app owns, which is what makes prefix scoping exact.
 //
 // Walk order (spine): application → per module (types → callables → fields →
-// body call nodes) → call_graph → imports → neutral artifact/package layer →
-// reserved L3/L4 overlay (zero rows at the current max level). Every endpoint
-// resolves to a declared node or an id-keyed :GoExternal ghost — nothing dangles.
+// body nodes and the L3/L4 intra-callable overlay) → call_graph → imports →
+// stand-in bodies → param edges. Every endpoint resolves to a declared node or
+// an id-keyed :GoExternal ghost — nothing dangles.
 
 // Project is the pure (tree) → GraphRows function. appID is analysis.Application.ID
 // (the can://<app> root); it is read from the envelope, never recomposed.
@@ -37,6 +37,8 @@ func Project(a *v2.Analysis) GraphRows {
 		p.projectModule(mod)
 	}
 	p.projectCallGraph()
+	p.projectStandIns()
+	p.projectParamEdges()
 	return p.b.Finish()
 }
 
@@ -59,9 +61,23 @@ func (p *projector) projectApplication() {
 			"max_level":        a.MaxLevel,
 			"analyzer_name":    a.Analyzer.Name,
 			"analyzer_version": a.Analyzer.Version,
+			"degraded_json":    degradedJSON(a.Degraded),
 		},
 		"", // the application root belongs to no single module
 	)
+}
+
+// degradedJSON is the envelope's degraded[] (spec §4.15) as a JSON string,
+// nil (pruned) when nothing degraded.
+func degradedJSON(d []v2.Degraded) Value {
+	if len(d) == 0 {
+		return nil
+	}
+	data, err := json.Marshal(d)
+	if err != nil {
+		return nil
+	}
+	return string(data)
 }
 
 func (p *projector) appRef() NodeRef {
@@ -174,6 +190,9 @@ func (p *projector) projectCallable(parentRef NodeRef, module string, c v2.Calla
 	return cRef
 }
 
+// projectBodyNode emits one body node of the callable (or, for a stand-in,
+// the :GoExternal) at callableRef and its GO_HAS_BODY_NODE. module is the
+// owning module, "" for a stand-in's vertices (shared, like the ghost).
 func (p *projector) projectBodyNode(callableRef NodeRef, module, callableID, local string, bn v2.BodyNode) {
 	// GlobalOrdinal, not callableID+"@"+local: synthetic keys ("@entry") already
 	// carry the "@", and the JSON body node id uses the same rule.
@@ -195,8 +214,8 @@ func (p *projector) projectBodyNode(callableRef NodeRef, module, callableID, loc
 			"is_deferred":  boolOrNil(bn.IsDeferred),
 			"span_json":    bodySpanJSON(bn.Span),
 			"call_node":    callNode,
-			// "var" (JSON `of`) is L4: the v2 BodyNode carries no such field yet,
-			// and a nil prop is pruned, so L3 emits none.
+			// var is JSON `of`: set on L4 vertices only (pruned when empty).
+			"var": emptyToNil(bn.Of),
 		},
 		module,
 	)
@@ -213,10 +232,11 @@ func (p *projector) projectBodyNode(callableRef NodeRef, module, callableID, loc
 	}
 }
 
-// projectFlow emits a callable's L3 intra-callable overlay. JSON edge endpoints
-// are LOCAL body keys; the graph addresses :GoBodyNode by its global id, so each
-// endpoint goes through v2.GlobalOrdinal. Parallel edges survive via _k:
-// GO_CFG_NEXT per kind, GO_DDG per (var, prov).
+// projectFlow emits a callable's intra-callable overlay: L3's cfg / cdg / ddg
+// and L4's port ddg edges (prov reaching-defs / points-to) and summary. JSON
+// edge endpoints are LOCAL body keys; the graph addresses :GoBodyNode by its
+// global id, so each endpoint goes through v2.GlobalOrdinal. Parallel edges
+// survive via _k: GO_CFG_NEXT per kind, GO_DDG per (var, prov).
 func (p *projector) projectFlow(c v2.Callable) {
 	ref := func(local string) NodeRef {
 		return NodeRef{Label: LabelBodyNode, KeyProp: "id", Value: v2.GlobalOrdinal(c.ID, local)}
@@ -233,6 +253,40 @@ func (p *projector) projectFlow(c v2.Callable) {
 		p.b.Edge(RelDDG, ref(e.Src), ref(e.Dst),
 			Props{"var": e.Var, "prov": stringsOrNil(prov)},
 			e.Var+"|"+strings.Join(prov, ","))
+	}
+	for _, e := range c.Summary {
+		p.b.Edge(RelSummary, ref(e.Src), ref(e.Dst), nil, "")
+	}
+}
+
+// ─── L4: stand-ins and param edges ───────────────────────────────────────────
+
+// projectStandIns emits each library stand-in's body (its formal vertices,
+// spec §6) as :GoBodyNode rows owned by the external's :GoExternal ghost —
+// the same id-keyed node call_graph endpoints use — via GO_HAS_BODY_NODE.
+// Stand-ins are app-scoped: their rows belong to no module.
+func (p *projector) projectStandIns() {
+	for id, ext := range p.analysis.Application.ExternalSymbols {
+		if len(ext.Body) == 0 {
+			continue
+		}
+		ghost := p.callEndpoint(id)
+		for local, bn := range ext.Body {
+			p.projectBodyNode(ghost, "", id, local, bn)
+		}
+	}
+}
+
+// projectParamEdges emits GO_PARAM_IN / GO_PARAM_OUT {var}, one row per JSON
+// param_in / param_out edge. Endpoints are body node ids already (the
+// emitter minted them), addressed as :GoBodyNode.
+func (p *projector) projectParamEdges() {
+	ref := func(id string) NodeRef { return NodeRef{Label: LabelBodyNode, KeyProp: "id", Value: id} }
+	for _, e := range p.analysis.Application.ParamIn {
+		p.b.Edge(RelParamIn, ref(e.Src), ref(e.Dst), Props{"var": e.Var}, "")
+	}
+	for _, e := range p.analysis.Application.ParamOut {
+		p.b.Edge(RelParamOut, ref(e.Src), ref(e.Dst), Props{"var": e.Var}, "")
 	}
 }
 

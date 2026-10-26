@@ -19,12 +19,15 @@ func TestPartitionNodes_SharedHaveNoModule(t *testing.T) {
 	b.Node([]string{SymbolLabel, LabelExternal, MarkerLabel}, "id", "can://app/@external/fmt", nil, "") // shared
 	rows := b.Finish()
 
-	byModule, shared := partitionNodes(rows.Nodes)
+	byModule, shared, l4 := partitionNodes(rows.Nodes)
 	if len(byModule["x.go"]) != 2 {
 		t.Errorf("module x.go should own 2 nodes, got %d", len(byModule["x.go"]))
 	}
 	if len(shared) != 1 {
 		t.Errorf("expected 1 shared (no-module) node, got %d", len(shared))
+	}
+	if len(l4) != 0 {
+		t.Errorf("expected no L4 node, got %d", len(l4))
 	}
 }
 

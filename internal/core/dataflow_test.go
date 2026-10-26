@@ -23,7 +23,7 @@ func TestAnalyze_Level3RunsDataflow(t *testing.T) {
 	if len(a.L3()) == 0 {
 		t.Fatal("-a 3 produced no dataflow results")
 	}
-	data, err := core.RenderJSON(app, a.L3(), opts)
+	data, err := core.RenderJSON(app, a.L3(), a.L4(), opts)
 	if err != nil {
 		t.Fatal(err)
 	}

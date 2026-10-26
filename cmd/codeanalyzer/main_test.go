@@ -587,13 +587,57 @@ func TestCLI_Neo4jWithTargetFilesFallsBackToL3(t *testing.T) {
 			t.Errorf("graph.cypher should carry the L3 %s relationship", rel)
 		}
 	}
-	// No L4 rows. Trivially true until the L4 projection lands (Task 16),
-	// where it becomes the real guard.
-	for _, rel := range []string{"GO_PARAM_IN", "GO_PARAM_OUT", "GO_SUMMARY"} {
-		if strings.Contains(cy, rel) {
-			t.Errorf("graph.cypher must carry no %s rows under -t", rel)
+	// No L4 rows (R-P8): no MERGE of a GO_PARAM_IN / GO_PARAM_OUT /
+	// GO_SUMMARY relationship, no port GO_DDG row, no vertex body node. The
+	// same fixture without -t does carry each of them, so the guard is real.
+	for rel, n := range l4CypherRows(cy) {
+		if n != 0 {
+			t.Errorf("graph.cypher under -t carries %d %s rows", n, rel)
 		}
 	}
+	full := t.TempDir()
+	if _, _, err := runCmd(
+		"--input", filepath.Join(td, "multipackage"),
+		"--emit", "neo4j",
+		"--output", full,
+		"--cache-dir", t.TempDir(),
+	); err != nil {
+		t.Fatalf("--emit neo4j should succeed; got %v", err)
+	}
+	data, err = os.ReadFile(filepath.Join(full, "graph.cypher"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rel, n := range l4CypherRows(string(data)) {
+		if n == 0 {
+			t.Errorf("graph.cypher without -t carries no %s rows", rel)
+		}
+	}
+}
+
+// l4CypherRows counts the L4 rows of a graph.cypher script: the rows of
+// each UNWIND batch that MERGEs a GO_PARAM_IN / GO_PARAM_OUT / GO_SUMMARY
+// relationship, the port GO_DDG rows (prov reaching-defs), and the vertex
+// :GoBodyNode rows (kind formal_in, formal_out, actual_in, actual_out).
+func l4CypherRows(cy string) map[string]int {
+	n := map[string]int{"GO_PARAM_IN": 0, "GO_PARAM_OUT": 0, "GO_SUMMARY": 0, "GO_DDG reaching-defs": 0, "vertex": 0}
+	for _, stmt := range strings.Split(cy, ";\n") {
+		rows := strings.Count(stmt, "\n  {")
+		for _, rel := range []string{"GO_PARAM_IN", "GO_PARAM_OUT", "GO_SUMMARY"} {
+			if strings.Contains(stmt, "MERGE (a)-[r:"+rel+"]->(b)") {
+				n[rel] += rows
+			}
+		}
+		if strings.Contains(stmt, "-[r:GO_DDG {_k: row.k}]->") {
+			n["GO_DDG reaching-defs"] += strings.Count(stmt, "|reaching-defs'")
+		}
+		if strings.Contains(stmt, "MERGE (n:GoBodyNode") {
+			for _, k := range []string{"formal_in", "formal_out", "actual_in", "actual_out"} {
+				n["vertex"] += strings.Count(stmt, "kind: '"+k+"'")
+			}
+		}
+	}
+	return n
 }
 
 func TestCLI_Neo4jWithoutTargetFilesWarnsNothing(t *testing.T) {
