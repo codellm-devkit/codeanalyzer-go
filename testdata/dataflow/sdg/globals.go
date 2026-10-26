@@ -28,3 +28,51 @@ func bump() {
 func readCounter() int {
 	return counter
 }
+
+// g1 and g2 are read by skipX and skipY; tests force skipX to have no L3
+// result.
+var g1 = os.Getenv("G1")
+
+var g2 = os.Getenv("G2")
+
+func skipX() string {
+	return g1 + skipY()
+}
+
+func skipY() string {
+	return g2
+}
+
+func callsSkipX() string {
+	return skipX()
+}
+
+// lazyOnce stands for library code that runs a callback later: Do keeps f
+// and never calls it, so no call edge reaches Get's literal.
+type lazyOnce struct{ f func() }
+
+func (o *lazyOnce) Do(f func()) { o.f = f }
+
+var once lazyOnce
+
+var inst *Inner
+
+func build() *Inner { return &Inner{} }
+
+// Get writes inst only inside the literal it hands to once.Do.
+func Get() *Inner {
+	once.Do(func() { inst = build() })
+	return inst
+}
+
+func callsGet() *Inner { return Get() }
+
+// argv is initialized from a library variable, cfgDir from a kept global:
+// the chained initializer rule keeps both.
+var argv = os.Args
+
+var cfgDir = home + "/x"
+
+func readArgv() []string { return argv }
+
+func readCfgDir() string { return cfgDir }

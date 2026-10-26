@@ -105,8 +105,8 @@ func TestFootprint_MutualRecursionFixpoint(t *testing.T) {
 	}
 }
 
-// TestFootprint_Mutated (A10): a callable mutates a param or receiver it
-// writes through, by the shared by-ref predicate; a stand-in, an interface
+// TestFootprint_Mutated (A10, fix I1): a callable mutates a by-ref param or
+// receiver (the shared predicate) it uses or writes; a stand-in, an interface
 // method and a bodiless declaration mutate every by-ref formal.
 func TestFootprint_Mutated(t *testing.T) {
 	_, _, fps := runFootprints(t)
@@ -114,9 +114,9 @@ func TestFootprint_Mutated(t *testing.T) {
 		tg   Target
 		want []string
 	}{
-		{sdgTarget("mutate"), []string{"p", "s"}}, // n is a copy holding no reference; q is never written
+		{sdgTarget("mutate"), []string{"p", "q", "s"}}, // n is a copy holding no reference; q is used (`_ = q`)
 		{sdgTarget("sqlStore.setDSN"), []string{"s"}},
-		{sdgTarget("memStore.Get"), nil},            // reads through s only
+		{sdgTarget("memStore.Get"), []string{"s"}},  // s holds a map and is used: a use is enough (I1)
 		{sdgTarget("Store.Get"), []string{"_recv"}}, // interface method: the receiver is an interface
 		{Target{External: "io.Writer.Write"}, []string{"_recv", "p"}},
 		{Target{External: "bytes.Buffer.Write"}, []string{"b", "p"}},
@@ -217,6 +217,91 @@ func TestSCC_Deterministic(t *testing.T) {
 		}
 		if got := sccs(shuf, func(tg Target) []Target { return se[tg] }); !slices.EqualFunc(got, want, slices.Equal) {
 			t.Fatalf("shuffle %d: sccs = %v, want %v", i, got, want)
+		}
+	}
+}
+
+// TestFootprint_MutatedThroughAlias (fix I1): a by-ref formal used at any
+// node other than @entry is mutated — a write through a local alias (a range
+// variable, q := p) or passing the alias on is not a def of the formal at L3.
+// One never used is not.
+func TestFootprint_MutatedThroughAlias(t *testing.T) {
+	_, _, fps := runFootprints(t)
+	for _, c := range []struct {
+		fn   string
+		want []string
+	}{
+		{"aliasRange", []string{"s"}},
+		{"aliasAssign", []string{"p"}},
+		{"aliasCall", []string{"p"}},
+		{"unusedRef", nil},
+	} {
+		if got := fpOf(t, fps, sdgTarget(c.fn)); !slices.Equal(got.Mutated, c.want) {
+			t.Errorf("%s mutates %v, want %v", c.fn, got.Mutated, c.want)
+		}
+	}
+}
+
+// TestFootprint_L3SkippedKeepsGlobalsAndCallees (fix I2): with skipX's L3
+// result gone, skipX still has the global it names (g1, as read and written)
+// and its callee skipY's (g2), and so does its caller.
+func TestFootprint_L3SkippedKeepsGlobalsAndCallees(t *testing.T) {
+	in, _, d := runDispatch(t)
+	skipped := globalsKey("skipX")
+	l3 := make(map[dataflow.L3Key]dataflow.Result, len(in.L3))
+	for k, r := range in.L3 {
+		if k != skipped {
+			l3[k] = r
+		}
+	}
+	in.L3 = l3
+	fps := footprints(in, d)
+	g1, g2 := sdgPkg+"::g1", sdgPkg+"::g2"
+	for _, k := range []dataflow.L3Key{skipped, globalsKey("callsSkipX")} {
+		got := fpOf(t, fps, Target{Callable: k})
+		if !slices.Equal(got.GlobalReads, []string{g1, g2}) || !slices.Contains(got.GlobalWrites, g1) {
+			t.Errorf("%s = %+v, want reads [%s %s] and writes ⊇ [%s]", k.Signature, got, g1, g2, g1)
+		}
+	}
+
+	// With no dispatch sites either (a call-count mismatch leaves
+	// newDispatch nothing for it), the L2 call graph still gives its callees.
+	for site := range d.sites {
+		if site.unit == skipped {
+			delete(d.sites, site)
+		}
+	}
+	got := fpOf(t, footprints(in, d), Target{Callable: globalsKey("callsSkipX")})
+	if !slices.Contains(got.GlobalReads, g2) {
+		t.Errorf("callsSkipX reads %v without skipX's dispatch sites, want ⊇ [%s]", got.GlobalReads, g2)
+	}
+}
+
+// TestFootprint_LiteralPassedToLibrary (fix I3): Get hands a literal to
+// once.Do, which never calls it, so no call edge reaches the literal; the
+// encloser → literal edge still gives Get and its caller the literal's write
+// of inst.
+func TestFootprint_LiteralPassedToLibrary(t *testing.T) {
+	_, _, fps := runFootprints(t)
+	inst := sdgPkg + "::inst"
+	for _, fn := range []string{"Get", "callsGet"} {
+		if got := fpOf(t, fps, Target{Callable: globalsKey(fn)}); !slices.Contains(got.GlobalWrites, inst) {
+			t.Errorf("%s writes %v, want ⊇ [%s]", fn, got.GlobalWrites, inst)
+		}
+	}
+}
+
+// TestFootprint_ChainedInitializers (fix M4): a global initialized from a
+// library variable (argv = os.Args) or from a kept global (cfgDir = home +
+// "/x") is kept.
+func TestFootprint_ChainedInitializers(t *testing.T) {
+	_, _, fps := runFootprints(t)
+	for _, c := range []struct{ fn, want string }{
+		{"readArgv", sdgPkg + "::argv"},
+		{"readCfgDir", sdgPkg + "::cfgDir"},
+	} {
+		if got := fpOf(t, fps, Target{Callable: globalsKey(c.fn)}); !slices.Equal(got.GlobalReads, []string{c.want}) {
+			t.Errorf("%s reads %v, want [%s]", c.fn, got.GlobalReads, c.want)
 		}
 	}
 }

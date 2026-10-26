@@ -31,7 +31,8 @@ type l2Edge struct{ path, src, dst string }
 // wrapper and the method it wraps, are one target. A callee that maps to
 // nothing (unmapped_ssa, already reported) is not a target.
 type dispatch struct {
-	sites  map[siteKey][]Target // each sorted by compareTarget, no duplicates
+	sites  map[siteKey][]Target      // each sorted by compareTarget, no duplicates
+	bySig  map[string]dataflow.L3Key // symbol-table callable of each signature (init excepted)
 	l2     map[l2Edge]bool
 	l2Ext  map[string]schema.GoExternalCallee // in.Externals, read-only
 	newExt map[string]schema.GoExternalCallee // externals L2 never saw
@@ -94,6 +95,7 @@ func newDispatch(in Input) *dispatch {
 		}
 	}
 
+	d.bySig = bySig
 	for _, u := range in.Units {
 		c, ok := callables[u.Key]
 		if !ok || len(c.CallSites) != len(u.Calls) { // Unit.Calls is built index by index from CallSites

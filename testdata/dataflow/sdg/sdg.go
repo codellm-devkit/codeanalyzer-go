@@ -139,3 +139,29 @@ func mutate(p *Inner, s memStore, n Inner, q *Inner) {
 func (s *sqlStore) setDSN(d string) {
 	s.dsn = d
 }
+
+// aliasRange writes through s's elements via the loop variable, an alias.
+func aliasRange(s []*Inner, v int) {
+	for _, it := range s {
+		it.n = v
+	}
+}
+
+// aliasAssign writes through p via the local alias q.
+func aliasAssign(p *Inner, v int) {
+	q := p
+	q.n = v
+}
+
+// aliasCall passes p's alias q to a callee.
+func aliasCall(p *Inner) {
+	q := p
+	takeInner(q)
+}
+
+func takeInner(p *Inner) {}
+
+// unusedRef never uses its by-ref param p.
+func unusedRef(p *Inner, v int) int {
+	return v
+}

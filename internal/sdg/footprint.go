@@ -10,6 +10,7 @@ import (
 
 	"golang.org/x/tools/go/packages"
 
+	"github.com/codellm-devkit/codeanalyzer-go/internal/astwalk"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/dataflow"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/schema"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/utils"
@@ -34,7 +35,7 @@ type globals struct{ reads, writes []string }
 // target (spec §4.9). It reads the L3 side tables, the dispatch and go/types
 // only, never the SSA program, so it is safe after a no_vta.
 //
-//   - A unit with an L3 result: its direct globals are the package-level
+//   - A unit with an L3 result (analysed): its direct globals are the package-level
 //     variable bases of its DefUse (uses are reads; strong and weak defs are
 //     writes; @entry, which defines every global the body touches, is not a
 //     write) and every global it takes the address of (&v, or a pointer
@@ -42,15 +43,22 @@ type globals struct{ reads, writes []string }
 //     L3. Globals the filter drops (globalFilter, A5) are removed. Its
 //     footprint is propagated bottom-up over the call graph (callGraph), so
 //     it holds every global any callee touches.
-//   - Mutated: a receiver or param p whose type may hold a reference
-//     (dataflow.MayHoldRef, A10) and that some node other than @entry
-//     defines a path through (p.f, p.*, p[*]: an assignment, a call-rule weak
-//     def where p is a by-ref argument or receiver, a capture write). It is
-//     not propagated: the L3 call rule already weak-defines p.* at a call
-//     passing p, so the caller's own DefUse records it.
-//   - A stand-in, an interface method, a bodiless declaration and a unit
-//     with no L3 result (or no type info): no globals, and Mutated = every
-//     by-ref formal (byRefFormals).
+//   - A unit footprints cannot analyse (an L3 result dropped, l3_skipped;
+//     no type info): its direct globals are syntactic — every package-level
+//     variable its Fn names, nested literals included, as both read and
+//     written (mentions) — and it keeps its callees (callGraph).
+//   - Mutated (A10, fix I1): for an analysed unit, a receiver or param p
+//     whose type may hold a reference (dataflow.MayHoldRef) and that some
+//     node other than @entry uses or defines. A use is enough: a write
+//     through a local alias (`q := p; q.x = v`, a range variable over p) or
+//     passing the alias on is no def of p at L3, and no alias analysis
+//     tells them apart. A by-ref formal never used stays out. It is not
+//     propagated: a caller passing p by ref uses p, and a closure writing
+//     through a captured p makes its host use p (captureUses), so the
+//     encloser's own DefUse records it.
+//   - A stand-in, an interface method, a bodiless declaration and an
+//     unanalysed unit: Mutated = every by-ref formal (byRefFormals); only
+//     the unanalysed unit has globals.
 func footprints(in Input, d *dispatch) map[Target]Footprint {
 	nodes, callees := callGraph(in, d)
 	gf := newGlobalFilter(in)
@@ -59,11 +67,12 @@ func footprints(in Input, d *dispatch) map[Target]Footprint {
 	direct := map[Target]globals{}
 	mutated := map[Target][]string{}
 	for _, u := range in.Units {
+		t := Target{Callable: u.Key}
 		if !analysed(in, u) {
-			gf.mentions(u) // no DefUse: every global it names may be written
+			direct[t] = gf.mentions(u) // no DefUse: every global it names may be read or written
+			mutated[t] = byRefFormals(formals.of(t))
 			continue
 		}
-		t := Target{Callable: u.Key}
 		r := in.L3[u.Key]
 		direct[t] = gf.direct(u, r)
 		mutated[t] = mutatedFormals(u, r)
@@ -94,28 +103,64 @@ func analysed(in Input, u dataflow.Unit) bool {
 }
 
 // callGraph returns the call graph footprints propagate over (spec §4.9):
-// every unit and every dispatch target, sorted by compareTarget, and each
-// unit's callees, the union of its call sites' dispatch targets (L2's static
-// callee ∪ VTA ∪ the interface method, D7), sorted. A call node the CFG
-// pruned keeps its targets (an over-approximation). A unit footprints cannot
-// analyse (analysed) has no callees: its footprint carries no globals.
+// every unit and every target, sorted by compareTarget, and each unit's
+// callees, sorted:
+//
+//   - the union of its call sites' dispatch targets (L2's static callee ∪
+//     VTA ∪ the interface method, D7). A call node the CFG pruned keeps its
+//     targets (an over-approximation);
+//   - for an unanalysed unit dispatch seeded no site for (fix I2), its L2
+//     call_graph edges (in.CallGraph), each target mapped as newDispatch
+//     maps a static callee;
+//   - every function literal of its body (outermost: a nested one is its
+//     enclosing literal's) not called at its own position (fix I3): one
+//     handed to library code (once.Do, errgroup.Go, http.HandleFunc,
+//     sort.Slice) or stored may run during the call, and no call edge
+//     reaches it. This mirrors the L3 capture-write rule. A literal called
+//     in place (`func(){…}()`, deferred or launched) has its call edge.
 func callGraph(in Input, d *dispatch) ([]Target, map[Target][]Target) {
 	callees := map[Target][]Target{}
 	nodeSet := map[Target]bool{}
-	ok := map[dataflow.L3Key]bool{}
+	byFn := make(map[ast.Node]dataflow.L3Key, len(in.Units))
 	for _, u := range in.Units {
 		nodeSet[Target{Callable: u.Key}] = true
-		ok[u.Key] = analysed(in, u)
+		byFn[u.Fn] = u.Key
 	}
+	seeded := map[dataflow.L3Key]bool{}
 	for site, ts := range d.sites {
 		for _, t := range ts {
 			nodeSet[t] = true
 		}
-		if !ok[site.unit] {
-			continue
-		}
+		seeded[site.unit] = true
 		u := Target{Callable: site.unit}
 		callees[u] = append(callees[u], ts...)
+	}
+	l2 := map[dataflow.L3Key][]string{}
+	for _, e := range in.CallGraph {
+		k := dataflow.L3Key{Path: e.SourcePath, Signature: e.Source}
+		l2[k] = append(l2[k], e.Target)
+	}
+	for _, u := range in.Units {
+		src := Target{Callable: u.Key}
+		if !seeded[u.Key] && !analysed(in, u) {
+			for _, sig := range l2[u.Key] {
+				t, ok := Target{External: sig}, true
+				if _, ext := in.Externals[sig]; !ext {
+					var k dataflow.L3Key
+					k, ok = d.bySig[sig]
+					t = Target{Callable: k}
+				}
+				if ok {
+					nodeSet[t] = true
+					callees[src] = append(callees[src], t)
+				}
+			}
+		}
+		for _, lit := range uncalledLiterals(u.Fn) {
+			if k, ok := byFn[lit]; ok {
+				callees[src] = append(callees[src], Target{Callable: k})
+			}
+		}
 	}
 	for u, ts := range callees {
 		slices.SortFunc(ts, compareTarget)
@@ -127,6 +172,43 @@ func callGraph(in Input, d *dispatch) ([]Target, map[Target][]Target) {
 	}
 	slices.SortFunc(nodes, compareTarget)
 	return nodes, callees
+}
+
+// uncalledLiterals returns the outermost function literals of fn's body
+// that are not the function of a call (`func(){…}()`, also deferred or
+// launched), in source order.
+func uncalledLiterals(fn ast.Node) []*ast.FuncLit {
+	body := fnBody(fn)
+	if body == nil {
+		return nil
+	}
+	called := map[*ast.FuncLit]bool{}
+	ast.Inspect(body, func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok {
+			if lit, ok := ast.Unparen(call.Fun).(*ast.FuncLit); ok {
+				called[lit] = true
+			}
+		}
+		return true
+	})
+	var out []*ast.FuncLit
+	for _, l := range astwalk.Literals(body) {
+		if !called[l.Lit] {
+			out = append(out, l.Lit)
+		}
+	}
+	return out
+}
+
+// fnBody is the body of a *ast.FuncDecl or *ast.FuncLit (nil without one).
+func fnBody(fn ast.Node) *ast.BlockStmt {
+	switch fn := fn.(type) {
+	case *ast.FuncDecl:
+		return fn.Body
+	case *ast.FuncLit:
+		return fn.Body
+	}
+	return nil
 }
 
 // propagate closes the direct global sets over callees, bottom-up over the
@@ -195,9 +277,9 @@ func unionSorted(lists [][]string) []string {
 	return slices.Clip(all)
 }
 
-// mutatedFormals is the Mutated set of unit u from its L3 result r (A10):
-// the receiver and params that may hold a reference and that a node other
-// than @entry defines a path through, by name, sorted.
+// mutatedFormals is the Mutated set of analysed unit u from its L3 result r
+// (A10, fix I1): the receiver and params that may hold a reference and that
+// a node other than @entry uses or defines, by name, sorted.
 func mutatedFormals(u dataflow.Unit, r dataflow.Result) []string {
 	byRef := map[types.Object]bool{}
 	for _, obj := range formalObjs(u.Fn, u.Info) {
@@ -213,11 +295,9 @@ func mutatedFormals(u dataflow.Unit, r dataflow.Result) []string {
 		if key == dataflow.EntryKey {
 			continue
 		}
-		for _, list := range [][]dataflow.Path{du.Defs, du.WeakDefs} {
+		for _, list := range [][]dataflow.Path{du.Uses, du.Defs, du.WeakDefs} {
 			for _, p := range list {
-				// A path with a step after its base: the base's own spelling is
-				// its name (a param is never a package-level variable).
-				if byRef[p.Base] && len(p.Spell) > len(p.Base.Name()) {
+				if byRef[p.Base] {
 					hit[p.Base.Name()] = true
 				}
 			}
@@ -350,13 +430,7 @@ func (f *globalFilter) direct(u dataflow.Unit, r dataflow.Result) globals {
 // address may be written through. It walks fn's body, not its function
 // literals: they are their own units.
 func addressTaken(fn ast.Node, info *types.Info, f func(types.Object)) {
-	var body *ast.BlockStmt
-	switch fn := fn.(type) {
-	case *ast.FuncDecl:
-		body = fn.Body
-	case *ast.FuncLit:
-		body = fn.Body
-	}
+	body := fnBody(fn)
 	if body == nil {
 		return
 	}
@@ -396,26 +470,36 @@ func isPtr(t types.Type) bool {
 	return ok
 }
 
-// mentions records every project global unit u (nested literals included)
-// names as written: with no DefUse, any of them may be.
-func (f *globalFilter) mentions(u dataflow.Unit) {
-	if u.Info == nil {
-		// No type info: nothing to resolve a name against. Keep every
-		// global the unit's package declares.
-		f.keepPackageOf(u)
-		return
-	}
-	ast.Inspect(u.Fn, func(n ast.Node) bool {
-		if id, ok := n.(*ast.Ident); ok {
-			f.write(u.Info.Uses[id])
+// mentions returns the syntactic direct globals of unanalysed unit u (fix
+// I2): every package-level variable its Fn names, nested literals included,
+// as both read and written (with no DefUse, any of them may be either), and
+// records the writes. With no type info nothing resolves a name, so it is
+// every package-level variable of u's package.
+func (f *globalFilter) mentions(u dataflow.Unit) globals {
+	set := map[string]bool{}
+	note := func(obj types.Object) {
+		if s, ok := f.spell(obj); ok {
+			set[s] = true
+			f.write(obj)
 		}
-		return true
-	})
+	}
+	if u.Info == nil {
+		f.packageVars(u, note)
+	} else {
+		ast.Inspect(u.Fn, func(n ast.Node) bool {
+			if id, ok := n.(*ast.Ident); ok {
+				note(u.Info.Uses[id])
+			}
+			return true
+		})
+	}
+	all := sortedKeys(set)
+	return globals{reads: all, writes: all}
 }
 
-// keepPackageOf keeps every package-level variable of the project package
-// that declares u.
-func (f *globalFilter) keepPackageOf(u dataflow.Unit) {
+// packageVars calls note on every object of the scope of the project
+// package that declares u.
+func (f *globalFilter) packageVars(u dataflow.Unit, note func(types.Object)) {
 	tf := f.fset.File(u.Fn.Pos())
 	if tf == nil {
 		return
@@ -426,7 +510,7 @@ func (f *globalFilter) keepPackageOf(u dataflow.Unit) {
 		}
 		scope := p.Types.Scope()
 		for _, name := range scope.Names() {
-			f.write(scope.Lookup(name))
+			note(scope.Lookup(name))
 		}
 	}
 }
@@ -437,8 +521,13 @@ func (f *globalFilter) keepPackageOf(u dataflow.Unit) {
 // literal's body: that runs only when the literal is called) is kept; so is
 // every project global an initializer may write — one named inside a call's
 // operands, under &, or in a function literal (L1 has no callable for a
-// package-level literal, so no DefUse says what it writes).
+// package-level literal, so no DefUse says what it writes). Last, a chained
+// initializer (fix M4): a variable whose initializer names a library
+// package-level variable or a kept one is kept, to a fixpoint (`var argv =
+// os.Args`; `var cfgDir = home + "/x"` with home kept).
 func (f *globalFilter) initializers() {
+	type chain struct{ names, named []types.Object }
+	var chains []chain
 	for _, p := range f.pkgs {
 		info := p.TypesInfo
 		if info == nil {
@@ -452,18 +541,70 @@ func (f *globalFilter) initializers() {
 				}
 				for _, spec := range gd.Specs {
 					vs := spec.(*ast.ValueSpec)
+					c := chain{}
+					for _, name := range vs.Names {
+						c.names = append(c.names, info.Defs[name])
+					}
 					for _, v := range vs.Values {
 						if hasCall(v, info) {
-							for _, name := range vs.Names {
-								f.write(info.Defs[name])
+							for _, obj := range c.names {
+								f.write(obj)
 							}
 						}
 						f.initWrites(v, info, false)
+						c.named = append(c.named, namedVars(v, info)...)
+					}
+					if len(c.named) > 0 {
+						chains = append(chains, c)
 					}
 				}
 			}
 		}
 	}
+	for changed := true; changed; {
+		changed = false
+		for _, c := range chains {
+			if !slices.ContainsFunc(c.named, f.carries) || !slices.ContainsFunc(c.names, f.dropped) {
+				continue
+			}
+			for _, obj := range c.names {
+				f.write(obj)
+			}
+			changed = true
+		}
+	}
+}
+
+// carries reports whether package-level variable obj passes the filter as
+// it stands: a library variable, or a kept project one.
+func (f *globalFilter) carries(obj types.Object) bool {
+	s, ok := f.spell(obj)
+	return ok && (!f.project[obj.Pkg().Path()] || f.kept[s])
+}
+
+// dropped reports whether obj is a project package-level variable the
+// filter does not keep (yet).
+func (f *globalFilter) dropped(obj types.Object) bool {
+	s, ok := f.spell(obj)
+	return ok && f.project[obj.Pkg().Path()] && !f.kept[s]
+}
+
+// namedVars returns the package-level variables e names outside a function
+// literal's body (a literal's body runs only when it is called).
+func namedVars(e ast.Expr, info *types.Info) []types.Object {
+	var out []types.Object
+	ast.Inspect(e, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.FuncLit:
+			return false
+		case *ast.Ident:
+			if obj := info.Uses[n]; dataflow.IsPkgVar(obj) {
+				out = append(out, obj)
+			}
+		}
+		return true
+	})
+	return out
 }
 
 // hasCall reports whether e calls a function outside a function literal's
