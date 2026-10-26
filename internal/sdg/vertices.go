@@ -623,11 +623,12 @@ func (p *ports) captureSites(u dataflow.Unit, taken map[string]bool) []Vertex {
 	return out
 }
 
-// capSite is one capture site: its key, its host, and each capture (in
-// actual_in order) with its actual_in key and, when the literal writes it,
+// capSite is one capture site: its key, its host, its literal, and each
+// capture (in actual_in order) with its actual_in key and, when the literal writes it,
 // its actual_out key.
 type capSite struct {
 	key, host string
+	lit       *ast.FuncLit
 	caps      []types.Object
 	ofs       []string
 	in, out   []string // per capture; out[i] == "" when not written
@@ -694,7 +695,7 @@ func (p *ports) capSites(u dataflow.Unit, taken map[string]bool) []capSite {
 			}
 		}
 		pos := p.in.Fset.PositionFor(l.Lit.Pos(), false)
-		cs := capSite{key: dataflow.NextFreeKey(v2.LocalID(pos.Line, pos.Column), taken), host: host, caps: caps}
+		cs := capSite{key: dataflow.NextFreeKey(v2.LocalID(pos.Line, pos.Column), taken), host: host, lit: l.Lit, caps: caps}
 		j := 0
 		for i, v := range caps {
 			cs.ofs = append(cs.ofs, ofCapture+v.Name())

@@ -301,3 +301,49 @@ func CaptureParam(p *Inner) {
 	f := func() { p.n = 1 }
 	f()
 }
+
+// a passes x to b, which passes it to c, which returns it: a's call of b
+// has a summary edge from its actual_in:0 to its actual_out.
+func a(x int) int {
+	return b(x)
+}
+
+func b(x int) int {
+	return c(x)
+}
+
+func c(x int) int {
+	return x
+}
+
+// ignore never uses x: no summary edge leaves the actual_in:0 of a call
+// of it.
+func ignore(x, y int) int {
+	return y
+}
+
+func callIgnore(v, w int) int {
+	return ignore(v, w)
+}
+
+// dropX and dropY are mutually recursive and dropX never uses x: no summary
+// edge leaves the actual_in:0 of dropY's call of dropX.
+func dropX(x, y int) int {
+	if y == 0 {
+		return y
+	}
+	return dropY(y - 1)
+}
+
+func dropY(y int) int {
+	return dropX(0, y)
+}
+
+// implicit's result depends on x only through control: x reaches
+// <return> over the cdg.
+func implicit(x int) int {
+	if x > 0 {
+		return 1
+	}
+	return 0
+}

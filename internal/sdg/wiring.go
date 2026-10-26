@@ -97,7 +97,7 @@ func (p *ports) wire(k dataflow.L3Key) []PortEdge {
 	}
 
 	for i, fo := range w.fs.results {
-		if w.resObjs[i] != nil {
+		if i < len(w.resObjs) && w.resObjs[i] != nil {
 			continue
 		}
 		of := resultOf(i, len(w.fs.results))

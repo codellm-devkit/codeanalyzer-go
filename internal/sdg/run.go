@@ -14,10 +14,12 @@ import (
 // vtaCallGraph is vta.CallGraph (a test seam for the recovered-panic path).
 var vtaCallGraph = vta.CallGraph
 
-// Run builds the L4 overlay of in. For now it builds SSA over the project
-// packages, joins it to the L3 units, resolves every call site's dispatch
-// targets (L2's static callee ∪ VTA's callees) and returns the call-graph
-// edges and externals only VTA found, and the degradation: no vertices yet.
+// Run builds the L4 overlay of in. It builds SSA over the project packages,
+// joins it to the L3 units, resolves every call site's dispatch targets
+// (L2's static callee ∪ VTA's callees), and returns the call-graph edges and
+// externals only VTA found, the degradation, and the SDG: every unit's
+// vertices, port edges and summaries, the param edges, and the stand-in
+// formals.
 //
 // Order: the join is computed before VTA, so it never reads a program a VTA
 // panic may have wedged; after no_vta, later stages use the program for the
@@ -30,8 +32,16 @@ func Run(in Input) Result {
 }
 
 // run is Run that also returns the call-site dispatch. Every site keeps its
-// static L2 targets whether or not SSA or VTA ran.
+// static L2 targets whether or not SSA or VTA ran, so the SDG is built on
+// every path.
 func run(in Input) (Result, *dispatch) {
+	res, d := dispatchRun(in)
+	overlay(in, d, &res)
+	return res, d
+}
+
+// dispatchRun is run up to the dispatch: SSA, the join and VTA.
+func dispatchRun(in Input) (Result, *dispatch) {
 	d := newDispatch(in)
 	start := time.Now()
 	prog, pkgs, deg := buildSSA(in)
@@ -77,6 +87,21 @@ func run(in Input) (Result, *dispatch) {
 	utils.Info("L4: dispatch: %d call sites with targets; %d call_graph edges and %d externals added by VTA",
 		len(d.sites), len(res.CallEdges), len(res.NewExternals))
 	return res, d
+}
+
+// overlay fills res's vertices, port edges, summaries and param edges
+// (summary.go, params.go), serially. It reads the dispatch, the L3 results
+// and go/types, never the SSA program, so it runs after a no_vta too (the
+// dispatch then holds the L2 static targets).
+func overlay(in Input, d *dispatch, res *Result) {
+	start := time.Now()
+	newSDGBuilder(in, d).fill(res)
+	var nv, nd, ns int
+	for _, c := range res.Callables {
+		nv, nd, ns = nv+len(c.Vertices), nd+len(c.Ddg), ns+len(c.Summary)
+	}
+	utils.Info("L4: %d vertices, %d port edges, %d summary edges, %d param_in, %d param_out, %d stand-ins in %s",
+		nv, nd, ns, len(res.ParamIn), len(res.ParamOut), len(res.Externals), time.Since(start).Round(time.Millisecond))
 }
 
 // funcSet is projectFuncs under recover: it builds functions on demand
