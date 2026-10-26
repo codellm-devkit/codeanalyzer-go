@@ -689,6 +689,35 @@ func TestCLI_LibraryModelsAtLevel4AndNeo4j(t *testing.T) {
 	}
 }
 
+// TestCLI_Neo4jTargetFilesWithLibraryModelsWarnsOnce: --emit neo4j -t runs at
+// L3, so --library-models is unused there; the D9 warning says so on its one
+// stderr line.
+func TestCLI_Neo4jTargetFilesWithLibraryModelsWarnsOnce(t *testing.T) {
+	td := cliTestdataDir()
+	models := writeModelsFile(t, `{"fmt/Sprintf": []}`)
+	var runErr error
+	stderr := captureStderr(t, func() {
+		_, _, runErr = runCmd(
+			"--input", filepath.Join(td, "multipackage"),
+			"--emit", "neo4j",
+			"--target-files", filepath.Join(td, "multipackage", "server", "server.go"),
+			"--library-models", models,
+			"--output", t.TempDir(),
+			"--cache-dir", t.TempDir(),
+		)
+	})
+	if runErr != nil {
+		t.Fatalf("--emit neo4j -t --library-models should succeed; got %v", runErr)
+	}
+	want := "[codeanalyzer-go WARN] " + warnNeo4jTargetFiles + "; --library-models is ignored at level 3\n"
+	if n := strings.Count(stderr, want); n != 1 {
+		t.Errorf("want exactly one line %q; stderr:\n%s", want, stderr)
+	}
+	if n := strings.Count(stderr, "projecting the graph at level 3"); n != 1 {
+		t.Errorf("D9 warning appeared %d times, want 1; stderr:\n%s", n, stderr)
+	}
+}
+
 func TestCLI_LibraryModelsBadFileErrors(t *testing.T) {
 	td := cliTestdataDir()
 	for name, path := range map[string]string{

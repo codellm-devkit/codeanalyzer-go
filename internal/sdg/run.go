@@ -2,6 +2,7 @@ package sdg
 
 import (
 	"fmt"
+	"runtime/debug"
 	"time"
 
 	"golang.org/x/tools/go/callgraph"
@@ -13,6 +14,17 @@ import (
 
 // vtaCallGraph is vta.CallGraph (a test seam for the recovered-panic path).
 var vtaCallGraph = vta.CallGraph
+
+// memLevers enables the output-neutral memory levers of Run (spec §4.13):
+// early release of the builder's per-unit caches, interned port names, and
+// the lower GC target. A test seam: TestSDG_OutputUnchangedByMemoryLevers
+// turns it off to check the result is the same.
+var memLevers = true
+
+// l4GCPercent is the GC target during Run. L4's live heap grows by the
+// whole-program overlay, and GOGC=100 headroom doubles the transient
+// garbage on top of it; 50 trades some GC time for that headroom.
+const l4GCPercent = 50
 
 // Run builds the L4 overlay of in. It builds SSA over the project packages,
 // joins it to the L3 units, resolves every call site's dispatch targets
@@ -26,7 +38,20 @@ var vtaCallGraph = vta.CallGraph
 // join alone. The degradations are, in order: partial_ssa / no_ssa (SSA),
 // l3_skipped and range_func (from the units, whether or not SSA built),
 // unmapped_ssa (the join), no_vta.
+//
+// Run lowers the process-wide GC target to l4GCPercent while it runs and
+// restores the previous one on return (debug.SetGCPercent is global: a
+// caller running other work concurrently shares the lower target). A target
+// already at or below it, or GC off (GOGC=off), is kept. L1–L3 and the
+// emission run at the caller's setting.
 func Run(in Input) Result {
+	if memLevers {
+		prev := debug.SetGCPercent(l4GCPercent)
+		if prev < l4GCPercent {
+			debug.SetGCPercent(prev)
+		}
+		defer debug.SetGCPercent(prev)
+	}
 	res, _ := run(in)
 	return res
 }

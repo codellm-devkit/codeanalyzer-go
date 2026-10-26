@@ -78,6 +78,19 @@ func compareParamEdge(a, b ParamEdge) int {
 	)
 }
 
+// releaseUnit drops what fill cached for unit k once its overlay is in the
+// Result: the wiring (the Result shares its slice), its summary edges and
+// call sites, and the ports' call and kept-node indexes of k (read only by
+// k's own vertices, wiring and params).
+func (b *sdgBuilder) releaseUnit(k dataflow.L3Key) {
+	delete(b.wired, k)
+	delete(b.summ, k)
+	delete(b.sites, k)
+	delete(b.graph, k)
+	delete(b.p.calls, k)
+	delete(b.p.kept, k)
+}
+
 func sortParamEdges(es []ParamEdge) []ParamEdge {
 	slices.SortFunc(es, compareParamEdge)
 	return slices.Compact(es)
@@ -104,10 +117,15 @@ func (b *sdgBuilder) fill(res *Result) {
 		res.Callables[k] = CallableSDG{
 			Vertices: b.p.vertices(k),
 			Ddg:      b.portEdges(k),
-			Summary:  b.summaryEdges(k),
+			Summary:  b.summary(k),
 		}
 		pi, po := b.params(k)
 		ins, outs = append(ins, pi...), append(outs, po...)
+		if memLevers {
+			// The Result now holds unit k's overlay; nothing below reads
+			// its caches again.
+			b.releaseUnit(k)
+		}
 	}
 	res.ParamIn, res.ParamOut = sortParamEdges(ins), sortParamEdges(outs)
 

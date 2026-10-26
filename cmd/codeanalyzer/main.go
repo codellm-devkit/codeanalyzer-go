@@ -104,7 +104,11 @@ via CLDK(language="go").analysis(project_path=...).`,
 				level = int(options.LevelSDG)
 				if len(targetFiles) > 0 {
 					level = int(options.LevelDataflow)
-					utils.Warn("--target-files: projecting the graph at level 3 (level 4 is whole-program); L4 rows keep the last full run's facts until a full run")
+					msg := "--target-files: projecting the graph at level 3 (level 4 is whole-program); L4 rows keep the last full run's facts until a full run"
+					if cmd.Flags().Changed("library-models") {
+						msg += "; --library-models is ignored at level 3"
+					}
+					utils.Warn("%s", msg)
 				}
 			case options.EmitSchema:
 				path, err := neo4j.EmitSchema(outputDir)

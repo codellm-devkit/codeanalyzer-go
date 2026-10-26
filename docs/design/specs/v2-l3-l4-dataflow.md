@@ -610,8 +610,8 @@ Context-insensitive. Per callable compute:
   are computed in full. Under the coarse host wiring (A15) a summary edge only shortcuts
   host → `actual_in` → … → `actual_out` → host, and sources and sinks address `formal_in`, so a
   global → global summary adds no reachability for an HRB-unaware walk. Measured on nats-server:
-  97.7% of 101M summary edges were global → global (10.8 GB peak RSS against D3's 1.5×). They
-  return with the HRB two-phase walk (§11).
+  97.7% of 101M summary edges were global → global; the cut took `sdg.Run`'s peak RSS from
+  11.1 GB to ~4.4 GB (2.34M summary edges left). They return with the HRB two-phase walk (§11).
 - **Unanalysed callables (amended, A16).** A callable whose L3 result was dropped (a contained
   panic or a call-count mismatch, `run.go`) has no `ddg`, so taint entering through `param_in`
   would stop at its `formal_in`. Such callables get formals and a **pass-through summary** (like an
@@ -711,17 +711,25 @@ Fill the reserved overlay, no contract renames:
 No hard node/time caps (neither sibling has them; a cap silently drops edges ⇒ false refutation).
 Termination comes from k-limiting and finite summary domains.
 
-**Memory (amended, A20; D3) [user: budget].** Today L3 nodes keep their AST (`ir.go` `Stmt`), the
+**Memory (amended, A20; D3) [user, 2026-10-26: measured, not gated].** Today L3 nodes keep their AST (`ir.go` `Stmt`), the
 whole envelope is marshalled into one `[]byte` (`core/analyzer.go`), and most RSS is `go/packages`
 type info (Kubernetes root: 7.1 GB at `-a 3`). L4 adds SSA bodies for project packages, VTA,
 summaries and roughly 1.5–2.5× the body nodes (the ports).
 - **Prerequisites:** #27 streaming JSON output and AST release (before the real-app L4 eval).
 - L4 needs the ASTs to bind actuals, so each callable's L4 vertices are built **before** its AST
   references are dropped. The SSA program is shared and freed after L4.
-- **Budget (D3):** `-a 4` peak RSS ≤ **1.5× `-a 3`** on the Kubernetes root, measured by an early
-  SSA+VTA spike task. If the spike blows it, record it in the ledger and keep going. Loading
-  dependencies from export data (dropping `NeedDeps` syntax) is a separate follow-up, not this
-  train (§11).
+- **Memory is measured, not gated (D3, amended) [user, 2026-10-26].** L4 is whole-program
+  analysis and needs more memory than L3; the former "≤ 1.5× `-a 3`" budget is dropped. The
+  real-app eval (§8) reports, per app, the absolute `-a 4` peak RSS and its ratio to `-a 3`.
+  Loading dependencies from export data (dropping `NeedDeps` syntax) is a separate follow-up, not
+  this train (§11).
+- **Output-neutral levers (Task 15b).** `sdg.Run` releases each unit's flow graph and call-site
+  bindings once its call-graph SCC is solved and its summary edges are produced, and the cached
+  port wiring once `fill` has copied it into the result; it interns the formal keys and `of`
+  strings (every `<global>:` spelling) so identical spellings share one string; and it lowers
+  the process GC target to 50 while it runs (`debug.SetGCPercent`, restored on return, never
+  raised above the caller's), so L1–L3 and emission keep the default. None changes a fact: the
+  result is deeply equal with them off (`TestSDG_OutputUnchangedByMemoryLevers`).
 
 ### 4.14 L2 external calls (Phase 0, shipped in PR #16) [user: fix it; details are calls]
 
@@ -801,8 +809,9 @@ amendments are folded into the sections above. Decisions:
   `go/ssa` def-use differential is built with the L4 SSA join and does not gate (§4.5).
 - **D2 [call]:** SSA comes from `ssautil.Packages` over the same load, built per package with
   `ssa.InstantiateGenerics|ssa.BuildSerially` under `recover` (§4.8).
-- **D3 [user]:** `-a 4` peak RSS ≤ 1.5× `-a 3` on the Kubernetes root, measured by the spike; if
-  blown, record it in the ledger and keep going; export-data loading is a separate follow-up (§4.13).
+- **D3 [user; amended user, 2026-10-26]:** memory is measured and reported per app (absolute
+  `-a 4` peak RSS and its ratio to `-a 3`), not gated: L4 is whole-program. (Was: `-a 4` peak
+  RSS ≤ 1.5× `-a 3` on the Kubernetes root.) Export-data loading is a separate follow-up (§4.13).
 - **D4 [user]:** `--emit neo4j` runs at max implemented depth = L4; `-a`/`--graph-field-depth`
   with it stay an error, as in Python and Java v2 (§4.12).
 - **D5 [call]:** a lazy Bolt push upserts every L4 row on every push; removing stale L4 rows needs
@@ -876,8 +885,13 @@ addition now; the cross-language SDK taint revisit is deferred (§11).
   `--emit neo4j` (`-a 1..3`: error `--library-models applies only at analysis level 4`); a
   missing, unreadable or malformed file is an error naming the path. An entry naming an `of`
   the external lacks is a warning and is ignored for that external, which keeps the all-to-all
-  default (a typo never refutes a flow); an entry for an external no call site targets is ignored
-  (Debug).
+  default (a typo never refutes a flow); an entry for an external no call site targets (or a
+  misspelt key, `strconv.Atoi`) is ignored with one warning per key, in sorted key order:
+  `--library-models: no call site targets <key>; entry ignored (keys are <import-path>/<sig>, e.g. strconv/Atoi)`.
+  A method of a generic library type is keyed by its declared (origin) signature
+  (`sync/atomic/Pointer.Store`), so one entry covers every instantiation. Under
+  `--emit neo4j -t` (L3, D9) the file is still read and checked but unused, and the D9 warning
+  ends `; --library-models is ignored at level 3`.
 - **Not modelled:** callbacks invoked by library code (`sort.Slice(xs, less)`,
   `http.HandleFunc(path, h)`): the function-value argument flows in, but the library calling it back
   is not an edge. Taint *starting* in a handler is unaffected (sources are the handler's own
@@ -987,8 +1001,8 @@ needs its code-generation step (bpf2go) before analysis (`scripts/eval_l3.sh --p
 app: wall time and peak RSS at `-a 3`/`-a 4`, body/edge counts, % call sites with resolved targets
 (go/types vs VTA), % externals with stand-ins, `<global>:` formal volume (A5), determinism. Gate:
 the six apps and both Kubernetes modules complete `-a 4` without crash and deterministically
-(`-j 1`/`-j N` and two runs on Kubernetes, not just fixtures); the D3 memory budget is reported
-against (§4.13); no hard time budget, but timings are reported and a regression budget is set after
+(`-j 1`/`-j N` and two runs on Kubernetes, not just fixtures); memory is reported per app as
+absolute `-a 4` peak RSS and its ratio to `-a 3`, not gated (D3, §4.13); no hard time budget, but timings are reported and a regression budget is set after
 the first measurement. Results go in `l3-dataflow-metrics.md` § L4.
 
 ## 9. Phasing and release
@@ -1041,7 +1055,7 @@ dispatch + type-based may-alias).
 
 | Risk | Mitigation |
 |---|---|
-| SSA/VTA cost at Kubernetes scale | SSA only at `-a 4`, project packages only (D2); early SSA+VTA spike sets the D3 budget; #27 streaming; `--strict` / degrade path |
+| SSA/VTA cost at Kubernetes scale | SSA only at `-a 4`, project packages only (D2); memory measured and reported per app (D3); #27 streaming; `--strict` / degrade path |
 | False refutations from a missed construct | over-approximation posture; "ports carry dependence" probe; per-construct fixtures; unresolved-call intra-caller pass-through |
 | Over-approximation noise (defer chain, pass-through, CDG in summaries) | acceptable by anti-goal; library models file narrows hot spots |
 | Breaking id change disrupts users | ship alone in Phase 0, before SDK pin; no released SDK consumes Go output |

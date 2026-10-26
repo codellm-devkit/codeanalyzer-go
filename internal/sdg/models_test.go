@@ -141,14 +141,50 @@ func TestModels_UnknownOfFallsBackToAllToAll(t *testing.T) {
 }
 
 // TestModels_UncalledEntryIgnored: an entry for an external no site targets
-// is no warning and changes nothing.
+// (a misspelt key too: strconv.Atoi for strconv/Atoi) changes nothing and
+// is one warning per key, in sorted key order.
 func TestModels_UncalledEntryIgnored(t *testing.T) {
-	res, warns := fillWith(t, Models{"example.com/nosuch/F": {}})
-	if len(warns) != 0 {
-		t.Errorf("warnings: %v", warns)
+	res, warns := fillWith(t, Models{"strconv.Atoi": {}, "example.com/nosuch/F": {}, "strconv/Atoi": {{"s", "<return>:0"}, {"s", "<return>:1"}}})
+	want := []string{
+		"--library-models: no call site targets example.com/nosuch/F; entry ignored (keys are <import-path>/<sig>, e.g. strconv/Atoi)",
+		"--library-models: no call site targets strconv.Atoi; entry ignored (keys are <import-path>/<sig>, e.g. strconv/Atoi)",
+	}
+	if !slices.Equal(warns, want) {
+		t.Errorf("warnings:\n got  %q\n want %q", warns, want)
 	}
 	if s := siteSummaryOf(res, stdlibKey("atoi"), atoiSite); len(s) != 2 {
 		t.Errorf("summary of atoi = %+v, want the default", s)
+	}
+}
+
+// TestModels_GenericExternalKey: a method of a generic library type is
+// keyed by its origin signature (sync/atomic/Pointer.Store, never an
+// instance's type arguments), so one entry covers every instantiation:
+// StoreA (atomic.Pointer[A]) and StoreB (atomic.Pointer[B]) both lose
+// their summary edges under `[]`.
+func TestModels_GenericExternalKey(t *testing.T) {
+	storeA := dataflow.L3Key{Path: filepath.Join("generic", "a.go"), Signature: "example.com/dataflow/generic.StoreA"}
+	storeB := dataflow.L3Key{Path: filepath.Join("generic", "b.go"), Signature: "example.com/dataflow/generic.StoreB"}
+	in, d := runPortsInput(t)
+	b := newSDGBuilder(in, d)
+	key, ok := b.modelKey(Target{External: "sync/atomic.Pointer.Store"})
+	if want := "sync/atomic/Pointer.Store"; !ok || key != want {
+		t.Fatalf("modelKey(sync/atomic.Pointer.Store) = %q, %v; want %q", key, ok, want)
+	}
+	res, _ := fillWith(t, nil)
+	for _, k := range []dataflow.L3Key{storeA, storeB} {
+		if s := res.Callables[k].Summary; len(s) != 4 {
+			t.Errorf("default summary of %s = %+v, want 4 edges (x, val → x, val)", k.Signature, s)
+		}
+	}
+	res, warns := fillWith(t, Models{"sync/atomic/Pointer.Store": {}})
+	for _, k := range []dataflow.L3Key{storeA, storeB} {
+		if s := res.Callables[k].Summary; len(s) != 0 {
+			t.Errorf("sync/atomic/Pointer.Store modelled with no flow; summary of %s = %+v", k.Signature, s)
+		}
+	}
+	if len(warns) != 0 {
+		t.Errorf("warnings: %v", warns)
 	}
 }
 

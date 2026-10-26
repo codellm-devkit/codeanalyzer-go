@@ -36,6 +36,7 @@ type ports struct {
 	sets  map[Target]*formalSet
 	calls map[dataflow.L3Key]map[string]*ast.CallExpr // unit → call key → call
 	kept  map[dataflow.L3Key]map[string]bool          // unit → its kept L3 node keys
+	names map[string]string                           // interned formal keys and `of`s (intern)
 }
 
 func newPorts(in Input, d *dispatch) *ports {
@@ -49,12 +50,28 @@ func newPorts(in Input, d *dispatch) *ports {
 		sets:  map[Target]*formalSet{},
 		calls: map[dataflow.L3Key]map[string]*ast.CallExpr{},
 		kept:  map[dataflow.L3Key]map[string]bool{},
+		names: map[string]string{},
 	}
 	for _, u := range in.Units {
 		p.units[u.Key] = u
 		p.byFn[u.Fn] = u.Key
 	}
 	return p
+}
+
+// intern returns the one shared copy of s (a memory lever, spec §4.13):
+// every target in a large SCC has the same few hundred `<global>:` formals,
+// and every target the same `@formal_in:<i>` keys, so building each anew
+// would hold one copy per vertex.
+func (p *ports) intern(s string) string {
+	if !memLevers {
+		return s
+	}
+	if c, ok := p.names[s]; ok {
+		return c
+	}
+	p.names[s] = s
+	return s
 }
 
 // formalSet is the formals of one target, with how a call site binds them:
@@ -127,7 +144,7 @@ func (p *ports) formalSet(t Target) *formalSet {
 	}
 	nRes := p.resultCount(t)
 	for i := range nRes {
-		outs = append(outs, resultOf(i, nRes))
+		outs = append(outs, p.intern(resultOf(i, nRes)))
 		outFrom = append(outFrom, -1)
 	}
 	for i, f := range formals {
@@ -147,10 +164,10 @@ func (p *ports) formalSet(t Target) *formalSet {
 		outFrom = append(outFrom, -1)
 	}
 	for _, g := range unionSorted([][]string{fp.GlobalReads, fp.GlobalWrites}) {
-		fs.globIn = append(fs.globIn, ofGlobal+g)
+		fs.globIn = append(fs.globIn, p.intern(ofGlobal+g))
 	}
 	for _, g := range fp.GlobalWrites {
-		fs.globOut = append(fs.globOut, ofGlobal+g)
+		fs.globOut = append(fs.globOut, p.intern(ofGlobal+g))
 		outFrom = append(outFrom, -1)
 	}
 	ins = append(ins, fs.globIn...)
@@ -158,7 +175,7 @@ func (p *ports) formalSet(t Target) *formalSet {
 
 	fs.outPos = make([]string, len(fs.posOf))
 	for i, of := range ins {
-		key := "@formal_in:" + strconv.Itoa(i)
+		key := p.intern("@formal_in:" + strconv.Itoa(i))
 		fs.in = append(fs.in, Vertex{Key: key, Of: of, Kind: KindFormalIn})
 		if i < len(fs.posOf) {
 			fs.inPos = append(fs.inPos, key)
@@ -169,7 +186,7 @@ func (p *ports) formalSet(t Target) *formalSet {
 	for i, of := range outs {
 		key := "@formal_out"
 		if len(outs) > 1 {
-			key += ":" + strconv.Itoa(i)
+			key = p.intern(key + ":" + strconv.Itoa(i))
 		}
 		fs.out = append(fs.out, Vertex{Key: key, Of: of, Kind: KindFormalOut})
 		switch {
@@ -398,7 +415,7 @@ func (p *ports) callSite(unit dataflow.L3Key, callKey string, ts []Target) site 
 		nRes = len(p.formalSet(order[0]).results)
 	}
 	for i := range nRes {
-		o := pending{of: resultOf(i, nRes)}
+		o := pending{of: p.intern(resultOf(i, nRes))}
 		for _, t := range order {
 			if fs := p.formalSet(t); i < len(fs.results) {
 				o.binds = append(o.binds, portBind{Target: t, Formal: fs.results[i]})

@@ -127,11 +127,19 @@ func (b *sdgBuilder) modelFlows(t Target, fi *formalInfo) (*flowSet, bool) {
 	return f, true
 }
 
-// unusedModels logs, at Debug, every Models entry no targeted external has.
+// unusedModels warns, once per key and in sorted key order, of every Models
+// entry no targeted external has: an uncalled external, or a misspelt key
+// (`strconv.Atoi` for `strconv/Atoi`), which would otherwise silently keep
+// the default.
 func (b *sdgBuilder) unusedModels() {
+	keys := make([]string, 0, len(b.in.Models))
 	for key := range b.in.Models {
 		if !b.modelled[key] {
-			utils.Debug("L4: --library-models: no call site targets %s; entry ignored", key)
+			keys = append(keys, key)
 		}
+	}
+	slices.Sort(keys)
+	for _, key := range keys {
+		warnf("--library-models: no call site targets %s; entry ignored (keys are <import-path>/<sig>, e.g. strconv/Atoi)", key)
 	}
 }

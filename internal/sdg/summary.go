@@ -19,6 +19,9 @@ type sdgBuilder struct {
 	sites map[dataflow.L3Key][]siteFlow
 	graph map[dataflow.L3Key]*unitGraph
 	wired map[dataflow.L3Key][]PortEdge
+	// summ is each unit's summary edges, produced as soon as its SCC is
+	// solved (releaseSCC); fill moves them into the Result.
+	summ map[dataflow.L3Key][]SummaryEdge
 	// modelled is the Models keys some targeted stand-in has.
 	modelled map[string]bool
 	done     bool
@@ -34,6 +37,7 @@ func newSDGBuilder(in Input, d *dispatch) *sdgBuilder {
 		sites:    map[dataflow.L3Key][]siteFlow{},
 		graph:    map[dataflow.L3Key]*unitGraph{},
 		wired:    map[dataflow.L3Key][]PortEdge{},
+		summ:     map[dataflow.L3Key][]SummaryEdge{},
 		modelled: map[string]bool{},
 	}
 }
@@ -251,6 +255,15 @@ type unitGraph struct {
 	idx       map[string]int
 	succ      [][]int32
 	ins, outs []int // node of each formal_in / formal_out, by formal index
+}
+
+// summary is unit k's summary edges: the ones releaseSCC produced, else
+// summaryEdges under the current flows.
+func (b *sdgBuilder) summary(k dataflow.L3Key) []SummaryEdge {
+	if s, ok := b.summ[k]; ok {
+		return s
+	}
+	return b.summaryEdges(k)
 }
 
 func (b *sdgBuilder) portEdges(k dataflow.L3Key) []PortEdge {
@@ -520,7 +533,34 @@ func (b *sdgBuilder) computeFlows() {
 	b.done = true
 	nodes, callees := callGraph(b.in, b.d)
 	comps := sccs(nodes, func(t Target) []Target { return callees[t] })
-	solveSCCs(comps, callees, b.solve)
+	if !memLevers {
+		solveSCCs(comps, callees, b.solve)
+		return
+	}
+	for _, comp := range comps {
+		solveSCCs([][]Target{comp}, callees, b.solve)
+		b.releaseSCC(comp)
+	}
+}
+
+// releaseSCC produces the summary edges of every unit of the solved SCC comp
+// and drops its unit graphs and call sites (a memory lever, spec §4.13). A
+// unit's call-site targets are all its callees (callGraph), so once its SCC
+// is solved every flow its summaries read is final: no SCC solved later
+// changes them, and no other unit reads its graph or sites.
+func (b *sdgBuilder) releaseSCC(comp []Target) {
+	for _, t := range comp {
+		if t.External != "" {
+			continue
+		}
+		k := t.Callable
+		if _, unit := b.p.units[k]; !unit {
+			continue
+		}
+		b.summ[k] = b.summaryEdges(k)
+		delete(b.graph, k)
+		delete(b.sites, k)
+	}
 }
 
 // solveSCCs solves comps in order (callees first, as sccs returns them). A
