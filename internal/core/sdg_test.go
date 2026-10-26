@@ -1,6 +1,7 @@
 package core_test
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -105,5 +106,52 @@ func TestAnalyze_Level4MergesVTAEdges(t *testing.T) {
 	}
 	if vta, ext := vtaEdge(options.LevelDataflow); vta || ext {
 		t.Errorf("-a 3: VTA edge = %v, external = %v; want neither", vta, ext)
+	}
+}
+
+// TestAnalyze_LibraryModels: --library-models is loaded into the L4 input. By
+// default Greet's call of fmt.Sprintf has summary edges; the model
+// fmt/Sprintf: [] (no flow) leaves it none. A missing or malformed file
+// fails the run, naming the path.
+func TestAnalyze_LibraryModels(t *testing.T) {
+	summaries := func(t *testing.T, models string) int {
+		t.Helper()
+		a := core.New(options.AnalysisOptions{
+			InputPath: greeterDir(t), Level: options.LevelSDG, SkipTests: true, CacheDir: t.TempDir(), LibraryModels: models,
+		})
+		if _, err := a.Analyze(); err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for k, c := range a.L4().Callables {
+			if strings.HasSuffix(k.Signature, "Greeter.Greet") {
+				n += len(c.Summary)
+			}
+		}
+		return n
+	}
+	if n := summaries(t, ""); n == 0 {
+		t.Fatal("Greet has no summary edges by default")
+	}
+	dir := t.TempDir()
+	good := filepath.Join(dir, "models.json")
+	if err := os.WriteFile(good, []byte(`{"fmt/Sprintf": []}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if n := summaries(t, good); n != 0 {
+		t.Errorf("fmt/Sprintf modelled with no flow: Greet has %d summary edges", n)
+	}
+
+	bad := filepath.Join(dir, "bad.json")
+	if err := os.WriteFile(bad, []byte(`{"fmt/Sprintf": [`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{filepath.Join(dir, "absent.json"), bad} {
+		_, err := core.New(options.AnalysisOptions{
+			InputPath: greeterDir(t), Level: options.LevelSDG, SkipTests: true, CacheDir: t.TempDir(), LibraryModels: path,
+		}).Analyze()
+		if err == nil || !strings.Contains(err.Error(), path) {
+			t.Errorf("%s: Analyze error = %v, want one naming the path", path, err)
+		}
 	}
 }

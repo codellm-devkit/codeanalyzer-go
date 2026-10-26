@@ -633,3 +633,76 @@ func TestCLI_StrictFlag(t *testing.T) {
 		t.Error("stdout is not valid JSON")
 	}
 }
+
+// ── --library-models ─────────────────────────────────────────────────────────
+
+const errLibraryModelsLevel = "--library-models applies only at analysis level 4"
+
+func writeModelsFile(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "models.json")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestCLI_LibraryModelsBelowLevel4Rejected(t *testing.T) {
+	td := cliTestdataDir()
+	models := writeModelsFile(t, `{"strconv/Atoi": []}`)
+	for _, level := range []string{"1", "2", "3"} {
+		_, _, err := runCmd(
+			"--input", filepath.Join(td, "greeter"),
+			"--analysis-level", level,
+			"--library-models", models,
+			"--cache-dir", t.TempDir(),
+		)
+		if err == nil || err.Error() != errLibraryModelsLevel {
+			t.Errorf("-a %s --library-models: error = %v, want %q", level, err, errLibraryModelsLevel)
+		}
+	}
+}
+
+func TestCLI_LibraryModelsAtLevel4AndNeo4j(t *testing.T) {
+	td := cliTestdataDir()
+	models := writeModelsFile(t, `{"fmt/Sprintf": [["format", "<return>"]]}`)
+	out, _, err := runCmd(
+		"--input", filepath.Join(td, "greeter"),
+		"--analysis-level", "4",
+		"--library-models", models,
+		"--cache-dir", t.TempDir(),
+	)
+	if err != nil {
+		t.Fatalf("-a 4 --library-models should succeed; got %v", err)
+	}
+	if !json.Valid([]byte(out)) {
+		t.Error("stdout is not valid JSON")
+	}
+	if _, _, err := runCmd(
+		"--input", filepath.Join(td, "greeter"),
+		"--emit", "neo4j",
+		"--library-models", models,
+		"--output", t.TempDir(),
+		"--cache-dir", t.TempDir(),
+	); err != nil {
+		t.Fatalf("--emit neo4j --library-models should succeed; got %v", err)
+	}
+}
+
+func TestCLI_LibraryModelsBadFileErrors(t *testing.T) {
+	td := cliTestdataDir()
+	for name, path := range map[string]string{
+		"missing":   filepath.Join(t.TempDir(), "absent.json"),
+		"malformed": writeModelsFile(t, `{"fmt/Sprintf": [`),
+	} {
+		_, _, err := runCmd(
+			"--input", filepath.Join(td, "greeter"),
+			"--analysis-level", "4",
+			"--library-models", path,
+			"--cache-dir", t.TempDir(),
+		)
+		if err == nil || !strings.Contains(err.Error(), path) {
+			t.Errorf("%s: error = %v, want one naming %s", name, err, path)
+		}
+	}
+}

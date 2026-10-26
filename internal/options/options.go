@@ -45,6 +45,9 @@ type AnalysisOptions struct {
 	Level AnalysisLevel
 	// Strict makes the run fail non-zero on any L4 degradation (--strict).
 	Strict bool
+	// LibraryModels is the --library-models JSON file overriding library
+	// stand-in summaries at L4 (sdg.LoadModels). Empty = the defaults.
+	LibraryModels string
 	// AnalyzerVersion is the analyzer's own version, recorded in the v2
 	// manifest's analyzer{} tag. Set by the CLI from its build-stamped value.
 	AnalyzerVersion string

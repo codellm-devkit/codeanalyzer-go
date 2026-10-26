@@ -172,6 +172,7 @@ Flags:
   -h, --help                    help for cango
   -i, --input string            Project root to analyze (required)
   -j, --jobs int                Worker parallelism (default: CPU cores)
+      --library-models string   JSON file of library stand-in flows overriding the all-to-all default (-a 4 and --emit neo4j only)
       --neo4j-database string   Neo4j database (env NEO4J_DATABASE, optional)
       --neo4j-password string   Neo4j password (env NEO4J_PASSWORD, default neo4j)
       --neo4j-uri string        Live Bolt push target (env NEO4J_URI); omit to write graph.cypher

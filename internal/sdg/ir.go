@@ -94,12 +94,14 @@ type Input struct {
 	Units       []dataflow.Unit
 	L3          map[dataflow.L3Key]dataflow.Result
 	K, Jobs     int
-	Models      Models // Task 15; zero value = defaults
+	Models      Models // --library-models (LoadModels); nil = the defaults
 }
 
-// Models overrides library stand-in summaries, keyed by the external id's
-// <import-path>/<sig> tail; each pair is a (src, dst) port edge. Loading and
-// applying them comes later (ruling R-P4); the zero value means defaults.
+// Models overrides library stand-in summaries (spec §6), keyed by the
+// external id's <import-path>/<sig> tail (`strconv/Atoi`): each pair is a
+// flow [in, out] from the stand-in's formal_in of `of` in to its formal_out
+// of `of` out. An empty list is no flow; an external with no entry keeps
+// every input → every output.
 type Models map[string][][2]string
 
 // Degraded codes (spec §4.15; an open vocabulary of plain strings).

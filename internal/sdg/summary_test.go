@@ -452,3 +452,53 @@ func TestSummary_CondensedReachMatchesBFS(t *testing.T) {
 		t.Errorf("checked %d units", n)
 	}
 }
+
+// TestSummary_OmitsGlobalToGlobal (ruling [user, 2026-10-26], spec §4.9): a
+// call site whose callee reads and writes globals gets no summary edge from
+// a global actual_in to a global actual_out, but the callee's flows still
+// hold those pairs, and every other summary edge stands.
+func TestSummary_OmitsGlobalToGlobal(t *testing.T) {
+	in, res, _ := runDispatch(t)
+	b := newSDGBuilder(runPortsInput(t))
+	flows := b.summarize()
+
+	// appendConfig(v): formal_in v, Config; formal_out <return>, Config.
+	// Its flows keep Config → Config.
+	checkFlows(t, flows, Target{Callable: globalsKey("appendConfig")}, [][2]int{{0, 0}, {0, 1}, {1, 0}, {1, 1}})
+	checkSummary(t, "summary of useAppend", res.Callables[globalsKey("useAppend")].Summary, []SummaryEdge{
+		se("100:9/actual_in:0", "100:9/actual_out:0"), se("100:9/actual_in:0", "100:9/actual_out:1"),
+		se("100:9/actual_in:1", "100:9/actual_out:0"),
+	})
+	// Get reads and writes inst and once (formal_in inst, once; formal_out
+	// <return>, inst, once): inst → inst and once → once stay in its flows.
+	get := Target{Callable: globalsKey("Get")}
+	fl := flows[get]
+	for _, p := range [][2]int{{0, 1}, {1, 2}} {
+		if !slices.Contains(fl, p) {
+			t.Errorf("flows of Get = %v lack the global → global pair %v", fl, p)
+		}
+	}
+	checkSummary(t, "summary of callsGet", res.Callables[globalsKey("callsGet")].Summary, []SummaryEdge{
+		se("68:33/actual_in:0", "68:33/actual_out:0"), se("68:33/actual_in:1", "68:33/actual_out:0"),
+	})
+	// useConfig and readConfig only read Config: their global → <return>
+	// edges are unchanged.
+	checkSummary(t, "summary of useConfig", res.Callables[sdgKey("useConfig")].Summary,
+		[]SummaryEdge{se("122:9/actual_in:0", "122:9/actual_out")})
+	checkSummary(t, "summary of readConfig", res.Callables[sdgKey("readConfig")].Summary,
+		[]SummaryEdge{se("116:10/actual_in:0", "116:10/actual_out")})
+
+	// No unit anywhere keeps a global → global summary edge.
+	for _, u := range in.Units {
+		c := res.Callables[u.Key]
+		of := map[string]string{}
+		for _, v := range c.Vertices {
+			of[v.Key] = v.Of
+		}
+		for _, e := range c.Summary {
+			if strings.HasPrefix(of[e.Src], ofGlobal) && strings.HasPrefix(of[e.Dst], ofGlobal) {
+				t.Errorf("%v: global → global summary edge %+v", u.Key, e)
+			}
+		}
+	}
+}

@@ -77,6 +77,13 @@ func (a *Analyzer) Analyze() (*schema.GoApplication, error) {
 	a.opts.InputPath = abs
 	utils.Info("analyzing project: %s", a.opts.InputPath)
 
+	// The L4 library models are read first, so a bad file fails the run
+	// before any analysis (also under --emit neo4j -t, which runs at L3).
+	models, err := sdg.LoadModels(a.opts.LibraryModels)
+	if err != nil {
+		return nil, err
+	}
+
 	// ── Phase 1: Project materialization ──────────────────────────────────────
 	if err := a.materialize(); err != nil {
 		// Degrade gracefully — log but don't abort. Partial types are better than nothing.
@@ -147,6 +154,7 @@ func (a *Analyzer) Analyze() (*schema.GoApplication, error) {
 			L3:          a.l3,
 			K:           KLimit(a.opts),
 			Jobs:        a.opts.Jobs,
+			Models:      models,
 		})
 		a.l4 = &res
 		if err := a.reportDegraded(res.Degraded); err != nil {

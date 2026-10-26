@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/codellm-devkit/codeanalyzer-go/internal/dataflow"
-	"github.com/codellm-devkit/codeanalyzer-go/internal/utils"
 )
 
 // sdgBuilder computes the flow summaries (spec §4.9) and the L4 overlay of
@@ -20,19 +19,22 @@ type sdgBuilder struct {
 	sites map[dataflow.L3Key][]siteFlow
 	graph map[dataflow.L3Key]*unitGraph
 	wired map[dataflow.L3Key][]PortEdge
-	done  bool
+	// modelled is the Models keys some targeted stand-in has.
+	modelled map[string]bool
+	done     bool
 }
 
 func newSDGBuilder(in Input, d *dispatch) *sdgBuilder {
 	return &sdgBuilder{
-		in:    in,
-		d:     d,
-		p:     newPorts(in, d),
-		flows: map[Target]*flowSet{},
-		info:  map[Target]*formalInfo{},
-		sites: map[dataflow.L3Key][]siteFlow{},
-		graph: map[dataflow.L3Key]*unitGraph{},
-		wired: map[dataflow.L3Key][]PortEdge{},
+		in:       in,
+		d:        d,
+		p:        newPorts(in, d),
+		flows:    map[Target]*flowSet{},
+		info:     map[Target]*formalInfo{},
+		sites:    map[dataflow.L3Key][]siteFlow{},
+		graph:    map[dataflow.L3Key]*unitGraph{},
+		wired:    map[dataflow.L3Key][]PortEdge{},
+		modelled: map[string]bool{},
 	}
 }
 
@@ -207,13 +209,25 @@ func (b *sdgBuilder) matrix(s siteFlow) []uint64 {
 }
 
 // summaryEdges is the summary edges of every call site of unit k under the
-// current flows, sorted by (Src, Dst).
+// current flows, sorted by (Src, Dst), except those from a global actual_in
+// to a global actual_out (`of` `<global>:` at both ends; ruling [user,
+// 2026-10-26], spec §4.9). Under the coarse host wiring (A15) a summary edge
+// only shortcuts host → actual_in → … → actual_out → host, and sources and
+// sinks address formal_in, so a global → global summary adds no
+// reachability for an HRB-unaware walk; it is omitted to bound the output
+// (on nats-server 97.7% of all summary edges were global → global). They
+// return with the deferred HRB two-phase walk (spec §11). The flows keep
+// every pair: only the emitted list is filtered.
 func (b *sdgBuilder) summaryEdges(k dataflow.L3Key) []SummaryEdge {
 	var out []SummaryEdge
 	for _, s := range b.sitesOf(k) {
 		m := b.matrix(s)
 		for i, ai := range s.in {
+			inGlobal := strings.HasPrefix(ai.Of, ofGlobal)
 			for j, ao := range s.out {
+				if inGlobal && strings.HasPrefix(ao.Of, ofGlobal) {
+					continue
+				}
 				if bit := i*len(s.out) + j; m[bit/64]&(1<<(bit%64)) != 0 {
 					out = append(out, SummaryEdge{Src: ai.Key, Dst: ao.Key})
 				}
@@ -308,42 +322,21 @@ func (b *sdgBuilder) opaque(t Target) bool {
 }
 
 // opaqueFlows is the flows of an opaque target: every formal_in → every
-// formal_out (spec §6, §4.8 D7, A16), unless Models has an entry for the
-// stand-in (keyed <import-path>/<sig>; flows [in-of, out-of]; an empty list
-// is no flow). An interface method's flows are all-to-all whatever its VTA
-// targets are, so the D7 union over them adds nothing.
+// formal_out (spec §6, §4.8 D7, A16), unless it is a stand-in with a valid
+// Models entry (modelFlows). An interface method's flows are all-to-all
+// whatever its VTA targets are, so the D7 union over them adds nothing.
 func (b *sdgBuilder) opaqueFlows(t Target) *flowSet {
 	fi := b.formalInfo(t)
-	f := newFlowSet(len(fi.inOf), len(fi.outOf))
-	if model, ok := b.model(t); ok {
-		for _, pair := range model {
-			i, j := slices.Index(fi.inOf, pair[0]), slices.Index(fi.outOf, pair[1])
-			if i < 0 || j < 0 {
-				utils.Debug("L4: model of %s names no formal: %v", t.External, pair)
-				continue
-			}
-			f.set(i, j)
-		}
+	if f, ok := b.modelFlows(t, fi); ok {
 		return f
 	}
+	f := newFlowSet(len(fi.inOf), len(fi.outOf))
 	for i := range f.nIn {
 		for j := range f.nOut {
 			f.set(i, j)
 		}
 	}
 	return f
-}
-
-func (b *sdgBuilder) model(t Target) ([][2]string, bool) {
-	if t.External == "" || len(b.in.Models) == 0 {
-		return nil, false
-	}
-	e, ok := b.p.fx.ext[t.External]
-	if !ok {
-		return nil, false
-	}
-	m, ok := b.in.Models[e.ImportPath+"/"+e.Sig]
-	return m, ok
 }
 
 // bodyFlows is the flows of analysed unit k under its callees' current

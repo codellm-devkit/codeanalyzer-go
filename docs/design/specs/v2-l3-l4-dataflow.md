@@ -604,6 +604,14 @@ Context-insensitive. Per callable compute:
   predicate, §4.6), propagated up the SCC DAG and injected at hosts as uses / weak defs (A4).
 - No hammock regions (neither sibling built them; recorded as a known simplification).
 - Stand-ins (§6) contribute their modelled summary (default all-inputs → all-outputs).
+- **Global → global summary edges are not emitted [user, 2026-10-26].** A `summary` edge whose
+  `actual_in` and `actual_out` both have a `<global>:` `of` is omitted; every edge with at least
+  one non-global end is kept, and the flows (and so the global formals, actuals and param edges)
+  are computed in full. Under the coarse host wiring (A15) a summary edge only shortcuts
+  host → `actual_in` → … → `actual_out` → host, and sources and sinks address `formal_in`, so a
+  global → global summary adds no reachability for an HRB-unaware walk. Measured on nats-server:
+  97.7% of 101M summary edges were global → global (10.8 GB peak RSS against D3's 1.5×). They
+  return with the HRB two-phase walk (§11).
 - **Unanalysed callables (amended, A16).** A callable whose L3 result was dropped (a contained
   panic or a call-count mismatch, `run.go`) has no `ddg`, so taint entering through `param_in`
   would stop at its `formal_in`. Such callables get formals and a **pass-through summary** (like an
@@ -859,8 +867,17 @@ addition now; the cross-language SDK taint revisit is deferred (§11).
   present"); not made worse by stand-ins. Recorded as a known over-approximation.
 - **Models file (optional overrides):** `--library-models <path.json>` (builder may also embed a
   small default set), mapping an external id/signature to an explicit flow list, e.g.
-  `strconv.Atoi: [] ` (no flow), `strings.TrimSpace: [[0,"<return>"]]`. Starts empty or
+  `{"strconv/Atoi": [], "strings/TrimSpace": [["s","<return>"]]}`. Starts empty or
   near-empty; no catalogue of sources/sinks — that stays the caller's (SDK rule).
+  **Format (amended, Task 15):** a JSON object; key = `<import-path>/<sig>`, the external id's
+  tail (`strconv/Atoi`, `database/sql/DB.Query`); value = a list of `[in, out]` pairs of `of`
+  strings (`"s"`, `"_0"`, `"_recv"`, `"<return>"`, `"<return>:1"`, a by-ref param's name).
+  `[]` = no flow; a missing key = the all-to-all default. Valid only at `-a 4` and with
+  `--emit neo4j` (`-a 1..3`: error `--library-models applies only at analysis level 4`); a
+  missing, unreadable or malformed file is an error naming the path. An entry naming an `of`
+  the external lacks is a warning and is ignored for that external, which keeps the all-to-all
+  default (a typo never refutes a flow); an entry for an external no call site targets is ignored
+  (Debug).
 - **Not modelled:** callbacks invoked by library code (`sort.Slice(xs, less)`,
   `http.HandleFunc(path, h)`): the function-value argument flows in, but the library calling it back
   is not an edge. Taint *starting* in a handler is unaffected (sources are the handler's own
@@ -1007,7 +1024,8 @@ dispatch + type-based may-alias).
   multi-node selectors in `commons`); promote `external_symbols.body` stand-ins into the keystone if
   adopted.
 - Andersen points-to over `go/ssa` replacing the type-based oracle (`prov` unchanged).
-- Context-sensitive (HRB two-phase) taint traversal in the SDK.
+- Context-sensitive (HRB two-phase) taint traversal in the SDK. With it, reinstate the global →
+  global `summary` edges omitted at L4 (§4.9, [user, 2026-10-26]).
 - Library callback modelling (`sort.Slice`, `http.HandleFunc`).
 - Promote `callable.source_file` to the keystone (existing deferral).
 - Struct-tag modelling (existing deferral).

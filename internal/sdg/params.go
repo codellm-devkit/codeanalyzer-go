@@ -89,10 +89,12 @@ func sortParamEdges(es []ParamEdge) []ParamEdge {
 //     summary edges;
 //   - ParamIn / ParamOut over every unit's call and capture sites, sorted
 //     by compareParamEdge;
-//   - the formal vertices (sorted by key) of every target with no unit that
-//     some param edge reaches: Externals[sig] for a stand-in, and
-//     Callables[k] (vertices only) for an interface method or a bodiless
-//     declaration (spec §4.8), so no param edge dangles.
+//   - Externals[sig]: the formal vertices (sorted by key) of every stand-in
+//     some call site targets (spec §6), an empty list for one with no
+//     formals (runtime.Gosched);
+//   - Callables[k] (vertices only) for every interface method or bodiless
+//     declaration some param edge reaches (spec §4.8), so no param edge
+//     dangles.
 func (b *sdgBuilder) fill(res *Result) {
 	b.computeFlows()
 	res.Callables = make(map[dataflow.L3Key]CallableSDG, len(b.in.Units))
@@ -109,28 +111,41 @@ func (b *sdgBuilder) fill(res *Result) {
 	}
 	res.ParamIn, res.ParamOut = sortParamEdges(ins), sortParamEdges(outs)
 
-	// The targets with no unit some param edge reaches: their formals.
-	opaque := map[Target]bool{}
-	for _, e := range res.ParamIn {
-		opaque[e.Dst.Owner] = true
-	}
-	for _, e := range res.ParamOut {
-		opaque[e.Src.Owner] = true
-	}
-	for t := range opaque {
-		if _, unit := b.p.units[t.Callable]; unit && t.External == "" {
-			continue
-		}
+	formals := func(t Target) []Vertex {
 		in, out := b.p.formals(t)
 		vs := slices.Concat(in, out)
+		if vs == nil {
+			vs = []Vertex{}
+		}
 		slices.SortFunc(vs, func(a, b Vertex) int { return strings.Compare(a.Key, b.Key) })
-		if t.External == "" {
-			res.Callables[t.Callable] = CallableSDG{Vertices: vs}
-			continue
-		}
-		if res.Externals == nil {
-			res.Externals = map[string][]Vertex{}
-		}
-		res.Externals[t.External] = vs
+		return vs
 	}
+	for _, ts := range b.d.sites {
+		for _, t := range ts {
+			if t.External == "" {
+				continue
+			}
+			if res.Externals == nil {
+				res.Externals = map[string][]Vertex{}
+			}
+			if _, done := res.Externals[t.External]; !done {
+				res.Externals[t.External] = formals(t)
+			}
+		}
+	}
+
+	// The in-project targets with no unit some param edge reaches.
+	for _, list := range [][]ParamEdge{res.ParamIn, res.ParamOut} {
+		for _, e := range list {
+			for _, t := range []Target{e.Src.Owner, e.Dst.Owner} {
+				if _, unit := b.p.units[t.Callable]; unit || t.External != "" {
+					continue
+				}
+				if _, done := res.Callables[t.Callable]; !done {
+					res.Callables[t.Callable] = CallableSDG{Vertices: formals(t)}
+				}
+			}
+		}
+	}
+	b.unusedModels()
 }

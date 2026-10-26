@@ -41,6 +41,7 @@ func rootCmd() *cobra.Command {
 		level         int
 		fieldDepth    int
 		strict        bool
+		libraryModels string
 		targetFiles   []string
 		skipTests     bool
 		eager         bool
@@ -85,6 +86,9 @@ via CLDK(language="go").analysis(project_path=...).`,
 				}
 				if err := validateFieldDepth(cmd, level, fieldDepth); err != nil {
 					return err
+				}
+				if cmd.Flags().Changed("library-models") && level < int(options.LevelSDG) {
+					return fmt.Errorf("--library-models applies only at analysis level 4")
 				}
 			case options.EmitNeo4j:
 				if cmd.Flags().Changed("analysis-level") {
@@ -146,6 +150,7 @@ via CLDK(language="go").analysis(project_path=...).`,
 				AppName:         appName,
 				Level:           options.AnalysisLevel(level),
 				Strict:          strict,
+				LibraryModels:   libraryModels,
 				AnalyzerVersion: version,
 				TargetFiles:     targetFiles,
 				SkipTests:       skipTests,
@@ -209,6 +214,8 @@ via CLDK(language="go").analysis(project_path=...).`,
 	f.IntVar(&fieldDepth, "graph-field-depth", 3,
 		"Field-path depth bound for L3 dataflow nodes (k limit; applies at -a 3 and -a 4)")
 	f.BoolVar(&strict, "strict", false, "Fail non-zero on any L4 degradation (default: degrade and record it)")
+	f.StringVar(&libraryModels, "library-models", "",
+		"JSON file of library stand-in flows overriding the all-to-all default (-a 4 and --emit neo4j only)")
 	f.StringSliceVarP(&targetFiles, "target-files", "t", nil,
 		"Restrict analysis to specific files (incremental mode)")
 	f.BoolVar(&skipTests, "skip-tests", true, "Skip *_test.go files")

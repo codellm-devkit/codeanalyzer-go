@@ -86,3 +86,16 @@ func calledLits() {
 	defer func() { litH = 2 }()
 	func() { litG = 1 }()
 }
+
+// appendConfig reads and writes Config (a weak write: Config flows to
+// itself) and takes v: a call of it has the global → global summary
+// Config → Config, which is not emitted, beside v → Config, v → <return>
+// and Config → <return>, which are.
+func appendConfig(v string) string {
+	Config += v
+	return Config
+}
+
+func useAppend(v string) string {
+	return appendConfig(v)
+}
