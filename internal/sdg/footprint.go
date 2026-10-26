@@ -110,14 +110,18 @@ func analysed(in Input, u dataflow.Unit) bool {
 //     VTA ∪ the interface method, D7). A call node the CFG pruned keeps its
 //     targets (an over-approximation);
 //   - for an unanalysed unit dispatch seeded no site for (fix I2), its L2
-//     call_graph edges (in.CallGraph), each target mapped as newDispatch
-//     maps a static callee;
+//     call_graph edges (in.CallGraph): the callable of the edge's
+//     TargetPath when it has one (a repeated signature, such as one init
+//     closure per file, names the right file), else the target mapped as
+//     newDispatch maps a static callee;
 //   - every function literal of its body (outermost: a nested one is its
-//     enclosing literal's) not called at its own position (fix I3): one
-//     handed to library code (once.Do, errgroup.Go, http.HandleFunc,
-//     sort.Slice) or stored may run during the call, and no call edge
-//     reaches it. This mirrors the L3 capture-write rule. A literal called
-//     in place (`func(){…}()`, deferred or launched) has its call edge.
+//     enclosing literal's; fixes I3, N1). One handed to library code
+//     (once.Do, errgroup.Go, http.HandleFunc, sort.Slice) or stored may run
+//     during the call with no call edge to it. One called in place
+//     (`func(){…}()`, deferred or launched) has a call edge only from VTA
+//     (L2 resolves no FuncLit callee), so without the literal edge a
+//     no_vta run would lose its globals. This mirrors the L3 capture-write
+//     rule; Compact drops the duplicate when VTA's edge is there too.
 func callGraph(in Input, d *dispatch) ([]Target, map[Target][]Target) {
 	callees := map[Target][]Target{}
 	nodeSet := map[Target]bool{}
@@ -135,20 +139,23 @@ func callGraph(in Input, d *dispatch) ([]Target, map[Target][]Target) {
 		u := Target{Callable: site.unit}
 		callees[u] = append(callees[u], ts...)
 	}
-	l2 := map[dataflow.L3Key][]string{}
+	l2 := map[dataflow.L3Key][]schema.GoCallEdge{}
 	for _, e := range in.CallGraph {
 		k := dataflow.L3Key{Path: e.SourcePath, Signature: e.Source}
-		l2[k] = append(l2[k], e.Target)
+		l2[k] = append(l2[k], e)
 	}
 	for _, u := range in.Units {
 		src := Target{Callable: u.Key}
 		if !seeded[u.Key] && !analysed(in, u) {
-			for _, sig := range l2[u.Key] {
-				t, ok := Target{External: sig}, true
-				if _, ext := in.Externals[sig]; !ext {
-					var k dataflow.L3Key
-					k, ok = d.bySig[sig]
-					t = Target{Callable: k}
+			for _, e := range l2[u.Key] {
+				t, ok := Target{Callable: dataflow.L3Key{Path: e.TargetPath, Signature: e.Target}}, true
+				if e.TargetPath == "" {
+					t = Target{External: e.Target}
+					if _, ext := in.Externals[e.Target]; !ext {
+						var k dataflow.L3Key
+						k, ok = d.bySig[e.Target]
+						t = Target{Callable: k}
+					}
 				}
 				if ok {
 					nodeSet[t] = true
@@ -156,8 +163,8 @@ func callGraph(in Input, d *dispatch) ([]Target, map[Target][]Target) {
 				}
 			}
 		}
-		for _, lit := range uncalledLiterals(u.Fn) {
-			if k, ok := byFn[lit]; ok {
+		for _, lit := range astwalk.Literals(fnBody(u.Fn)) {
+			if k, ok := byFn[lit.Lit]; ok {
 				callees[src] = append(callees[src], Target{Callable: k})
 			}
 		}
@@ -172,32 +179,6 @@ func callGraph(in Input, d *dispatch) ([]Target, map[Target][]Target) {
 	}
 	slices.SortFunc(nodes, compareTarget)
 	return nodes, callees
-}
-
-// uncalledLiterals returns the outermost function literals of fn's body
-// that are not the function of a call (`func(){…}()`, also deferred or
-// launched), in source order.
-func uncalledLiterals(fn ast.Node) []*ast.FuncLit {
-	body := fnBody(fn)
-	if body == nil {
-		return nil
-	}
-	called := map[*ast.FuncLit]bool{}
-	ast.Inspect(body, func(n ast.Node) bool {
-		if call, ok := n.(*ast.CallExpr); ok {
-			if lit, ok := ast.Unparen(call.Fun).(*ast.FuncLit); ok {
-				called[lit] = true
-			}
-		}
-		return true
-	})
-	var out []*ast.FuncLit
-	for _, l := range astwalk.Literals(body) {
-		if !called[l.Lit] {
-			out = append(out, l.Lit)
-		}
-	}
-	return out
 }
 
 // fnBody is the body of a *ast.FuncDecl or *ast.FuncLit (nil without one).

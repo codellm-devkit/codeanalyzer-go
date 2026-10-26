@@ -76,3 +76,13 @@ var cfgDir = home + "/x"
 func readArgv() []string { return argv }
 
 func readCfgDir() string { return cfgDir }
+
+// litG and litH are written only by literals called where they are written.
+var litG, litH int
+
+// calledLits writes litG and litH only inside literals it calls in place
+// (one deferred): with no VTA, no call edge reaches them.
+func calledLits() {
+	defer func() { litH = 2 }()
+	func() { litG = 1 }()
+}

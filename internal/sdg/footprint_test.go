@@ -2,12 +2,16 @@ package sdg
 
 import (
 	"math/rand"
+
+	"golang.org/x/tools/go/callgraph"
+	"golang.org/x/tools/go/ssa"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/codellm-devkit/codeanalyzer-go/internal/dataflow"
+	"github.com/codellm-devkit/codeanalyzer-go/internal/schema"
 )
 
 const configSpell = sdgPkg + "::Config"
@@ -303,5 +307,49 @@ func TestFootprint_ChainedInitializers(t *testing.T) {
 		if got := fpOf(t, fps, Target{Callable: globalsKey(c.fn)}); !slices.Equal(got.GlobalReads, []string{c.want}) {
 			t.Errorf("%s reads %v, want [%s]", c.fn, got.GlobalReads, c.want)
 		}
+	}
+}
+
+// TestFootprint_CalledLiteralsWithoutVTA (fix N1): with VTA failed, only VTA
+// would give a call edge to a literal called in place (L2 resolves no
+// FuncLit callee), so the encloser → literal edge must cover every literal:
+// calledLits writes litG (`func(){…}()`) and litH (`defer func(){…}()`).
+func TestFootprint_CalledLiteralsWithoutVTA(t *testing.T) {
+	in := loadInput(t, "dataflow")
+	defer func(f func(map[*ssa.Function]bool, *callgraph.Graph) *callgraph.Graph) { vtaCallGraph = f }(vtaCallGraph)
+	vtaCallGraph = func(map[*ssa.Function]bool, *callgraph.Graph) *callgraph.Graph { panic("vta boom") }
+	_, d := run(in)
+	got := fpOf(t, footprints(in, d), Target{Callable: globalsKey("calledLits")})
+	if want := []string{sdgPkg + "::litG", sdgPkg + "::litH"}; !slices.Equal(got.GlobalWrites, want) {
+		t.Errorf("calledLits writes %v under no_vta, want %v", got.GlobalWrites, want)
+	}
+}
+
+// TestFootprint_L2FallbackHonoursTargetPath (fix N2): an L2 edge with a
+// TargetPath maps to that file's callable, not to the lowest-path twin of a
+// repeated signature (both files' init closures are
+// initclosure.init.closure_1). The edge is synthetic, from an L3-skipped
+// unit with no dispatch sites.
+func TestFootprint_L2FallbackHonoursTargetPath(t *testing.T) {
+	in, _, d := runDispatch(t)
+	const pkg = "example.com/dataflow/initclosure"
+	src := globalsKey("callsSkipX")
+	b := dataflow.L3Key{Path: filepath.Join("initclosure", "b.go"), Signature: pkg + ".init.closure_1"}
+	l3 := make(map[dataflow.L3Key]dataflow.Result, len(in.L3))
+	for k, r := range in.L3 {
+		if k != src {
+			l3[k] = r
+		}
+	}
+	in.L3 = l3
+	for site := range d.sites {
+		if site.unit == src {
+			delete(d.sites, site)
+		}
+	}
+	in.CallGraph = []schema.GoCallEdge{{Source: src.Signature, SourcePath: src.Path, Target: b.Signature, TargetPath: b.Path}}
+	_, callees := callGraph(in, d)
+	if got, want := callees[Target{Callable: src}], []Target{{Callable: b}}; !slices.Equal(got, want) {
+		t.Errorf("callees(%s) = %v, want %v", src.Signature, got, want)
 	}
 }
