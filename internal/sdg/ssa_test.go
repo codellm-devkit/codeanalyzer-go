@@ -14,12 +14,13 @@ import (
 	"golang.org/x/tools/go/ssa/ssautil"
 
 	"github.com/codellm-devkit/codeanalyzer-go/internal/dataflow"
+	"github.com/codellm-devkit/codeanalyzer-go/internal/semantic_analysis"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/syntactic_analysis"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/utils"
 )
 
 // loadInput loads testdata/<name> the way the analyzer does at -a 4
-// (symbol-table builder, tests skipped, L3 with side tables) and returns the
+// (symbol-table builder, tests skipped, the L2 call graph, L3 with side tables) and returns the
 // sdg input over it.
 func loadInput(t *testing.T, name string) Input {
 	t.Helper()
@@ -39,9 +40,12 @@ func loadInputOpts(t *testing.T, name string, skipTests bool) Input {
 	if err != nil {
 		t.Fatalf("symbol table build failed: %v", err)
 	}
+	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
+	edges := cg.Build(st)
 	units := b.L3Units(st)
 	return Input{
 		Fset: b.Fset(), Pkgs: b.Pkgs(), ProjectDir: dir, SymbolTable: st,
+		Externals: cg.Externals(), CallGraph: edges,
 		Units: units, L3: dataflow.RunWithSideTables(b.Fset(), units, 3, 1), K: 3, Jobs: 1,
 	}
 }
@@ -60,8 +64,8 @@ func TestSSA_BuildsProjectPackagesOnly(t *testing.T) {
 		built = append(built, p.Pkg.Path())
 	}
 	want := []string{
-		"example.com/dataflow/asm", "example.com/dataflow/flow", "example.com/dataflow/generic", "example.com/dataflow/inits",
-		"example.com/dataflow/l1", "example.com/dataflow/linedir", "example.com/dataflow/vend",
+		"example.com/dataflow/asm", "example.com/dataflow/flow", "example.com/dataflow/generic", "example.com/dataflow/initclosure", "example.com/dataflow/inits",
+		"example.com/dataflow/l1", "example.com/dataflow/linedir", "example.com/dataflow/sdg", "example.com/dataflow/vend",
 		"example.com/dataflow/xfile", "example.com/dataflow/xtest", "example.com/dataflow/xtest/user",
 	}
 	if !slices.Equal(built, want) {
@@ -133,8 +137,8 @@ func TestSSA_PanicDegradesPackage(t *testing.T) {
 			t.Error("the panicked package is still returned as built")
 		}
 	}
-	if len(pkgs) != 9 {
-		t.Errorf("built %d packages, want the other 9", len(pkgs))
+	if len(pkgs) != 11 {
+		t.Errorf("built %d packages, want the other 11", len(pkgs))
 	}
 	if fn := prog.ImportedPackage("example.com/dataflow/l1"); fn == nil || len(fn.Members) == 0 {
 		t.Error("l1 was not built after flow panicked")
@@ -152,8 +156,8 @@ func TestSSA_PanicDegradesPackage(t *testing.T) {
 	if !slices.Equal(codes, []string{"partial_ssa", "no_ssa"}) {
 		t.Fatalf("codes = %v, want [partial_ssa no_ssa]", codes)
 	}
-	if len(deg[0].Packages) != 10 {
-		t.Errorf("partial_ssa lists %v, want all 10 packages", deg[0].Packages)
+	if len(deg[0].Packages) != 12 {
+		t.Errorf("partial_ssa lists %v, want all 12 packages", deg[0].Packages)
 	}
 	if res := Run(in); len(res.Degraded) != 2 || res.Degraded[1].Code != "no_ssa" {
 		t.Errorf("Run degraded = %+v, want partial_ssa + no_ssa and no VTA", res.Degraded)
@@ -198,7 +202,7 @@ func TestRun_VTAPanicDegrades(t *testing.T) {
 func TestProjectFuncs_CoversClosuresAndMethods(t *testing.T) {
 	in := loadInput(t, "dataflow")
 	prog, pkgs, _ := buildSSA(in)
-	funcs := projectFuncs(prog, pkgs)
+	funcs, _ := projectFuncs(prog, pkgs)
 	project := map[string]bool{}
 	for _, p := range pkgs {
 		project[p.Pkg.Path()] = true

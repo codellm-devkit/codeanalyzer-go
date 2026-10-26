@@ -120,6 +120,30 @@ func TestMergeEdges_OrderPreserved(t *testing.T) {
 	}
 }
 
+// TestMergeEdges_KeepsDeclaringFilesApart: two inits (one signature, two
+// files) calling one callee are two edges, and so are two VTA edges to the
+// same-signature closures of two files' inits; the same file pair merges.
+func TestMergeEdges_KeepsDeclaringFilesApart(t *testing.T) {
+	at := func(e schema.GoCallEdge, src, dst string) schema.GoCallEdge {
+		e.SourcePath, e.TargetPath = src, dst
+		return e
+	}
+	primary := []schema.GoCallEdge{at(edge("p.init", "p.setup", 1, "go/types"), "a.go", "")}
+	secondary := []schema.GoCallEdge{
+		at(edge("p.init", "p.setup", 1, "go/types"), "b.go", ""),
+		at(edge("p.Run", "p.init.closure_1", 1, "vta"), "a.go", "a.go"),
+		at(edge("p.Run", "p.init.closure_1", 1, "vta"), "a.go", "b.go"),
+		at(edge("p.init", "p.setup", 1, "vta"), "a.go", ""),
+	}
+	result := semantic_analysis.MergeEdges(primary, secondary)
+	if len(result) != 4 {
+		t.Fatalf("got %d edges, want 4: %+v", len(result), result)
+	}
+	if result[0].Weight != 2 || len(result[0].Provenance) != 2 {
+		t.Errorf("a.go init edge = %+v, want weight 2, prov [go/types vta]", result[0])
+	}
+}
+
 // ── Call-site index ───────────────────────────────────────────────────────────
 
 // TestCallGraph_IndexMatchesWalk locks the chi edge set (see chiGoldenEdges for the delta vs the walk) after

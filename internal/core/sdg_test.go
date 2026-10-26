@@ -76,3 +76,34 @@ func TestAnalyze_Level4StrictFailsOnDegraded(t *testing.T) {
 		}
 	}
 }
+
+// TestAnalyze_Level4MergesVTAEdges: at -a 4 the analyzer merges sdg.Run's
+// VTA edges into the call graph and its VTA-only externals into
+// app.Externals; -a 3 has neither.
+func TestAnalyze_Level4MergesVTAEdges(t *testing.T) {
+	opts := options.AnalysisOptions{
+		InputPath: filepath.Join(testdataDir(), "dataflow"), AppName: "dataflow", Level: options.LevelSDG,
+		SkipTests: true, CacheDir: t.TempDir(),
+	}
+	const src, dst = "example.com/dataflow/sdg.Buffered", "bytes.Buffer.Write"
+	vtaEdge := func(level options.AnalysisLevel) (vta, ext bool) {
+		opts.Level = level
+		app, err := core.New(opts).Analyze()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range app.CallGraph {
+			if e.Source == src && e.Target == dst {
+				vta = len(e.Provenance) == 1 && e.Provenance[0] == "vta"
+			}
+		}
+		_, ext = app.Externals[dst]
+		return vta, ext
+	}
+	if vta, ext := vtaEdge(options.LevelSDG); !vta || !ext {
+		t.Errorf("-a 4: VTA edge %s -> %s = %v, external = %v; want both", src, dst, vta, ext)
+	}
+	if vta, ext := vtaEdge(options.LevelDataflow); vta || ext {
+		t.Errorf("-a 3: VTA edge = %v, external = %v; want neither", vta, ext)
+	}
+}

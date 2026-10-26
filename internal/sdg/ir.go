@@ -82,6 +82,7 @@ type Input struct {
 	ProjectDir  string
 	SymbolTable map[string]schema.GoFile
 	Externals   map[string]schema.GoExternalCallee
+	CallGraph   []schema.GoCallEdge // L2 edges (app.CallGraph)
 	Units       []dataflow.Unit
 	L3          map[dataflow.L3Key]dataflow.Result
 	K, Jobs     int

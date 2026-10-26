@@ -247,8 +247,6 @@ func (cg *CallGraphBuilder) modulePath() string {
 }
 
 // recordExternal registers a library callee, keyed by its full signature.
-// Parameter names and types come from the callee's *types.Signature; unnamed
-// parameters become "_<i>". The receiver is not a parameter.
 func (cg *CallGraphBuilder) recordExternal(fn *types.Func, fullSig string) {
 	if _, ok := cg.externals[fullSig]; ok {
 		return
@@ -256,6 +254,15 @@ func (cg *CallGraphBuilder) recordExternal(fn *types.Func, fullSig string) {
 	if cg.externals == nil {
 		cg.externals = map[string]schema.GoExternalCallee{}
 	}
+	cg.externals[fullSig] = ExternalCallee(fn, fullSig)
+}
+
+// ExternalCallee is the external_symbols entry of the library callee fn, whose
+// full signature (CalleeSignatureOf) is fullSig. L2 and the L4 VTA pass both
+// build their entries with it, so an external has one shape whichever found it.
+// Parameter names and types come from the callee's *types.Signature; unnamed
+// parameters become "_<i>". The receiver is not a parameter.
+func ExternalCallee(fn *types.Func, fullSig string) schema.GoExternalCallee {
 	importPath := fn.Pkg().Path()
 	// Record the declared signature, not the instance the call site selected: a
 	// method on a generic library type (atomic.Pointer[A].Store) must yield one
@@ -299,7 +306,7 @@ func (cg *CallGraphBuilder) recordExternal(fn *types.Func, fullSig string) {
 		receiver = &schema.GoParameter{Name: name, Type: types.TypeString(recv.Type(), nil)}
 	}
 
-	cg.externals[fullSig] = schema.GoExternalCallee{
+	return schema.GoExternalCallee{
 		ImportPath: importPath,
 		Sig:        strings.TrimPrefix(fullSig, importPath+"."),
 		Name:       fn.Name(),
@@ -382,14 +389,17 @@ func (cg *CallGraphBuilder) packageForFile(relPath string) *packages.Package {
 }
 
 // MergeEdges merges two edge lists, unioning provenance and accumulating weight
-// for duplicate (source, target) pairs. Mirrors Python's merge_edges().
+// for duplicate edges. Mirrors Python's merge_edges(), with the edge identity
+// (SourcePath, Source, Target, TargetPath). A signature is not unique (every
+// file's func init shares "<pkg>.init", and so do its closures), so the
+// declaring files keep two inits' edges apart.
 func MergeEdges(primary, secondary []schema.GoCallEdge) []schema.GoCallEdge {
-	type key struct{ src, tgt string }
+	type key struct{ path, src, tgt, tgtPath string }
 	index := map[key]int{}
 	result := make([]schema.GoCallEdge, 0, len(primary)+len(secondary))
 
 	add := func(e schema.GoCallEdge) {
-		k := key{e.Source, e.Target}
+		k := key{e.SourcePath, e.Source, e.Target, e.TargetPath}
 		if idx, exists := index[k]; exists {
 			// Merge provenance (union) and accumulate weight.
 			provSet := map[string]bool{}

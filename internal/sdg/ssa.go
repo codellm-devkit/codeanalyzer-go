@@ -9,6 +9,7 @@ import (
 	"golang.org/x/tools/go/packages"
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/ssa/ssautil"
+	"golang.org/x/tools/go/types/typeutil"
 
 	"github.com/codellm-devkit/codeanalyzer-go/internal/utils"
 )
@@ -148,25 +149,65 @@ func isProject(dir string, p *packages.Package) bool {
 	return false
 }
 
-// projectFuncs is the VTA function set (spec §4.8, VTA scope): the SSA
-// functions of the built project packages — package-level functions and
-// inits, every declared method (generic origins included), the method-set
+// projectFuncs is the VTA function set (spec §4.8, VTA scope). funcs holds
+// the SSA functions of the built project packages — package-level functions
+// and inits, every declared method (generic origins included), the method-set
 // wrappers of their non-generic named types — and, transitively, their
-// anonymous functions and every function their code refers to that is
-// project code (generic instances of project functions, $bound / $thunk
-// wrappers). Functions declared outside the project are left out, so VTA's
-// cost stays bounded by the project's size.
-func projectFuncs(prog *ssa.Program, pkgs []*ssa.Package) map[*ssa.Function]bool {
+// anonymous functions and every function their code refers to that is project
+// code (generic instances of project functions, $bound / $thunk wrappers).
+// Its code is what VTA propagates types through, so VTA's cost stays bounded
+// by the project's size; the SSA join is measured on it.
+//
+// targetOnly holds the functions declared outside the project that a dynamic
+// call in project code may reach, which VTA can return only when they are in
+// its set (it intersects the propagated types with a lazy CHA over the set):
+//
+//   - a library function used as a value in project code (any operand but
+//     the static callee of a call: VTA resolves static calls without the set);
+//   - the methods (prog.MethodValue) of each type that a MakeInterface in
+//     project code converts to an interface — the dynamic types an interface
+//     call there may dispatch to — that are not project code: a library
+//     type's methods, or a project type's wrappers of promoted library
+//     methods. A project method found this way joins funcs.
+//
+// A library function has no SSA body (its package is created from types), so
+// targetOnly adds no propagation work; a library promotion wrapper's body is
+// a single synthetic call.
+func projectFuncs(prog *ssa.Program, pkgs []*ssa.Package) (funcs, targetOnly map[*ssa.Function]bool) {
 	project := make(map[*types.Package]bool, len(pkgs))
 	for _, p := range pkgs {
 		project[p.Pkg] = true
 	}
-	funcs := map[*ssa.Function]bool{}
+	funcs = map[*ssa.Function]bool{}
+	targetOnly = map[*ssa.Function]bool{}
 	var work []*ssa.Function
 	add := func(fn *ssa.Function) {
 		if fn != nil && !funcs[fn] && isProjectFunc(fn, project) {
 			funcs[fn] = true
 			work = append(work, fn)
+		}
+	}
+	addTarget := func(fn *ssa.Function) {
+		switch {
+		case fn == nil || funcs[fn]:
+		case isProjectFunc(fn, project):
+			add(fn)
+		default:
+			targetOnly[fn] = true
+		}
+	}
+	var converted typeutil.Map // types already expanded by a MakeInterface
+	addMethods := func(t types.Type) {
+		if converted.At(t) != nil {
+			return
+		}
+		converted.Set(t, true)
+		if _, isParam := types.Unalias(t).(*types.TypeParam); isParam || types.IsInterface(t) {
+			return
+		}
+		mset := prog.MethodSets.MethodSet(t)
+		for i := 0; i < mset.Len(); i++ {
+			addTarget(prog.MethodValue(mset.At(i))) // nil for a generic method or type
 		}
 	}
 	for _, p := range pkgs {
@@ -207,15 +248,27 @@ func projectFuncs(prog *ssa.Program, pkgs []*ssa.Package) map[*ssa.Function]bool
 		}
 		for _, b := range fn.Blocks {
 			for _, instr := range b.Instrs {
+				var callee *ssa.Value
+				if call, ok := instr.(ssa.CallInstruction); ok && !call.Common().IsInvoke() {
+					callee = &call.Common().Value
+				}
 				for _, op := range instr.Operands(buf[:0]) {
-					if g, ok := (*op).(*ssa.Function); ok {
-						add(g)
+					g, ok := (*op).(*ssa.Function)
+					switch {
+					case !ok:
+					case op == callee:
+						add(g) // a static callee: VTA needs it only as project code
+					default:
+						addTarget(g)
 					}
+				}
+				if mi, ok := instr.(*ssa.MakeInterface); ok {
+					addMethods(mi.X.Type())
 				}
 			}
 		}
 	}
-	return funcs
+	return funcs, targetOnly
 }
 
 // isProjectFunc reports whether fn's code is project code: it belongs to a

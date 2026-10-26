@@ -142,6 +142,7 @@ func (a *Analyzer) Analyze() (*schema.GoApplication, error) {
 			ProjectDir:  a.opts.InputPath,
 			SymbolTable: symbolTable,
 			Externals:   app.Externals,
+			CallGraph:   app.CallGraph,
 			Units:       units,
 			L3:          a.l3,
 			K:           KLimit(a.opts),
@@ -151,6 +152,9 @@ func (a *Analyzer) Analyze() (*schema.GoApplication, error) {
 		if err := a.reportDegraded(res.Degraded); err != nil {
 			return nil, err
 		}
+		// VTA's dispatch edges and the externals only VTA reached (spec §4.8):
+		// additions to the L2 call graph, so -a 3 ⊆ -a 4.
+		res.ApplyTo(app)
 	}
 
 	// The last reader of Node.Stmt and of the L4 side tables is done

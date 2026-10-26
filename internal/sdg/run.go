@@ -15,8 +15,9 @@ import (
 var vtaCallGraph = vta.CallGraph
 
 // Run builds the L4 overlay of in. For now it builds SSA over the project
-// packages, joins it to the L3 units, and runs VTA once over the project
-// function set, and returns only the degradation: no vertices or edges yet.
+// packages, joins it to the L3 units, resolves every call site's dispatch
+// targets (L2's static callee ∪ VTA's callees) and returns the call-graph
+// edges and externals only VTA found, and the degradation: no vertices yet.
 //
 // Order: the join is computed before VTA, so it never reads a program a VTA
 // panic may have wedged; after no_vta, later stages use the program for the
@@ -24,55 +25,79 @@ var vtaCallGraph = vta.CallGraph
 // l3_skipped and range_func (from the units, whether or not SSA built),
 // unmapped_ssa (the join), no_vta.
 func Run(in Input) Result {
+	res, _ := run(in)
+	return res
+}
+
+// run is Run that also returns the call-site dispatch. Every site keeps its
+// static L2 targets whether or not SSA or VTA ran.
+func run(in Input) (Result, *dispatch) {
+	d := newDispatch(in)
 	start := time.Now()
 	prog, pkgs, deg := buildSSA(in)
 	utils.Info("L4: SSA built %d project packages in %s", len(pkgs), time.Since(start).Round(time.Millisecond))
-	for _, d := range []*Degraded{l3Skipped(in), rangeFunc(in)} {
-		if d != nil {
-			deg = append(deg, *d)
+	for _, dg := range []*Degraded{l3Skipped(in), rangeFunc(in)} {
+		if dg != nil {
+			deg = append(deg, *dg)
 		}
 	}
 	if len(pkgs) == 0 {
-		return Result{Degraded: deg}
+		return d.result(deg), d
 	}
 
-	// The project function set (VTA's seeds) is built under recover: it
-	// builds wrappers on demand, and a panic there may wedge the program,
-	// so neither the join nor VTA then reads it.
+	// The VTA function set is built under recover: it builds wrappers on
+	// demand, and a panic there may wedge the program, so neither the join
+	// nor VTA then reads it.
 	start = time.Now()
-	funcs, err := funcSet(prog, pkgs)
+	funcs, all, err := funcSet(prog, pkgs)
 	if err != nil {
 		utils.Debug("L4: VTA function set failed: %v", err)
-		return Result{Degraded: append(deg, Degraded{Code: CodeNoVTA, Detail: err.Error()})}
+		return d.result(append(deg, Degraded{Code: CodeNoVTA, Detail: err.Error()})), d
 	}
 	j := newJoin(in)
 	cov := j.coverage(funcs)
 	utils.Info("L4: SSA join: %d functions (%d by wrapper, %d without a unit), %d calls; %d functions, %d calls unmapped in %s",
 		cov.Funcs, cov.Wrappers, cov.NoUnit, cov.Calls, cov.Unmapped, cov.UnmappedCalls, time.Since(start).Round(time.Millisecond))
-	if d := j.degraded(cov); d != nil {
-		deg = append(deg, *d)
+	if dg := j.degraded(cov); dg != nil {
+		deg = append(deg, *dg)
 	}
+	d.addInvokes(j, funcs)
 
 	start = time.Now()
-	cg, err := runVTA(funcs)
+	cg, err := runVTA(all)
 	if err != nil {
 		utils.Debug("L4: VTA failed: %v", err)
 		deg = append(deg, Degraded{Code: CodeNoVTA, Detail: err.Error()})
 	} else {
-		utils.Info("L4: VTA over %d functions: %d edges in %s", len(funcs), edgeCount(cg), time.Since(start).Round(time.Millisecond))
+		d.addVTA(j, cg)
+		utils.Info("L4: VTA over %d functions (%d library targets): %d edges in %s",
+			len(all), len(all)-len(funcs), edgeCount(cg), time.Since(start).Round(time.Millisecond))
 	}
-	return Result{Degraded: deg}
+	res := d.result(deg)
+	utils.Info("L4: dispatch: %d call sites with targets; %d call_graph edges and %d externals added by VTA",
+		len(d.sites), len(res.CallEdges), len(res.NewExternals))
+	return res, d
 }
 
 // funcSet is projectFuncs under recover: it builds functions on demand
-// (MethodValue wrappers), so a builder panic is turned into an error.
-func funcSet(prog *ssa.Program, pkgs []*ssa.Package) (funcs map[*ssa.Function]bool, err error) {
+// (MethodValue wrappers), so a builder panic is turned into an error. It
+// returns the project functions (the join is measured on them) and the VTA
+// set: those plus the target-only library functions.
+func funcSet(prog *ssa.Program, pkgs []*ssa.Package) (funcs, all map[*ssa.Function]bool, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			funcs, err = nil, fmt.Errorf("panic: %v", r)
+			funcs, all, err = nil, nil, fmt.Errorf("panic: %v", r)
 		}
 	}()
-	return projectFuncs(prog, pkgs), nil
+	funcs, targetOnly := projectFuncs(prog, pkgs)
+	all = make(map[*ssa.Function]bool, len(funcs)+len(targetOnly))
+	for fn := range funcs {
+		all[fn] = true
+	}
+	for fn := range targetOnly {
+		all[fn] = true
+	}
+	return funcs, all, nil
 }
 
 // runVTA runs VTA over funcs with no initial graph (VTA then uses its

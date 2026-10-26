@@ -193,6 +193,13 @@ type GoCallEdge struct {
 	// whose signature is already unique (the common case). Internal-only; not
 	// part of the v2 output schema.
 	SourcePath string `json:"-"`
+
+	// TargetPath is the relative file declaring the target callable, set only
+	// when the signature alone may not name it: a VTA target can be a closure
+	// of a package-level init ("<pkg>.init.closure_1" repeats once per file
+	// with an init). Empty for L2 edges (a static call never targets an init
+	// or a closure) and for an external target. Internal-only, like SourcePath.
+	TargetPath string `json:"-"`
 }
 
 // ─── Root object ──────────────────────────────────────────────────────────────

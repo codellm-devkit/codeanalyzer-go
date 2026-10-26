@@ -40,7 +40,8 @@ func joined(t *testing.T, in Input) (*ssa.Program, *join, map[*ssa.Function]bool
 			funcs[fn] = true
 		}
 	}
-	for fn := range projectFuncs(prog, pkgs) {
+	project2, _ := projectFuncs(prog, pkgs)
+	for fn := range project2 {
 		funcs[fn] = true
 	}
 	return prog, j, funcs

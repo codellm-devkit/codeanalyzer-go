@@ -449,10 +449,15 @@ func emitCallGraph(edges []schema.GoCallEdge, idx sigIndex) []v2.Edge {
 		// Resolve the source by (signature, declaring file): a package-level
 		// init signature repeats once per file in a package, so the file is
 		// what pins the edge to the init that actually contains the call site.
-		// The target stays signature-only — a call target is never an init
-		// (Go forbids calling init), and every other signature is unique.
+		// The target is signature-only unless the edge carries its declaring
+		// file: a static call target is never an init (Go forbids calling
+		// init), but a VTA target may be a closure of one, whose signature
+		// repeats per file.
 		src, srcOK := idx.idForWithPath(e.Source, e.SourcePath)
 		dst, dstOK := idx.resolve(e.Target)
+		if e.TargetPath != "" {
+			dst, dstOK = idx.idForWithPath(e.Target, e.TargetPath)
+		}
 		if !srcOK || !dstOK {
 			continue
 		}
