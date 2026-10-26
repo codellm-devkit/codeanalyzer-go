@@ -28,9 +28,11 @@ const (
 type joinKind int
 
 const (
-	joinNone    joinKind = iota
-	joinBody             // its code is the callable's body: by syntax, origin, or a folded yield
-	joinWrapper          // a synthetic wrapper (or a bodiless stub) of the callable: by Object()
+	joinNone     joinKind = iota
+	joinBody              // its code is a unit's body: by syntax, origin, or a folded yield
+	joinWrapper           // a synthetic wrapper (or a types-only stub) of a unit: by Object()
+	joinIface             // an interface method ($bound / $thunk of it): a symbol-table key, no unit
+	joinBodiless          // a declared function with no Go body (assembly, linkname), or a wrapper of one: a symbol-table key, no unit
 )
 
 // join maps go/ssa back to the L3 units (spec §4.8, SSA → L3 join). It keys
@@ -43,7 +45,8 @@ type join struct {
 	fset       *token.FileSet
 	projectDir string
 	byFn       map[ast.Node]dataflow.L3Key             // Unit.Fn → unit
-	bySig      map[dataflow.L3Key]bool                 // (declaring file, signature) of every unit and interface method
+	iface      map[dataflow.L3Key]bool                 // (interface's file, signature) of every interface method
+	bodiless   map[dataflow.L3Key]bool                 // (declaring file, signature) of every bodiless declared callable
 	calls      map[dataflow.L3Key]map[token.Pos]string // unit → call Lparen → L1/L3 call key
 	projPaths  map[string]bool                         // import paths of the project packages
 	units      map[dataflow.L3Key]dataflow.Unit        // by key
@@ -60,7 +63,8 @@ func newJoin(in Input) *join {
 		fset:       in.Fset,
 		projectDir: in.ProjectDir,
 		byFn:       make(map[ast.Node]dataflow.L3Key, len(in.Units)),
-		bySig:      make(map[dataflow.L3Key]bool, len(in.Units)),
+		iface:      map[dataflow.L3Key]bool{},
+		bodiless:   map[dataflow.L3Key]bool{},
 		calls:      make(map[dataflow.L3Key]map[token.Pos]string, len(in.Units)),
 		projPaths:  map[string]bool{},
 		units:      make(map[dataflow.L3Key]dataflow.Unit, len(in.Units)),
@@ -69,7 +73,6 @@ func newJoin(in Input) *join {
 	}
 	for _, u := range in.Units {
 		j.byFn[u.Fn] = u.Key
-		j.bySig[u.Key] = true
 		j.units[u.Key] = u
 		if r, ok := in.L3[u.Key]; ok && r.CallKeys != nil {
 			j.calls[u.Key] = r.CallKeys
@@ -81,25 +84,55 @@ func newJoin(in Input) *join {
 		}
 		j.calls[u.Key] = m
 	}
-	// Interface methods have no body and so no unit, but a $bound wrapper of
-	// one (a method value of an interface) still names it: index them by
-	// (declaring file, signature) too, the file being the interface's.
+	// Callables with a symbol-table key but no unit (no body, so no L3):
+	//   - interface methods, keyed by the interface's file (c.Path is "");
+	//     a $bound / $thunk of one names it;
+	//   - declared functions and methods with no Go body (assembly or
+	//     linkname implementations); only a FuncDecl with a nil body counts,
+	//     so a declaration L3Units skipped despite its body (a second init in
+	//     one file) never lands here.
+	declared := map[dataflow.L3Key]bool{}
 	for path, f := range in.SymbolTable {
+		for _, c := range f.Functions {
+			declared[dataflow.L3Key{Path: c.Path, Signature: c.Signature}] = true
+		}
 		for _, t := range f.Types {
 			for _, c := range t.Methods {
 				if c.Path == "" {
-					j.bySig[dataflow.L3Key{Path: path, Signature: c.Signature}] = true
+					j.iface[dataflow.L3Key{Path: path, Signature: c.Signature}] = true
+				} else {
+					declared[dataflow.L3Key{Path: c.Path, Signature: c.Signature}] = true
 				}
 			}
 		}
 	}
 	for _, p := range projectPackages(in) {
 		j.projPaths[p.PkgPath] = true
+		if p.TypesInfo == nil {
+			continue
+		}
+		for _, f := range p.Syntax {
+			for _, d := range f.Decls {
+				fd, ok := d.(*ast.FuncDecl)
+				if !ok || fd.Body != nil {
+					continue
+				}
+				if obj, ok := p.TypesInfo.Defs[fd.Name].(*types.Func); ok {
+					if k, ok := j.declKey(obj); ok && declared[k] {
+						j.bodiless[k] = true
+					}
+				}
+			}
+		}
 	}
 	return j
 }
 
-// fnUnit returns the L3 callable fn joins:
+// fnUnit returns the L3 unit fn joins. ok means a unit exists: j.units[k]
+// holds it (its Fn and Info are set), though its L3 result may be absent
+// (l3_skipped). A function that names a callable with no unit — an
+// interface method (ifaceMethod) or a bodiless declaration (bodilessDecl) —
+// is !ok here. The join:
 //
 //  1. fn.Syntax() is a unit's Fn (a declared function or method, init#N,
 //     a function literal, a generic instance or instantiation wrapper —
@@ -112,8 +145,7 @@ func newJoin(in Input) *join {
 //     $thunk, promoted or pointer wrapper) or a bodiless stub of a project
 //     function seen through another test variant of its package — the
 //     function fn.Object() names, by (declaring file, SignatureOf), the
-//     symbol table's own canonicalizer. An interface method's key (the
-//     interface's file) counts here too.
+//     symbol table's own canonicalizer.
 //  4. A range-over-func yield folds into fn.Parent().
 //
 // The package initializer, closures of package-level variable initializers
@@ -121,7 +153,40 @@ func newJoin(in Input) *join {
 // nothing.
 func (j *join) fnUnit(fn *ssa.Function) (dataflow.L3Key, bool) {
 	k, kind := j.resolve(fn)
-	return k, kind != joinNone
+	if kind != joinBody && kind != joinWrapper {
+		return dataflow.L3Key{}, false
+	}
+	if _, ok := j.units[k]; !ok {
+		return dataflow.L3Key{}, false
+	}
+	return k, true
+}
+
+// ifaceMethod returns the symbol-table key of the interface method fn
+// stands for — the interface's declaring file and the method's signature,
+// as the symbol table keys bodiless interface methods (GoType.Methods with
+// Path "") — for a $bound (method value) or $thunk (method expression) of an
+// interface method. The key has no unit and no L3 result: fnUnit is !ok for
+// fn. Later stages bind such a target to the interface method's formals and
+// pass-through summary (spec §4.8, D7).
+func (j *join) ifaceMethod(fn *ssa.Function) (dataflow.L3Key, bool) {
+	if k, kind := j.resolve(fn); kind == joinIface {
+		return k, true
+	}
+	return dataflow.L3Key{}, false
+}
+
+// bodilessDecl returns the symbol-table key of the declared function or
+// method fn stands for when its declaration has no Go body (implemented in
+// assembly, or by //go:linkname): fn itself (a bodiless SSA function with
+// that FuncDecl as syntax) or a wrapper of it. The key has no unit and no
+// L3 result: fnUnit is !ok for fn. Like an interface method, it is a target
+// with formals and a pass-through summary.
+func (j *join) bodilessDecl(fn *ssa.Function) (dataflow.L3Key, bool) {
+	if k, kind := j.resolve(fn); kind == joinBodiless {
+		return k, true
+	}
+	return dataflow.L3Key{}, false
 }
 
 func (j *join) resolve(fn *ssa.Function) (dataflow.L3Key, joinKind) {
@@ -135,13 +200,17 @@ func (j *join) resolve(fn *ssa.Function) (dataflow.L3Key, joinKind) {
 		k, ok := j.byFn[syn]
 		switch {
 		case !ok:
+			if fd, isDecl := syn.(*ast.FuncDecl); isDecl && fd.Body == nil {
+				break // a bodiless declaration: by Object(), below
+			}
 			return dataflow.L3Key{}, joinNone
 		case strings.HasPrefix(fn.Synthetic, synthInstWrapper):
 			// It keeps its origin's syntax, but its body is a synthetic
 			// call of the origin.
 			return k, joinWrapper
+		default:
+			return k, joinBody
 		}
-		return k, joinBody
 	}
 	if fn.Parent() == nil {
 		if o := fn.Origin(); o != nil && o != fn {
@@ -154,8 +223,15 @@ func (j *join) resolve(fn *ssa.Function) (dataflow.L3Key, joinKind) {
 		return dataflow.L3Key{}, joinNone
 	}
 	if obj, ok := fn.Object().(*types.Func); ok {
-		if k, ok := j.declKey(obj.Origin()); ok && j.bySig[k] {
-			return k, joinWrapper
+		if k, ok := j.declKey(obj.Origin()); ok {
+			switch {
+			case j.units[k].Fn != nil:
+				return k, joinWrapper
+			case j.iface[k]:
+				return k, joinIface
+			case j.bodiless[k]:
+				return k, joinBodiless
+			}
 		}
 	}
 	return dataflow.L3Key{}, joinNone
@@ -226,6 +302,7 @@ func (j *join) isLibrary(obj *types.Func) bool {
 // go/ssa synthesizes has none and no call node.
 type joinCoverage struct {
 	Funcs, Unmapped, Wrappers, Inits int // Inits: package initializers (no callable by design)
+	NoUnit                           int // mapped to a callable with no unit: interface methods, bodiless declarations
 	Calls, UnmappedCalls, Synthetic  int // Calls: positioned calls in body-joined functions
 	unmappedPkgs                     map[string]bool
 }
@@ -250,13 +327,15 @@ func (j *join) coverage(funcs map[*ssa.Function]bool) joinCoverage {
 			utils.Debug("L4: unmapped SSA function %s [%s]", fn, fn.Synthetic)
 		case joinWrapper:
 			c.Wrappers++
+		case joinIface, joinBodiless:
+			c.NoUnit++
 		}
 		forCalls(fn, func(call ssa.CallInstruction) {
 			switch {
 			case !call.Common().Pos().IsValid():
 				c.Synthetic++
-			case kind == joinWrapper:
-				c.Synthetic++
+			case kind == joinWrapper || kind == joinIface || kind == joinBodiless:
+				c.Synthetic++ // a wrapper's calls are synthetic
 			default:
 				c.Calls++
 				if _, _, ok := j.callSite(call); !ok {

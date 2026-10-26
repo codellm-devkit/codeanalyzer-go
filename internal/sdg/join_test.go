@@ -387,8 +387,8 @@ func TestJoin_WrappersUnwrap(t *testing.T) {
 		}
 		// Keyed by fn.String(): an interface method's wrappers share the
 		// concrete method's short names (Add$bound, Add$thunk).
-		if strings.HasPrefix(fn.Synthetic, "bound method wrapper") || strings.HasPrefix(fn.Synthetic, "thunk") {
-			kinds[fn.String()] = mustJoin(t, j, fn)
+		if (strings.HasPrefix(fn.Synthetic, "bound method wrapper") || strings.HasPrefix(fn.Synthetic, "thunk")) && !strings.Contains(fn.String(), "Adder") {
+			kinds[fn.String()] = mustJoin(t, j, fn) // concrete-method wrappers; Adder's are checked below
 		}
 		if fn.Syntax() == nil && fn.Synthetic != synthPackageInit {
 			if _, kind := j.resolve(fn); kind == joinWrapper {
@@ -405,12 +405,23 @@ func TestJoin_WrappersUnwrap(t *testing.T) {
 			t.Errorf("%s joins %v (seen %v), want %v (wrappers seen: %v)", name, k, ok, add, kinds)
 		}
 	}
+	// An interface method has a symbol-table key but no unit: its $bound and
+	// $thunk are !ok for fnUnit and name it through ifaceMethod.
 	iface := dataflow.L3Key{Path: filepath.Join("xtest", "a.go"), Signature: xt + ".Adder.Add"}
+	if _, ok := j.units[iface]; ok {
+		t.Fatalf("interface method %v has a unit", iface)
+	}
 	var ifaceWrappers int
 	for fn := range funcs {
 		if obj := fn.Object(); obj != nil && fn.Syntax() == nil && obj.Pkg() != nil && obj.Pkg().Path() == xt && obj.Name() == "Add" && types.IsInterface(fn.Object().Type().(*types.Signature).Recv().Type()) {
-			if k := mustJoin(t, j, fn); k != iface {
-				t.Errorf("%s [%s] joins %v, want the interface method %v", fn, fn.Synthetic, k, iface)
+			if k, ok := j.fnUnit(fn); ok {
+				t.Errorf("fnUnit(%s [%s]) = %v, true; want !ok (an interface method has no unit)", fn, fn.Synthetic, k)
+			}
+			if k, ok := j.ifaceMethod(fn); !ok || k != iface {
+				t.Errorf("ifaceMethod(%s [%s]) = %v, %v; want %v, true", fn, fn.Synthetic, k, ok, iface)
+			}
+			if _, ok := j.bodilessDecl(fn); ok {
+				t.Errorf("bodilessDecl(%s) is ok for an interface method", fn)
 			}
 			ifaceWrappers++
 		}
@@ -418,11 +429,57 @@ func TestJoin_WrappersUnwrap(t *testing.T) {
 	if ifaceWrappers != 2 {
 		t.Errorf("%d wrappers of the interface method Adder.Add, want 2 ($bound, $thunk)", ifaceWrappers)
 	}
+	// A concrete method and its wrappers still join their unit, and are not
+	// interface methods.
+	for _, fn := range []*ssa.Function{fnByName(t, prog, xt, "Counter.Add"), fnByName(t, prog, xt, "Outer.Add")} {
+		if k, ok := j.fnUnit(fn); !ok || k != add || j.units[k].Fn == nil {
+			t.Errorf("fnUnit(%s) = %v, %v; want the unit %v", fn, k, ok, add)
+		}
+		if _, ok := j.ifaceMethod(fn); ok {
+			t.Errorf("ifaceMethod(%s) is ok for a concrete method", fn)
+		}
+	}
 	if k := mustJoin(t, j, fnByName(t, prog, xt, "Counter.Get")); k != get {
 		t.Errorf("(*Counter).Get (pointer wrapper) joins %v, want %v", k, get)
 	}
 	if k := mustJoin(t, j, fnByName(t, prog, xt, "Outer.Add")); k != add {
 		t.Errorf("Outer.Add (promoted) joins %v, want %v", k, add)
+	}
+}
+
+// TestJoin_BodilessDeclHasNoUnit: a function declared without a Go body
+// (testdata/dataflow/asm, implemented in assembly) is in the symbol table
+// but has no unit. Its SSA function is !ok for fnUnit and names it through
+// bodilessDecl; it is not unmapped, and its caller's call still joins.
+func TestJoin_BodilessDeclHasNoUnit(t *testing.T) {
+	in := loadInput(t, "dataflow")
+	prog, j, funcs := joined(t, in)
+	const pkg = "example.com/dataflow/asm"
+	want := dataflow.L3Key{Path: filepath.Join("asm", "asm.go"), Signature: pkg + ".Add"}
+	if _, ok := j.units[want]; ok {
+		t.Fatalf("bodiless %v has a unit", want)
+	}
+	add := fnByName(t, prog, pkg, "Add")
+	if k, ok := j.fnUnit(add); ok {
+		t.Errorf("fnUnit(asm.Add) = %v, true; want !ok", k)
+	}
+	if k, ok := j.bodilessDecl(add); !ok || k != want {
+		t.Errorf("bodilessDecl(asm.Add) = %v, %v; want %v, true", k, ok, want)
+	}
+	if _, ok := j.ifaceMethod(add); ok {
+		t.Error("ifaceMethod(asm.Add) is ok")
+	}
+	if c := j.coverage(funcs); c.NoUnit == 0 {
+		t.Errorf("coverage %+v counts no function without a unit", c)
+	}
+	n := 0
+	forCalls(fnByName(t, prog, pkg, "Use"), func(c ssa.CallInstruction) {
+		if _, _, ok := j.callSite(c); ok {
+			n++
+		}
+	})
+	if n != 1 {
+		t.Errorf("asm.Use: %d calls joined, want 1", n)
 	}
 }
 

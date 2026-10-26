@@ -47,8 +47,8 @@ func Run(in Input) Result {
 	}
 	j := newJoin(in)
 	cov := j.coverage(funcs)
-	utils.Info("L4: SSA join: %d functions (%d by wrapper), %d calls; %d functions, %d calls unmapped in %s",
-		cov.Funcs, cov.Wrappers, cov.Calls, cov.Unmapped, cov.UnmappedCalls, time.Since(start).Round(time.Millisecond))
+	utils.Info("L4: SSA join: %d functions (%d by wrapper, %d without a unit), %d calls; %d functions, %d calls unmapped in %s",
+		cov.Funcs, cov.Wrappers, cov.NoUnit, cov.Calls, cov.Unmapped, cov.UnmappedCalls, time.Since(start).Round(time.Millisecond))
 	if d := j.degraded(cov); d != nil {
 		deg = append(deg, *d)
 	}
