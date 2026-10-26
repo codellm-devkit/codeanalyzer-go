@@ -72,8 +72,10 @@ func BuildDDG(nodes []Node, cfg []CfgEdge, du map[string]DefUse) []DdgEdge {
 	// A nil-base path (a pseudo path, an unresolved identifier) is bucketed
 	// by its spelling head: equal heads are necessary for Covers.
 	buckets := map[killBucket][]int{}
+	defBucket := make([]killBucket, len(defs))
 	for i, d := range defs {
 		b := bucketOf(d.path)
+		defBucket[i] = b
 		buckets[b] = append(buckets[b], i)
 	}
 
@@ -136,18 +138,27 @@ func BuildDDG(nodes []Node, cfg []CfgEdge, du map[string]DefUse) []DdgEdge {
 		}
 	}
 
+	// Use matching is bucketed like the kills: interference (Covers either
+	// way) needs the same bucket, so a reaching def is tested only against
+	// the uses of its bucket — O(defs + matches) per node rather than
+	// O(defs × uses), which the L4 re-solve's global uses at hosts need.
 	edges := map[DdgEdge]bool{}
 	for v, k := range g.keys {
 		uses := du[k].Uses
 		if len(uses) == 0 {
 			continue
 		}
+		useBuckets := make(map[killBucket][]Path, len(uses))
+		for _, u := range uses {
+			b := bucketOf(u)
+			useBuckets[b] = append(useBuckets[b], u)
+		}
 		for w, x := range in[v] {
 			for x != 0 {
 				b := bits.TrailingZeros64(x)
 				x &^= 1 << b
 				d := defs[w*64+b]
-				for _, u := range uses {
+				for _, u := range useBuckets[defBucket[w*64+b]] {
 					if d.path.Covers(u) || u.Covers(d.path) {
 						edges[DdgEdge{Src: g.keys[d.node], Dst: k, Var: u.Spell}] = true
 					}

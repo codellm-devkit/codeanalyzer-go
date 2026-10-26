@@ -286,3 +286,18 @@ func (sumT) Sum(xs ...int) int { return len(xs) }
 func MethodExprVariadic(v sumT) int {
 	return sumT.Sum(v)
 }
+
+// CaptureNamed stores a literal that rewrites the named result err: the
+// capture site's actual_out reaches err's formal_out (A7).
+func CaptureNamed() (err error) {
+	h := func() { err = nil }
+	h()
+	return
+}
+
+// CaptureParam stores a literal that writes through the by-ref param p: the
+// capture site's actual_out reaches p's formal_out (A7).
+func CaptureParam(p *Inner) {
+	f := func() { p.n = 1 }
+	f()
+}

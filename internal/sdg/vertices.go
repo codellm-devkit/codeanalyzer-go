@@ -609,12 +609,48 @@ func (p *ports) siteTargets(unit dataflow.L3Key, callKey string) []Target {
 // the literal (hostOf). <lit-key> is the literal's line:col, taking the next
 // free "/n" among taken (dataflow.NextFreeKey, as BodyNodes keys a
 // statement), so it never equals a body key. A literal whose host the CFG
-// pruned is dead and has none; so has every literal of a unit with no L3
-// result (no CFG to host it).
+// pruned is dead and has none.
+//
+// A unit with no L3 result (l3_skipped) has no CFG to host a literal: its
+// host is the innermost L1 call node whose call holds the literal (`once.Do(
+// func(){…})`), else @entry (ruling, Task 12 review). Its port wiring is
+// pass-through (wire).
 func (p *ports) captureSites(u dataflow.Unit, taken map[string]bool) []Vertex {
-	_, ok := p.in.L3[u.Key]
+	var out []Vertex
+	for _, cs := range p.capSites(u, taken) {
+		out = append(out, cs.vertices()...)
+	}
+	return out
+}
+
+// capSite is one capture site: its key, its host, and each capture (in
+// actual_in order) with its actual_in key and, when the literal writes it,
+// its actual_out key.
+type capSite struct {
+	key, host string
+	caps      []types.Object
+	ofs       []string
+	in, out   []string // per capture; out[i] == "" when not written
+}
+
+func (cs capSite) vertices() []Vertex {
+	var vs []Vertex
+	for i, of := range cs.ofs {
+		vs = append(vs, Vertex{Key: cs.in[i], Of: of, Parent: cs.host, Kind: KindActualIn})
+	}
+	for i, of := range cs.ofs {
+		if cs.out[i] != "" {
+			vs = append(vs, Vertex{Key: cs.out[i], Of: of, Parent: cs.host, Kind: KindActualOut})
+		}
+	}
+	return vs
+}
+
+// capSites is captureSites with each site's capture objects.
+func (p *ports) capSites(u dataflow.Unit, taken map[string]bool) []capSite {
+	_, analysed := p.in.L3[u.Key]
 	body := fnBody(u.Fn)
-	if !ok || body == nil || u.Info == nil {
+	if body == nil || u.Info == nil {
 		return nil
 	}
 	direct := map[*ast.FuncLit]bool{}
@@ -625,36 +661,74 @@ func (p *ports) captureSites(u dataflow.Unit, taken map[string]bool) []Vertex {
 	}
 	var all []dataflow.Node // every body node, pruned ones included; built once
 	kept := p.keptKeys(u.Key)
-	var out []Vertex
+	var out []capSite
 	for _, l := range astwalk.Literals(body) {
 		if direct[l.Lit] {
 			continue
 		}
-		caps, written := captureOfs(l.Lit, u.Info, p.in.K)
+		caps := dataflow.FreeVars(l.Lit, u.Info)
 		if len(caps) == 0 {
 			continue
 		}
-		if all == nil {
-			all, _ = dataflow.BuildNodes(p.in.Fset, body, u.Calls)
+		var host string
+		if analysed {
+			if all == nil {
+				all, _ = dataflow.BuildNodes(p.in.Fset, body, u.Calls)
+			}
+			h, ok := hostOf(all, l.Lit)
+			if !ok || !kept[h] {
+				continue
+			}
+			host = h
+		} else {
+			host = p.skippedHost(u, l.Lit)
 		}
-		host, ok := hostOf(all, l.Lit)
-		if !ok || !kept[host] {
-			continue
+		written := map[types.Object]bool{}
+		for _, path := range dataflow.CaptureWrites(l.Lit, u.Info, p.in.K) {
+			written[path.Base] = true
+		}
+		nOut := 0
+		for _, v := range caps {
+			if written[v] {
+				nOut++
+			}
 		}
 		pos := p.in.Fset.PositionFor(l.Lit.Pos(), false)
-		key := dataflow.NextFreeKey(v2.LocalID(pos.Line, pos.Column), taken)
-		for i, of := range caps {
-			out = append(out, Vertex{Key: key + "/actual_in:" + strconv.Itoa(i), Of: of, Parent: host, Kind: KindActualIn})
-		}
-		for i, of := range written {
-			k := key + "/actual_out"
-			if len(written) > 1 {
-				k += ":" + strconv.Itoa(i)
+		cs := capSite{key: dataflow.NextFreeKey(v2.LocalID(pos.Line, pos.Column), taken), host: host, caps: caps}
+		j := 0
+		for i, v := range caps {
+			cs.ofs = append(cs.ofs, ofCapture+v.Name())
+			cs.in = append(cs.in, cs.key+"/actual_in:"+strconv.Itoa(i))
+			o := ""
+			if written[v] {
+				o = cs.key + "/actual_out"
+				if nOut > 1 {
+					o += ":" + strconv.Itoa(j)
+				}
+				j++
 			}
-			out = append(out, Vertex{Key: k, Of: of, Parent: host, Kind: KindActualOut})
+			cs.out = append(cs.out, o)
 		}
+		out = append(out, cs)
 	}
 	return out
+}
+
+// skippedHost is the host of a capture site in a unit with no L3 result:
+// the innermost of its L1 call nodes whose call expression holds lit, else
+// @entry.
+func (p *ports) skippedHost(u dataflow.Unit, lit *ast.FuncLit) string {
+	host, best := dataflow.EntryKey, token.Pos(-1)
+	for _, c := range u.Calls {
+		call := p.callExpr(u.Key, c.Key)
+		if call == nil || call.Pos() > lit.Pos() || lit.End() > call.End() {
+			continue
+		}
+		if span := call.End() - call.Pos(); best < 0 || span < best {
+			host, best = c.Key, span
+		}
+	}
+	return host
 }
 
 // hostOf is the key of the innermost CFG node of nodes (BuildNodes' output,

@@ -271,6 +271,14 @@ func baseSpell(v types.Object) string {
 	return v.Name()
 }
 
+// SpellBase returns the base spelling of an emitted path spelling: "x" of
+// "x.f[*]", "pkgpath::Name" of "pkgpath::Name.F", a pseudo-base whole. The
+// L4 port wiring maps a ddg edge's var to the formal of its base with it.
+func SpellBase(s string) string {
+	head, _ := splitSpell(s)
+	return head
+}
+
 // BaseSpell is baseSpell for package sdg: the L4 global formals and
 // footprints spell a package-level variable as its L3 ddg base.
 func BaseSpell(v types.Object) string { return baseSpell(v) }
