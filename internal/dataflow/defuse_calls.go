@@ -180,8 +180,21 @@ func refTyped(t types.Type) bool {
 // named type already on the walk is not re-entered (a value-only cycle,
 // possible only in a package with type errors, holds nothing new). The call
 // rule and the L4 by-ref formal_out rule share it.
+//
+// Only a struct or array needs the walk and its cycle set: every other type
+// is decided by refTyped alone, with no allocation.
 func MayHoldRef(t types.Type) bool {
-	return mayHoldRef(t, map[*types.Named]bool{})
+	if t == nil {
+		return false
+	}
+	if refTyped(t) {
+		return true
+	}
+	switch t.Underlying().(type) {
+	case *types.Struct, *types.Array:
+		return mayHoldRef(t, map[*types.Named]bool{})
+	}
+	return false
 }
 
 func mayHoldRef(t types.Type, seen map[*types.Named]bool) bool {

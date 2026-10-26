@@ -98,3 +98,44 @@ func Buffered(w io.Writer, p []byte) {
 func PassBuffer() {
 	Buffered(&bytes.Buffer{}, nil)
 }
+
+// Config is written only in initConfig and read only in readConfig, which
+// recurses through useConfig: useConfig reads it transitively.
+var Config string
+
+// constOnly is initialized from a literal and never written: the global
+// filter drops it.
+var constOnly = 3
+
+func initConfig() {
+	Config = "on"
+}
+
+func readConfig() string {
+	if Config == "" {
+		return useConfig()
+	}
+	return Config
+}
+
+func useConfig() string {
+	return readConfig()
+}
+
+func readConst() int {
+	return constOnly
+}
+
+// mutate writes through p (a pointer) and s (a value holding a map); n is a
+// value copy and q is never written through.
+func mutate(p *Inner, s memStore, n Inner, q *Inner) {
+	p.n = 1
+	s.m["k"] = "v"
+	n.n = 2
+	_ = q
+}
+
+// setDSN writes through its pointer receiver.
+func (s *sqlStore) setDSN(d string) {
+	s.dsn = d
+}

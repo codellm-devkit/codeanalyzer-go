@@ -271,6 +271,13 @@ func baseSpell(v types.Object) string {
 	return v.Name()
 }
 
+// BaseSpell is baseSpell for package sdg: the L4 global formals and
+// footprints spell a package-level variable as its L3 ddg base.
+func BaseSpell(v types.Object) string { return baseSpell(v) }
+
+// IsPkgVar is isPkgVar for package sdg (the L4 global footprints).
+func IsPkgVar(obj types.Object) bool { return isPkgVar(obj) }
+
 // isPkgVar reports whether obj is a package-level variable. It checks
 // membership of the package scope by identity, which holds for packages
 // type-checked from source and imported from export data alike.
