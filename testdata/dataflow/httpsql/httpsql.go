@@ -14,6 +14,7 @@ import (
 type Repo interface {
 	Find(id string) (*sql.Rows, error)
 	SanitizedFind(id string) (*sql.Rows, error)
+	Count(user string) (*sql.Rows, error)
 }
 
 type sqlRepo struct{ db *sql.DB }
@@ -33,6 +34,11 @@ func (s *sqlRepo) SanitizedFind(id string) (*sql.Rows, error) {
 		return nil, err
 	}
 	return s.db.Query("SELECT name FROM users WHERE id = " + strconv.Itoa(n))
+}
+
+// Count counts a user's rows; only Audit calls it.
+func (s *sqlRepo) Count(user string) (*sql.Rows, error) {
+	return s.db.Query("SELECT count(*) FROM events WHERE user = " + user)
 }
 
 // Handler reads the id query parameter and looks it up.
@@ -66,10 +72,21 @@ func Health(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// Audit is an entry point apart from Routes: it builds its own Repo inline
+// (no call), so it shares no host variable and no in-project callee with the
+// handlers; its only in-project callee is sqlRepo.Count.
+func Audit(db *sql.DB, user string) error {
+	var repo Repo = &sqlRepo{db: db}
+	rows, err := repo.Count(user)
+	if err != nil {
+		return err
+	}
+	return rows.Close()
+}
+
 // Routes wires the handlers to a database-backed Repo: without it no
 // concrete type reaches the handlers' repo, and VTA binds repo.Find to
-// nothing but the interface method. Keep Handler registered before
-// SanitizedHandler: TestGateL4_HTTPToSQLPath's no-flow pair relies on it.
+// nothing but the interface method.
 func Routes(mux *http.ServeMux, db *sql.DB) {
 	repo := NewRepo(db)
 	mux.Handle("/user", Handler(repo))
