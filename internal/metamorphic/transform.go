@@ -297,6 +297,9 @@ type fileEdit struct {
 	sites   []Site
 	// skips counts the sites declined, by reason.
 	skips map[string]int
+	// violations are analyzer faults the transform found while choosing
+	// sites (a CDG that is not the reference CDG of its CFG).
+	violations []string
 }
 
 func (e *fileEdit) skip(reason string) {
@@ -363,6 +366,9 @@ type Result struct {
 	Sites   []Site
 	// Skipped counts, per reason, the files and sites left unchanged.
 	Skipped map[string]int
+	// Violations are analyzer faults found while choosing sites; the
+	// relation reports each one.
+	Violations []string
 }
 
 // errSkip is returned by an edit that leaves its file unchanged.
@@ -390,6 +396,9 @@ func (w *Workspace) Apply(t Transform, files []string, dst string, seed uint64, 
 			return nil, fmt.Errorf("%s: not an eligible file", rel)
 		}
 		fe, err := t.edit(c, f)
+		if fe != nil {
+			res.Violations = append(res.Violations, fe.violations...)
+		}
 		var skip errSkip
 		if errors.As(err, &skip) {
 			res.Skipped["file: "+string(skip)]++

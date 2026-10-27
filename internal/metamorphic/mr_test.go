@@ -210,6 +210,9 @@ func runRelation(t *testing.T, tg *target, r relation) *outcome {
 	res, post := transformAndAnalyze(t, tg, r.t, tg.ws, tg.files(), pre)
 	maps.Copy(o.skipped, res.Skipped)
 	o.sites = len(res.Sites)
+	for _, v := range res.Violations {
+		o.fail("%s", v)
+	}
 	if post == nil {
 		return o
 	}
@@ -270,16 +273,25 @@ func checkDelta(o *outcome, pre, mapped, got *View, res *Result) {
 		}
 		return
 	}
-	// A precision relation: nothing added anywhere; outside the sites only
-	// summary edges may go; at a site, its declared removals and summary
-	// edges.
+	// A precision relation: nothing is added anywhere. At a site, its
+	// declared removals may go (CheckAtMost). A summary edge may go only in
+	// a site callable or one of its transitive callers (over param_in):
+	// the constant cuts a flow of the site callable, which changes its own
+	// summary edges and those of every caller whose summary is derived from
+	// its flows, and nothing else.
+	sumOK := map[string]bool{}
+	for id := range atMost {
+		maps.Copy(sumOK, pre.Callers(id))
+	}
 	for _, d := range Diff(want, got, Scope{Skip: atMost}, 0) {
-		if strings.Contains(d, "|") && strings.HasSuffix(d, " missing") && strings.Contains(d, ": edge sum|") {
+		if id, rest, ok := strings.Cut(d, ": edge sum|"); ok && strings.HasSuffix(rest, " missing") && sumOK[id] {
 			continue
 		}
 		o.fail("%s", d)
 	}
 	for _, d := range CheckAtMost(pre, mapped, got, res.Map, res.Marks, ds) {
+		// A site callable is its own caller set's root, so its summary
+		// edges may go too.
 		if strings.Contains(d, ": sum|") && strings.HasSuffix(d, " removed") {
 			continue
 		}
@@ -319,6 +331,9 @@ func checkReach(o *outcome, tg *target, pre, got *View, res *Result) {
 	}
 	rr := CheckReach(pre, got, res.Map, res.Touched, tg.nCallables, seed, cut...)
 	o.pairs = rr.Pairs
+	if len(res.Sites) > 0 && rr.Pairs == 0 {
+		o.fail("%d sites but no source-sink pair checked: the oracle checked nothing", len(res.Sites))
+	}
 	gPre := pre.Graph(false)
 	for i, l := range head(rr.Lost, 40) {
 		msg := "lost flow " + l
@@ -752,7 +767,10 @@ func TestMR9_InsertKill_Delta(t *testing.T) {
 			CFG(k, Pre("510:2"), "fallthrough"),
 		},
 	}
-	mapped, _ := tg.pre.view.Map(res.Map)
+	mapped, unmapped := tg.pre.view.Map(res.Map)
+	if len(unmapped) > 0 {
+		t.Fatalf("keys do not map: %v", unmapped)
+	}
 	var ds []Delta
 	for _, s := range res.Sites {
 		if s.Callable == want.Callable {

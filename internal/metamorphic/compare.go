@@ -34,6 +34,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
 )
@@ -45,7 +46,11 @@ type View struct {
 	// "pout|src|dst|var" over Node strings.
 	App map[string]bool
 
-	callers map[string]bool // lazily, by called
+	// callerOnce guards callerOf, which is derived from App on first use
+	// (called, Callers). A View is shared by parallel relations, so its
+	// lazily built state must be built once.
+	callerOnce sync.Once
+	callerOf   map[string][]string // callee identity → caller identities, by param_in
 }
 
 // CV is one callable (or a library stand-in, Kind "external").
@@ -296,17 +301,51 @@ func (v *View) addModule(rel string, m *v2.Module, ids map[string]string, callee
 	}
 }
 
+// callerIndex builds callerOf once.
+func (v *View) callerIndex() map[string][]string {
+	v.callerOnce.Do(func() {
+		set := map[string]map[string]bool{}
+		for e := range v.App {
+			f := strings.Split(e, "|") // pin | src ident | src key | dst ident | dst key | var
+			if f[0] != "pin" {
+				continue
+			}
+			if set[f[3]] == nil {
+				set[f[3]] = map[string]bool{}
+			}
+			set[f[3]][f[1]] = true
+		}
+		v.callerOf = make(map[string][]string, len(set))
+		for callee, cs := range set {
+			v.callerOf[callee] = slices.Sorted(maps.Keys(cs))
+		}
+	})
+	return v.callerOf
+}
+
 // called reports whether some param_in edge targets callable ident.
 func (v *View) called(ident string) bool {
-	if v.callers == nil {
-		v.callers = map[string]bool{}
-		for e := range v.App {
-			if f := strings.Split(e, "|"); f[0] == "pin" {
-				v.callers[f[3]] = true
+	return len(v.callerIndex()[ident]) > 0
+}
+
+// Callers is ident and every callable that reaches it over param_in edges
+// (its transitive callers), the callables whose summary edges a change of
+// ident's flows may change.
+func (v *View) Callers(ident string) map[string]bool {
+	idx := v.callerIndex()
+	out := map[string]bool{ident: true}
+	stack := []string{ident}
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		for _, c := range idx[n] {
+			if !out[c] {
+				out[c] = true
+				stack = append(stack, c)
 			}
 		}
 	}
-	return v.callers[ident]
+	return out
 }
 
 // ─── names (MR4) ──────────────────────────────────────────────────────────────

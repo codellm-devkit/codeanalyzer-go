@@ -100,10 +100,9 @@ func onCycle(cv *CV, k string) bool {
 	return false
 }
 
-// sameCDG reports whether cv's cdg equals the reference CDG of its cfg.
-func sameCDG(cv *CV) bool {
-	return cdgDiff(cv, RefCDG(cv)) == ""
-}
+// cdgMismatch prefixes the deltaScope reason for a callable whose CDG is
+// not the reference CDG of its CFG.
+const cdgMismatch = "cdg differs from the reference: "
 
 // ─── eligibility ──────────────────────────────────────────────────────────────
 
@@ -139,10 +138,10 @@ func deltaScope(c *tctx, f *SrcFile, fd *ast.FuncDecl) (*scope, string) {
 	if cv == nil || !cv.L3 {
 		return nil, "no L3 result"
 	}
-	if !sameCDG(cv) {
-		// Its CDG is not the reference CDG of its CFG: a finding the test
-		// reports separately (TestRefCDG), not a site.
-		return nil, "cdg differs from the reference"
+	if d := cdgDiff(cv, RefCDG(cv)); d != "" {
+		// Its CDG is not the reference CDG of its CFG: an analyzer CDG bug,
+		// reported as a violation (deltaTransform), never as a skip.
+		return nil, cdgMismatch + d
 	}
 	return &scope{f: f, fd: fd, id: id, cv: cv, pre: c.pre, pinned: pinnedVars(f, fd.Body)}, ""
 }
@@ -358,6 +357,10 @@ func deltaTransform(name string, pick func(c *tctx, s *scope, fe *fileEdit) []ed
 		var edits []edit
 		for _, fd := range funcDecls(f) {
 			s, why := deltaScope(c, f, fd)
+			if strings.HasPrefix(why, cdgMismatch) {
+				fe.violations = append(fe.violations, fmt.Sprintf("%s: %s %s", f.Rel, funcIdentity(f, fd), why))
+				continue
+			}
 			if s == nil {
 				fe.skip(name + ": callable: " + why)
 				continue
