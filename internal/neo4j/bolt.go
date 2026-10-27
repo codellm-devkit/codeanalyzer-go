@@ -194,14 +194,16 @@ func (w *boltWriter) ensureDDL() error {
 //     its source, not the level it was analysed at, so an unchanged module
 //     of a graph pushed at L3 still lacks what an L4 push adds to it — its L4
 //     vertices are upserted (D5), but rows the diff skips stay at L3, and an
-//     edge row whose endpoint is missing is dropped by its MATCH silently.
+//     edge row whose endpoint is missing is dropped by its MATCH silently;
+//   - a stored max_level present but not an integer: it cannot be compared,
+//     so the push fails safe.
 //
 // No stored application (first push) forces nothing beyond the normal
 // upsert, nor does a stored level at or above this push's.
 func (w *boltWriter) storedAppStale() (bool, error) {
 	var stored string
 	var storedLevel int64
-	haveLevel := false
+	haveLevel, badLevel := false, false
 	err := w.read(func(tx neo4j.ManagedTransaction) error {
 		res, err := tx.Run(w.ctx,
 			"MATCH (a:GoApplication {id: $id}) RETURN a.schema_version AS v, a.max_level AS l",
@@ -215,6 +217,7 @@ func (w *boltWriter) storedAppStale() (bool, error) {
 			}
 			if l, ok := res.Record().Get("l"); ok && l != nil {
 				storedLevel, haveLevel = l.(int64)
+				badLevel = !haveLevel
 			}
 		}
 		return res.Err()
@@ -222,7 +225,7 @@ func (w *boltWriter) storedAppStale() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if stored != "" && stored != SchemaVersion {
+	if stored != "" && stored != SchemaVersion || badLevel {
 		return true, nil
 	}
 	return haveLevel && storedLevel < int64(w.pushLevel()), nil

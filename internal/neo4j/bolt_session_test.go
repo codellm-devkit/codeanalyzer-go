@@ -82,7 +82,10 @@ type fakeDB struct {
 	neo4j.SessionWithContext
 	hashes map[string]string
 	level  int64
-	writes []fakeStmt
+	// rawLevel, when non-nil, is the stored max_level returned verbatim
+	// (any type), overriding level.
+	rawLevel any
+	writes   []fakeStmt
 }
 
 type fakeStmt struct {
@@ -114,6 +117,9 @@ func (tx fakeTx) Run(_ context.Context, q string, params map[string]any) (neo4j.
 		var lvl any
 		if tx.db.level != 0 {
 			lvl = tx.db.level
+		}
+		if tx.db.rawLevel != nil {
+			lvl = tx.db.rawLevel
 		}
 		return &fakeResult{rec: &neo4j.Record{Keys: []string{"v", "l"}, Values: []any{SchemaVersion, lvl}}}, nil
 	case strings.Contains(q, "m.content_hash"):
@@ -299,6 +305,35 @@ func TestBolt_LazyPushForcesFullOnLowerStoredLevel(t *testing.T) {
 			for _, n := range ns {
 				if nodes[n.Value] {
 					t.Fatalf("stored level %d: unchanged module node %s upserted", stored, n.Value)
+				}
+			}
+		}
+	}
+}
+
+// TestBolt_LazyPushForcesFullOnUnreadableStoredLevel: a stored max_level
+// that is present but not an integer (a float, a string — a graph written by
+// another tool, or hand-edited) cannot be compared with this push's level,
+// so the lazy push fails safe and upserts every module, as for a lower one.
+func TestBolt_LazyPushForcesFullOnUnreadableStoredLevel(t *testing.T) {
+	a := buildDataflowL4(t)
+	rows := Project(a)
+	byModule, _, _ := partitionNodes(rows.Nodes)
+	hashes := map[string]string{}
+	for m, ns := range byModule {
+		hashes[m] = moduleHash(ns)
+	}
+	for _, raw := range []any{float64(4), "4", true} {
+		db := &fakeDB{hashes: hashes, rawLevel: raw}
+		w := &boltWriter{ctx: context.Background(), session: db, rows: rows, appID: a.Application.ID}
+		if err := w.run(); err != nil {
+			t.Fatal(err)
+		}
+		nodes, _ := db.pushed()
+		for m, ns := range byModule {
+			for _, n := range ns {
+				if !nodes[n.Value] {
+					t.Fatalf("stored max_level %T(%v): module %s node %s not upserted", raw, raw, m, n.Value)
 				}
 			}
 		}
