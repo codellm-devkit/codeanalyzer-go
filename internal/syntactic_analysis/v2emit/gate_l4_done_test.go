@@ -158,4 +158,21 @@ func TestGateL4_HTTPToSQLPath(t *testing.T) {
 	if p := g.path(vertex(fn("Health"), "formal_in", "r"), sink); p != nil {
 		t.Errorf("Health's r reaches %s: %v", sink, p)
 	}
+
+	// A no-flow pair inside the DB plumbing, so the gate catches
+	// over-connection and not only an uncalled callable: SanitizedHandler's
+	// request reaches the sink through SanitizedFind, but never Find's id.
+	// That fails if the repo.SanitizedFind site bound Find, if param edges
+	// were cross-wired between sites, or if a capture or summary leaked from
+	// one handler into the other. It depends on Routes registering Handler
+	// first: Handler(repo) has a by-ref out of the interface-typed repo, so
+	// the coarse host wiring carries Handler's flows forward into the later
+	// SanitizedHandler(repo), and not the other way round.
+	sanR := vertex(closure("SanitizedHandler"), "formal_in", "r")
+	if g.path(sanR, sink) == nil {
+		t.Errorf("SanitizedHandler's r does not reach %s (the pair below would be vacuous)", sink)
+	}
+	if p := g.path(sanR, findID); p != nil {
+		t.Errorf("SanitizedHandler's r reaches %s: %v", findID, p)
+	}
 }

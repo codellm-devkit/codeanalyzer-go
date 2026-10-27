@@ -68,7 +68,8 @@ func Health(w http.ResponseWriter, r *http.Request) {
 
 // Routes wires the handlers to a database-backed Repo: without it no
 // concrete type reaches the handlers' repo, and VTA binds repo.Find to
-// nothing but the interface method.
+// nothing but the interface method. Keep Handler registered before
+// SanitizedHandler: TestGateL4_HTTPToSQLPath's no-flow pair relies on it.
 func Routes(mux *http.ServeMux, db *sql.DB) {
 	repo := NewRepo(db)
 	mux.Handle("/user", Handler(repo))
