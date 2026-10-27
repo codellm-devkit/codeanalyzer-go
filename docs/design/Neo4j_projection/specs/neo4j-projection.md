@@ -80,7 +80,7 @@ or a verbatim reuse of shared vocabulary. "Ref" names the sibling precedent.
 | **CG1** | `call_graph` → **`GO_CALLS`** (weight, prov); `error_channel[]` → **string-array prop** on `:GoCallable` | `GO_CALLS` parity with `PY_CALLS` (endpoints = callable id or `:GoExternal` ghost; no dangling). Go errors are returned values, not thrown types — a value-shaped fact rides the node, not a `GO_RAISES` edge. |
 | **I1** | `GO_IMPORTS` (aggregated per target) → `:GoModule` (in-project) or `:GoExternal` ghost (stdlib/external, keyed by import path) | Parity with aggregated `PY_IMPORTS` + edge-only-when-resolved. Go imports are overwhelmingly external → ghost targets, never dangling, never minted as `:Package` (packages come from dependencies, not imports). |
 | **A1** | Declare neutral `:Artifact`/`:Package`/`:ConfigKey` + `HAS_ARTIFACT`/`DECLARES_DEPENDENCY`(`_k=kind`)/`LOCKS`/`DEFINES_CONFIG` **verbatim**; project only facts the analyzer produces | These are the cross-language **merge targets** — reused unchanged so a sibling over the same repo converges. go.mod deps → `:Package` `pkg:golang/…`; absent facts → **zero rows** (declared contract, empty projection). `GO_PROVIDES`/`GO_UNRESOLVED_IMPORT` stay `GO_`-prefixed (this analyzer's claims). |
-| **L1** | Declare the **full L3/L4 overlay vocabulary now**; projector emits **zero rows** until the levels land | `GO_HAS_BODY_NODE`, `GO_CFG_NEXT`(`_k=kind`), `GO_CDG`, `GO_DDG`(`_k=var,prov`), `GO_PARAM_IN`, `GO_PARAM_OUT`, `GO_SUMMARY` + body-node statement kinds. `--emit neo4j` = "full-depth = max implemented" (**L3 today**: `GO_CFG_NEXT`, `GO_CDG`, `GO_DDG` and the L3 body nodes are live; only `GO_PARAM_IN`, `GO_PARAM_OUT`, `GO_SUMMARY` remain reserved for L4). The contract is declared once; L3 filled it with **no schema change**, and L4 will too. |
+| **L1** | Declare the **full L3/L4 overlay vocabulary up front**; the projector emitted **zero rows** for a level until it landed | `GO_HAS_BODY_NODE`, `GO_CFG_NEXT`(`_k=kind`), `GO_CDG`, `GO_DDG`(`_k=var,prov`), `GO_PARAM_IN`, `GO_PARAM_OUT`, `GO_SUMMARY` + body-node statement kinds. `--emit neo4j` = "full-depth = max implemented" (**L4**, D4): the L3 overlay (`GO_CFG_NEXT`, `GO_CDG`, `GO_DDG`, L3 body nodes) and the L4 overlay (`GO_PARAM_IN {var}`, `GO_PARAM_OUT {var}`, `GO_SUMMARY`, vertex body nodes with `var`, stand-in vertices, `degraded_json`) are all live; nothing is `Reserved` (`schema.go`). The contract was declared once; L3 and L4 each filled it with **no schema change**. |
 | **K1** | `_k` discriminants: `GO_CFG_NEXT` per `kind`; `GO_DDG` per `(var,prov)`; `DECLARES_DEPENDENCY` per `kind` | Same mechanism as the siblings — parallel edges survive MERGE instead of collapsing. |
 | **V1** | `SCHEMA_VERSION = "2.0.0"`, stamped on `:GoApplication`; additive-MINOR suspended for the 2.0.0 line | Parity with the sibling versioning ruling; consumers gate on the analyzer-version floor. |
 
@@ -109,7 +109,7 @@ Every `can://`-keyed node also carries `:GoCanNode`.
 - **Imports:** `GO_IMPORTS` (aggregated)
 - **Repository (neutral):** `HAS_ARTIFACT`, `DECLARES_DEPENDENCY` (`_k`), `LOCKS`, `DEFINES_CONFIG`; (`GO_`) `GO_PROVIDES`, `GO_UNRESOLVED_IMPORT`
 - **L3 overlay (live):** `GO_CFG_NEXT` (`kind`, `_k=kind`), `GO_CDG`, `GO_DDG` (`var`, `prov`, `_k=var|prov`)
-- **Reserved L4 overlay (zero rows until L4 lands):** `GO_PARAM_IN`, `GO_PARAM_OUT`, `GO_SUMMARY`
+- **L4 overlay (live):** `GO_PARAM_IN` (`var`), `GO_PARAM_OUT` (`var`), `GO_SUMMARY`; port and points-to `ddg` ride `GO_DDG`. One row per JSON `param_in[]` / `param_out[]` / `summary[]` entry; a lazy push upserts every L4 row (D5).
 
 ### CLI surface (parity with TS/Python)
 
@@ -185,8 +185,8 @@ lockstep."** Concretely:
 
 - **Analyzer** ships the `internal/neo4j/` projection as part of the v2 line. `--emit neo4j`
   is independently landable behind the existing flag stubs; it produces a graph at
-  full-depth = L3 today (L3 landed additively, with no contract change) and grows additively
-  again when L4 arrives (no contract change — L1 reserve).
+  full-depth = L4, the max implemented level (L3 and then L4 landed additively, each with no
+  contract change — the L1 reserve).
 - **SDK** (`GoAnalysisBackend`) pins the analyzer version **only after** the analyzer v2
   release is cut — same ordering constraint as the JSON wiring (the SDK's Go models can't
   parse v2 until then, and there is no Go wiring yet, so this is net-new, not a migration).

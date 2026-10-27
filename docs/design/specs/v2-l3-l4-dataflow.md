@@ -104,7 +104,8 @@ As of 2026-10-25 (code at `3504445`, branch `feat/l3-dataflow` = `feat/l4-sdg`):
 - **L2 dispatch** is still `go/types`: an interface-method call's callee is the bodiless interface
   method (`collectInterfaceMethods`); no concrete targets. Insufficient for must-have flow (3); L4
   adds VTA (§4.8).
-- **Not yet built (Phase 2):** `-a 4` is rejected by the CLI; no `LevelSDG` in `internal/options`;
+- **Not yet built (Phase 2)** — *superseded: Phase 2 is now implemented; see the Status header.
+  Kept as the 2026-10-25 snapshot.* `-a 4` is rejected by the CLI; no `LevelSDG` in `internal/options`;
   no `--strict`; `--emit neo4j` forces `LevelDataflow` (L3); `v2.Analysis` has no `degraded` and
   the package doc says L4 fields are not declared; `ExternalSymbol` has no receiver or body;
   `GO_PARAM_IN`/`GO_PARAM_OUT`/`GO_SUMMARY` stay `Reserved`.
@@ -726,7 +727,7 @@ Fill the reserved overlay, no contract renames:
   `body` vertices as `:GoBodyNode` with `GO_HAS_BODY_NODE` from the `:GoExternal`.
 - **`degraded_json`** (amended, A17) — a new `:GoApplication` property carrying the envelope's
   `degraded[]` (§4.15).
-- Flip `Reserved:false`; conformance test must see every declared relationship emitted on the
+- Flip `Reserved:false` (done: nothing in `schema.go` is `Reserved`); conformance test must see every declared relationship emitted on the
   fixture; cross-projection gate: Neo4j counts == JSON counts modulo `HAS_*`.
 - `--emit neo4j` now runs `-a 4` (D4, §4.12).
 - **Lazy Bolt push (amended, A17; D5) [call].** The lazy push diffs per module by `content_hash`,
@@ -798,7 +799,8 @@ summaries and roughly 1.5–2.5× the body nodes (the ports).
 - **Where the `-a 4` peak sits (measured, Task 16/18).** With the levers on, the end-to-end
   peak is no longer in `sdg.Run` but in the emission: the streaming writer still builds one
   module's subtree whole before writing it, and an L4 module of a large file is big
-  (nats-server's `server/server.go` module is 344 MB of JSON). The next lever, if one is needed,
+  (nats-server's `server/server.go` module is 340 MB of JSON, measured in the 2026-10-27 eval,
+  `l3-dataflow-metrics.md` § L4). The next lever, if one is needed,
   is to stream per callable within a module; measured numbers per app are in
   `l3-dataflow-metrics.md` § L4.
 

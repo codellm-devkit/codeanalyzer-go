@@ -16,6 +16,8 @@ while [ $# -gt 0 ]; do
   shift
 done
 [ -n "$out" ] && echo '{"application":{"symbol_table":{},"call_graph":[]}}' >"$out/analysis.json"
+# Record the environment's USER each run sees (eval_l3.sh must not clobber it).
+[ -n "$out" ] && printf '%s\n' "${USER-<unset>}" >>"${USER_LOG:-/dev/null}"
 # NONDET_LEVEL: a run at that level appends a per-run nonce (a nondeterministic analyzer).
 [ "$level" = "${NONDET_LEVEL:-}" ] && echo "$$-$RANDOM" >>"$out/analysis.json"
 # At -a 4 with -v, print the L4 log lines eval_l3.sh parses.
@@ -50,4 +52,13 @@ check 1 "FAIL(a4 -j differs)" CANGO_LEVELS="2 3 4" NONDET_LEVEL=4
 check 1 "FAIL(-j differs)" CANGO_LEVELS="2 3" NONDET_LEVEL=3
 check 1 "FAIL(rc a4=3)" CANGO_LEVELS="2 3 4" FAIL_LEVEL=4
 check 1 "FAIL(rc a2=0 j1=3" CANGO_LEVELS="2 3" FAIL_LEVEL=3
+# $USER reaches every analyzer run unchanged (a script variable named USER would shadow it).
+: >"$T/users"
+env CANGO="$T/cango" EVAL_OUT="$T/out" EVAL_NOTE="$T/note.md" EVAL_JOBS=2 CANGO_LEVELS="2 3 4" \
+  USER=evaluser USER_LOG="$T/users" "$S" "$T/app" >/dev/null 2>&1
+if [ "$(sort -u "$T/users")" = evaluser ] && [ "$(wc -l <"$T/users" | tr -d ' ')" -ge 8 ]; then
+  echo "ok:   USER unchanged across all runs"
+else
+  echo "FAIL: USER seen by the runs: $(sort -u "$T/users" | paste -sd, -)"; fail=1
+fi
 exit $fail

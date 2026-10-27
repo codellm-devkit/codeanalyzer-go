@@ -28,7 +28,9 @@ JSON hot path) that is the declarative contract:
   `GO_HAS_METHOD`/`GO_HAS_FIELD`/`GO_HAS_BODY_NODE`), `GO_CALLS`/`GO_RESOLVES_TO`,
   `GO_EMBEDS`/`GO_SATISFIES`, `GO_IMPORTS`, the neutral repo edges, and `GO_PROVIDES`/
   `GO_UNRESOLVED_IMPORT`.
-- [ ] The **reserved L3/L4 overlay** vocabulary declared now (zero rows until the levels land):
+- [ ] The **reserved L3/L4 overlay** vocabulary declared now (zero rows until the levels land;
+  *status 2026-10-27: both overlays are now live, `--emit neo4j` projects L4 and nothing is
+  `Reserved`*):
   `GO_HAS_BODY_NODE`/`GO_CFG_NEXT`(`_k=kind`)/`GO_CDG`/`GO_DDG`(`_k=var,prov`)/`GO_PARAM_IN`/
   `GO_PARAM_OUT`/`GO_SUMMARY` + body-node statement kinds.
 - [ ] `_k` relationship discriminants on `GO_CFG_NEXT`, `GO_DDG`, `DECLARES_DEPENDENCY`.

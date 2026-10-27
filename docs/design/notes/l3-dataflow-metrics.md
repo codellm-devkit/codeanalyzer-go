@@ -809,8 +809,9 @@ dispatch targets to `call_graph` (`prov:["vta"]`), library callees get stand-in 
 - **When and where:** measured 2026-10-27 on the same host, an Apple M3 Max (16 cores, 64 GB,
   macOS 15). The analyzer was built by `scripts/eval_l3.sh` with **go1.27.3** (`runtime.Version()`),
   and every run used `GOTOOLCHAIN=go1.27.3`. Every number in this section is go1.27.3 unless it
-  says otherwise. Absolute RSS differs by about 1 GB between go1.26.4 and go1.27.3 on nats-server
-  (Task 15b), so do not compare figures across toolchains.
+  says otherwise: figures quoted from earlier task reports carry their toolchain in parentheses.
+  Absolute RSS differs by about 1 GB between go1.26.4 and go1.27.3 on nats-server (Task 15b), so
+  do not compare figures across toolchains.
 - **Binary:** `feat/l4-sdg` at `c230592`. The `+dirty` marker covers uncommitted docs only; the
   analyzer code is that commit's. It includes the Task 17 alias rounds (`04244db`, `18fca40`),
   the capture fixes (`078616f`, `cd37383`) and the Task 18a fix-ups.
@@ -938,23 +939,25 @@ Notes:
 
 ### What changed since the earlier measurements
 
-The task reports measured nats-server at several points on the branch; those runs were go1.26.4,
-`-j 8`. On the eval binary, go1.27.3 `-j 1`:
-- **summary** is 2,576,921, against 2,547,371 after the Task 17 alias round (`04244db`) (+1.2%);
-- **points-to** is 295,776, against 290,499 then and 292,707 after round 2 (`18fca40`);
-- **param_out** is 431,317, against 431k at Task 14.
+The task reports measured nats-server at several points on the branch, at `-j 8`, on the
+toolchain given with each figure. On the eval binary, go1.27.3 `-j 1`:
+- **summary** is 2,576,921, against 2,547,371 after the Task 17 alias round (`04244db`;
+  go1.26.4) (+1.2%);
+- **points-to** is 295,776, against 290,499 then and 292,707 after round 2 (`18fca40`; both
+  go1.26.4);
+- **param_out** is 431,317, against 431k at Task 14 (go1.27.3).
 
 The growth since `18fca40` comes from:
 - the reference-holding capture `formal_out` (`078616f`, MR5);
 - the L3 host weak-def of every reference-holding capture (`cd37383`).
 
 Both add edges only. The L3 `ddg` on nats-server went from 345,318 (§ Per-app counts) to 358,979
-(+4.0%). That includes `cd37383`'s capture weak defs (chi +0.26%) and the D1 L3 fixes since the
+(+4.0%). That includes `cd37383`'s capture weak defs (chi +0.26%, go1.26.4) and the D1 L3 fixes since the
 L3 sections were measured. Wall time and RSS in those reports were measured for one stage, not
 end to end, on another toolchain. Compare the numbers here only with each other.
 
 **`unmapped_ssa`, re-measured.** The Kubernetes root has 3,720 unmapped functions and 39,700
-unmapped calls, against 3,754 / 39,728 at Task 9. Classified from `-vv`:
+unmapped calls, against 3,754 / 39,728 at Task 9 (go1.27.3). Classified from `-vv`:
 - 3,717 are closures in package-level `var` initializers (`init$N`; Ginkgo
   `var _ = Describe(…, func(){…})`; 3,555 of them under `test/`);
 - 3 are a second `func init()` in one file (`init#N`).
@@ -985,7 +988,8 @@ identical except for `l4GCPercent = 100` (not committed). Both builds are go1.27
 - **Memory.** It saves 9–12% of peak RSS on nats-server (about 450 MB) and 7–9% on Kubernetes
   (about 650 MB).
 - The other levers (per-SCC cache release, interned port names) have no CPU cost to report.
-  Task 15b measured them: nats-server's live heap after fill went from 1.81 to 1.45 GB.
+  Task 15b measured them: nats-server's live heap after fill went from 1.81 to 1.45 GB
+  (go1.26.4).
 
 **Where the end-to-end peak sits.** With the levers on, the `-a 4` peak is no longer in `sdg.Run`.
 It is in the emission, which streams the envelope but builds each module's subtree whole before
@@ -1028,7 +1032,8 @@ into `sqlRepo.Find`, and a handler that never queries does not reach it.
 **Metamorphic relations.** `scripts/metamorphic.sh` (memos, the default) passes on this HEAD with
 0 violations in all 14 relations. It covered 20–32 sites for MR1–MR6, MR14 and MR15, and 33M
 reachability pairs for MR5 and MR6. The run took about 2 min. The last `--all` run (memos and
-nats-server, 0 violations, 23 min, 16.2 GB) is from Task 17b on `e160b17` and `4a6c885`.
+nats-server, 0 violations, 23 min, 16.2 GB; go1.27.3, the script's `EVAL_GO`) is from Task 17b
+on `e160b17` and `4a6c885`.
 
 ### Insights
 
@@ -1041,12 +1046,12 @@ nats-server, 0 violations, 23 min, 16.2 GB) is from Task 17b on `e160b17` and `4
 - **Globals are most of L4 on server-shaped code.** nats-server's `Server` methods form one large
   recursive SCC. Every package variable any member reads or writes becomes a formal of every
   member (A4, transitive), so 91% of its vertices are `<global>:` vertices. The cut of global →
-  global summaries (#30) already removed 98M summary edges there (spec §4.9). The vertices and
+  global summaries (#30) already removed 98M summary edges there (Task 15, go1.27.3; spec §4.9). The vertices and
   their port edges remain, and they are what sources and sinks can name.
 - **VTA is cheap.** Under 2.3 s on Kubernetes, with a function set of 94,601, of which 41,107 are
   target-only library functions. The SSA build is about 1 s. The dominant L4 compute cost is the
   overlay: flow graphs, summaries and port wiring, where `graphOf`/`bodyFlows` and GC dominate
-  (Task 18a profile). The dominant wall-time cost on the large files is emission.
+  (Task 18a profile, go1.26.4). The dominant wall-time cost on the large files is emission.
 - **k8s-api is the counter-example.** Generated marshallers have few interface calls (0.4% VTA),
   few globals (7% of vertices) and leaf-heavy call graphs. L4 adds only 1.9× bytes there, the
   smallest growth in the corpus, because its L3 `ddg` already dominates the file.
@@ -1078,7 +1083,7 @@ over-approximation or reported as degraded.
   shortcut hop, and a precondition for a future HRB two-phase walk (spec §11).
 - **#30: the global → global summary cut, and the depth-bounded slice caveat.**
   - Summary edges with both ends `<global>:` are omitted [user, 2026-10-26]. Measured: 97.7% of
-    101M summary edges on nats-server.
+    101M summary edges on nats-server (Task 14, go1.27.3).
   - Reachability is unchanged. But python-sdk's slices and taint walks are depth-bounded
     (`DEFAULT_DEPTH = 5` for slices). A dropped shortcut makes the remaining route longer (into
     the callee's body and back), so a depth-bounded slice may stop short of a node it would
@@ -1087,7 +1092,7 @@ over-approximation or reported as degraded.
 - **Option A alias volume.**
   - The one-level offset also applies to reference-compatible field types (`m := s.cache;
     p := r.ptr`), not only to `&x.f` (Task 17 ruling). That is most of the `points-to` volume:
-    217k of 290k on nats-server at Task 17.
+    217k of 290k on nats-server at Task 17 (go1.26.4).
   - `MayHoldRef` also admits value structs that hold a reference, so `s1.n` → `s2.n` between two
     distinct value copies is a spurious edge.
   - Both are sound over-approximations: 7–20% of port `ddg` here.
@@ -1102,7 +1107,7 @@ over-approximation or reported as degraded.
   - At L3, a closure's host weak-defines every reference-holding captured base, read-only
     captures included. That is broader than needed: a read-only capture could weak-define
     `x.*` without downgrading the base.
-  - Sound. It costs about 0.26% L3 `ddg` on chi.
+  - Sound. It costs about 0.26% L3 `ddg` on chi (go1.26.4).
 - **The stored literal reached through an unresolved function value (Task 13).**
   - A global written only inside a literal that is stored and later called through a function
     value nothing resolves has no `param_out` from that write. Inside the encloser, the global's

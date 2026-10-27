@@ -654,8 +654,11 @@ check the following.
   VTA `call_graph` edges, external `receiver` / `body`, `degraded`). Code that assumes every body
   node has a `span`, or that every `ddg` edge has `prov: ["ssa"]`, must handle the L4 kinds.
   `-a 4 -t` is an error (whole-program; D9). `--library-models` is new and valid only at L4.
-  `-a 4` takes several times the memory and output of `-a 3` (measured per app in
-  `docs/design/notes/l3-dataflow-metrics.md` § L4).
+  **Measured cost** (2026-10-27, analyzer built with go1.27.3, eight real apps). On 7 of 8
+  apps, the peak RSS of `-a 4` is 1.05–1.4× that of `-a 3`; Kubernetes is 1.05×, at 7.7 GB.
+  nats-server is the outlier at 3.6×, because its globals fan out through one recursive 822-callable
+  SCC. The JSON output is 1.9–23× that of `-a 3`. Per-app figures are in
+  `docs/design/notes/l3-dataflow-metrics.md` § L4.
 - **Neo4j:**
   - `--emit neo4j` projects **L4** (D4), adding `GO_CFG_NEXT`, `GO_CDG` and `GO_DDG`, and the SDG
     rows `GO_PARAM_IN`, `GO_PARAM_OUT`, `GO_SUMMARY`, vertex `:GoBodyNode`s with `var`, and

@@ -192,9 +192,10 @@ and read-only Neo4j backends.
 - **`taint_flows` / slicing / reachability / source-sink** — the analyzer is a pure graph
   **provider**; labeled traversal is the SDK's job as Cypher queries, a later train. No
   analyzer surface for it.
-- **L3/L4 overlay population** — the vocabulary is declared (decision L1) but emits zero rows
-  until the deferred L3/L4 analysis train lands. When it does, `project.go` fills the reserved
-  sections with **no `schema.go` change**.
+- ~~**L3/L4 overlay population**~~ — done: the L3 train and then the L4 train (`feat/l4-sdg`)
+  filled the declared overlay in `project.go` with no contract change; `--emit neo4j` projects
+  at L4 and nothing in `schema.go` is `Reserved`. (The milestone text above — "zero rows at
+  L2" — describes the M1–M3 scope as built then.)
 - **Go-specific `cfg` edge kinds** (`defer_resume`, `select`) — recorded when L3 is designed.
 - **Struct-tag modeling** — Go has struct tags; v2 doesn't model them yet. Not forced in here.
 - **TS-SDK `GoAnalysis` encoding** — the facade vocabulary is designed once (M7 Python

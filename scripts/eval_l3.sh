@@ -337,7 +337,7 @@ JQ_COUNTS='
     ([$a.call_graph[]|select(.dst|contains("/@external/")|not)]|length),
     ([$a.call_graph[]|select(.dst|contains("/@external/"))]|length) ] | @tsv'
 
-# run_one NAME TAG LEVEL JOBS [FLAG...] -> sets RC WALL RSS; output in $EVAL_OUT/NAME-TAG/analysis.json
+# run_one NAME TAG LEVEL JOBS [FLAG...] -> sets RC WALL UCPU (user CPU) RSS BYTES; output in $EVAL_OUT/NAME-TAG/analysis.json
 run_one() {
   local name=$1 tag=$2 level=$3 jobs=$4
   shift 4
@@ -360,11 +360,11 @@ run_one() {
   RC=$?
   if [ -e "$dir.timeout" ]; then RC=124; fi
   WALL=$(awk '/ real /{print $1}' "$dir.time")
-  USER=$(awk '/ real /{print $3}' "$dir.time")
+  UCPU=$(awk '/ real /{print $3}' "$dir.time")
   RSS=$(awk '/maximum resident set size/{printf "%d", $1/1048576}' "$dir.time")
   BYTES=$(wc -c <"$dir/analysis.json" 2>/dev/null | tr -d ' ')
   [ -n "$WALL" ] || WALL=n/a
-  [ -n "$USER" ] || USER=n/a
+  [ -n "$UCPU" ] || UCPU=n/a
   [ -n "$RSS" ] || RSS=n/a
   [ -n "$BYTES" ] || BYTES=n/a
 }
@@ -442,7 +442,7 @@ for T in $TARGETS; do
   if [ "$RUN_L4" -eq 1 ]; then
     W4=n/a; WN4=n/a; U4=n/a; R4=n/a; B4=n/a; RATIO=n/a; RC4=0; RCN4=0; RCN42=0; ident4=n/a
     if [ "$RC3" -ne 124 ] && [ "$RC2" -ne 124 ]; then
-      run_one "$name" a4j1 4 1 -v; W4=$WALL; U4=$USER; R4=$RSS; B4=$BYTES; RC4=$RC
+      run_one "$name" a4j1 4 1 -v; W4=$WALL; U4=$UCPU; R4=$RSS; B4=$BYTES; RC4=$RC
       if [ "$RC4" -ne 124 ]; then run_one "$name" a4jN 4 "$JOBS"; WN4=$WALL; RCN4=$RC; fi
       if [ "$RC4" -ne 124 ] && [ "$RCN4" -ne 124 ]; then run_one "$name" a4jN2 4 "$JOBS"; RCN42=$RC; fi
       # One status for the triple: the first non-zero rc (124 = timeout).
