@@ -40,7 +40,8 @@
 #   3. cango -a 3 -j N     (N = CPU count)
 #   4. cango -a 3 -j N     (second run)
 #   5. cango -a 4 -j 1 -v  (only when CANGO_LEVELS includes 4)
-# and compares the three -a 3 analysis.json files byte for byte. It records wall time, peak
+# and compares the three -a 3 analysis.json files byte for byte. A run that exits non-zero or
+# times out (the -a 4 run included) fails the app, and the script then exits 1. It records wall time, peak
 # RSS (macOS /usr/bin/time -l), module/callable/body-node/edge counts, external_symbols, the
 # call_graph split, the prepare-time type-check status, the number of type-error warnings
 # ("package ..." stderr lines), the analyzer's too-old-toolchain warning, and the number of
@@ -436,6 +437,12 @@ for T in $TARGETS; do
     else
       ident=NO; status="FAIL(-j differs)"; FAILS="$FAILS $name"
     fi
+  fi
+  # A failed or timed-out -a 4 run fails the app too (the -a 3 checks above stand).
+  if [ "$RUN_L4" -eq 1 ] && [ "$RC4" -ne 0 ]; then
+    if [ "$RC4" -eq 124 ]; then s4="TIMEOUT(a4 >${RUN_TIMEOUT}s)"; else s4="FAIL(rc a4=$RC4)"; fi
+    if [ "$status" = ok ]; then status=$s4; else status="$status $s4"; fi
+    case " $FAILS " in *" $name "*) ;; *) FAILS="$FAILS $name" ;; esac
   fi
 
   skips=$(grep -c 'L3 skipped' "$EVAL_OUT/$name-a3j1.err" 2>/dev/null || true)
