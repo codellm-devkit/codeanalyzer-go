@@ -66,11 +66,17 @@ func (o *l4Overlay) apply(c *v2.Callable, key dataflow.L3Key) {
 	if o == nil {
 		return
 	}
+	// Two callables sharing a target key route its param edges and degraded
+	// entries to the lexically smaller id: emission order walks maps, so
+	// last-write-wins would not be deterministic.
 	t := sdg.Target{Callable: key}
-	if prev, dup := o.ids[t]; dup && prev != c.ID {
+	prev, dup := o.ids[t]
+	if dup && prev != c.ID {
 		warnf("L4 emit: %s and %s share the target key %s %s", prev, c.ID, key.Path, key.Signature)
 	}
-	o.ids[t] = c.ID
+	if !dup || c.ID < prev {
+		o.ids[t] = c.ID
+	}
 	r, ok := o.res.Callables[key]
 	if !ok {
 		return

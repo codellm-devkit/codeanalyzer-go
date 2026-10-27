@@ -5,7 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codellm-devkit/codeanalyzer-go/internal/dataflow"
 	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
+	"github.com/codellm-devkit/codeanalyzer-go/internal/sdg"
 )
 
 // TestCompareOrdinal_MatchesMintedIds: compareOrdinal orders (owner, key)
@@ -26,6 +28,27 @@ func TestCompareOrdinal_MatchesMintedIds(t *testing.T) {
 		want := strings.Compare(v2.GlobalOrdinal(o1, k1), v2.GlobalOrdinal(o2, k2))
 		if got := compareOrdinal(o1, k1, o2, k2); got != want {
 			t.Fatalf("compareOrdinal(%q, %q, %q, %q) = %d, want %d", o1, k1, o2, k2, got, want)
+		}
+	}
+}
+
+// TestL4Overlay_DuplicateKeyKeepsSmallerID: two callables sharing a target
+// key (declaring file and signature) route its param edges and degraded
+// entries to the lexically smaller id, whichever is applied first —
+// emission walks maps, so last-write-wins would be nondeterministic.
+func TestL4Overlay_DuplicateKeyKeepsSmallerID(t *testing.T) {
+	key := dataflow.L3Key{Path: "a.go", Signature: "example.com/a.F"}
+	small, big := "can://app/go/a.go/example.com/a.F", "can://app/go/b.go/example.com/a.F"
+	prev := warnf
+	warnf = func(string, ...any) {}
+	defer func() { warnf = prev }()
+	for _, order := range [][]string{{small, big}, {big, small}} {
+		o := newL4Overlay(4, &sdg.Result{}, sigIndex{})
+		for _, id := range order {
+			o.apply(&v2.Callable{ID: id, Body: map[string]v2.BodyNode{}}, key)
+		}
+		if got := o.ids[sdg.Target{Callable: key}]; got != small {
+			t.Errorf("apply order %v: target routes to %s, want %s", order, got, small)
 		}
 	}
 }
