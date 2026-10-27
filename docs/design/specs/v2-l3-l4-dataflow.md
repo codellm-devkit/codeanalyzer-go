@@ -89,7 +89,7 @@ siblings is required too; and the id grammar has to change for polyglot apps any
 As of 2026-10-25 (code at `3504445`, branch `feat/l3-dataflow` = `feat/l4-sdg`):
 
 - **Phases 0 and 1 are implemented together on PR #16** (§9; open, not yet merged). L1/L2/L3 on
-  v2, Neo4j projection live through L3.
+  v2, Neo4j projection live through L3 (as of this snapshot; L4 is now live too, Status header).
 - **Phase 0 (live):** `can://<app>/go/…` ids (§4.1, `internal/schema/v2/ids.go`); L2 library calls
   with `application.external_symbols` (§4.14); co-positioned call keys `l:c/n`; `is_deferred`;
   `typeKind` emits `alias`/`defined`; `GO_DDG` `_k = var|prov`; the per-package call-site index
@@ -624,6 +624,16 @@ Context-insensitive. Per callable compute:
   predicate, §4.6), propagated up the SCC DAG and injected at hosts as uses / weak defs (A4).
 - No hammock regions (neither sibling built them; recorded as a known simplification).
 - Stand-ins (§6) contribute their modelled summary (default all-inputs → all-outputs).
+- **Summaries are not sanitizers [user, 2026-10-27].** L4 is reaching-definitions data flow, not
+  taint. A modelled summary (`--library-models`), like an SDK callable sanitizer, changes the
+  call site's `summary` edges and the callee's flows, **not statement-level reachability**: the
+  value a call site assigns (`n, err := strconv.Atoi(id)`) keeps its reaching-definition edge
+  from `id` through the host statement (the L3 call rule, A15), and that edge is correct. A
+  variable cut (`("n", within=…)`) is bypassed too, by implicit flow (`err` → `if err != nil` →
+  the next statements, cdg), by results returned to the caller, and by the coarse host wiring
+  (the caller's host feeds every `actual_in`, receiver included). Deciding that a call
+  sanitizes is the SDK taint analysis's job: codellm-devkit/.github#103. The done fixture pins
+  all of this (`TestGateL4_HTTPToSQLSanitizerIsSDKSemantics`).
 - **Global → global summary edges are not emitted [user, 2026-10-26].** A `summary` edge whose
   `actual_in` and `actual_out` both have a `<global>:` `of` is omitted; every edge with at least
   one non-global end is kept, and the flows (and so the global formals, actuals and param edges)
@@ -959,7 +969,10 @@ addition now; the cross-language SDK taint revisit is deferred (§11).
   **Format (amended, Task 15):** a JSON object; key = `<import-path>/<sig>`, the external id's
   tail (`strconv/Atoi`, `database/sql/DB.Query`); value = a list of `[in, out]` pairs of `of`
   strings (`"s"`, `"_0"`, `"_recv"`, `"<return>"`, `"<return>:1"`, a by-ref param's name).
-  `[]` = no flow; a missing key = the all-to-all default. Valid only at `-a 4` and with
+  `[]` = no summary edges at that external's call sites (not "no flow": the call site's
+  assigned values keep their statement-level reaching-definition edges, and cutting those is
+  SDK taint semantics, §4.9, codellm-devkit/.github#103); a missing key = the all-to-all
+  default. Valid only at `-a 4` and with
   `--emit neo4j` (`-a 1..3`: error `--library-models applies only at analysis level 4`); a
   missing, unreadable or malformed file is an error naming the path. An entry naming an `of`
   the external lacks is a warning and is ignored for that external, which keeps the all-to-all
@@ -1045,7 +1058,8 @@ with ≥2 implementations; func-value call; `a→b→c` chain; mutual recursion;
 function read in another; multi-file flow; cross-file method; multi-result returns; variadic;
 library pass-through and library sink (`database/sql`, `os/exec`, `fmt`); generics (existing
 `testdata/generics`: instantiation → `Origin()` mapping, generic interface dispatch); an HTTP-handler →
-SQL-sink end-to-end taint fixture with a sanitizer variant (the "done" fixture).
+SQL-sink end-to-end taint fixture with a sanitizer variant (the "done" fixture; the sanitizer
+variant pins what L4 gives a sanitizer, and its semantics are the SDK's, codellm-devkit/.github#103).
 
 **Added by the 2026-10-25 re-check (A23):** a Go 1.23+ module (range-over-func — pins the D8 gap —
 and range over int; `testdata/dataflow` declares `go 1.21`, #28); a method value (A8); a directly
@@ -1083,14 +1097,18 @@ the delta relations. The fixtures (`testdata/dataflow` flow and sdg, chi) run in
 the eval apps run behind the `metamorphic` build tag (`scripts/metamorphic.sh`).
 
 **SDK gates:** slice gate (exact set on a `can://…@line:col` criterion); taint gate (known
-source→sink found; sanitizer variant reported cut, not dropped; contiguous witness); a pair with no
+source→sink found; sanitizer variant — pending codellm-devkit/.github#103, see "Done"; contiguous witness); a pair with no
 flow lands in `exhausted`; context-sensitivity only as far as summaries support; JSON and Neo4j
 backends agree; e2e level matrix.
 
-**"Done"** (user-confirmed intent, designer-worded): through `CLDK.go(...)`, on the HTTP→SQL
-fixture, `taint()` finds the flow from a handler's request parameter to `database/sql.DB.Query`'s
-`query` through an interface call; a callable sanitizer cuts it; an unrelated pair is `exhausted`;
-identical answers from the JSON and Neo4j backends.
+**"Done"** (user-confirmed intent, designer-worded; amended [user, 2026-10-27]): through
+`CLDK.go(...)`, on the HTTP→SQL fixture, `taint()` finds the flow from a handler's request
+parameter to `database/sql.DB.Query`'s `query` through an interface call; an unrelated pair is
+`exhausted`; identical answers from the JSON and Neo4j backends. Sanitizer handling (callable or
+variable cuts) is SDK taint semantics, tracked in codellm-devkit/.github#103: L4's output is
+correct reaching-definitions data flow, and neither a library model nor a variable cut on the
+sanitized value severs the sanitized path (§4.9). The analyzer side is gated by
+`TestGateL4_HTTPToSQLPath` and `TestGateL4_HTTPToSQLSanitizerIsSDKSemantics`.
 
 **Real-world evaluation** (non-gating metrics + crash/determinism/time gates; amended, A23): the six
 apps — cobra (small), dae, openbao, listmonk and memos (HTTP → SQL; memos through the
@@ -1153,6 +1171,8 @@ dispatch + type-based may-alias).
   strings, not type ids, and `interfaces[]` is never computed (codeanalyzer-go#31; pre-existing,
   not an L4 change).
 - Library callback modelling (`sort.Slice`, `http.HandleFunc`).
+- Sanitizer semantics in the SDK taint analysis (callable and variable cuts that account for the
+  host statement, implicit flow and coarse host wiring): codellm-devkit/.github#103.
 - Promote `callable.source_file` to the keystone (existing deferral).
 - Struct-tag modelling (existing deferral).
 - **Incremental L4 / incremental Neo4j analysis — CLDK roadmap** (D9): re-analysis after a PR merges

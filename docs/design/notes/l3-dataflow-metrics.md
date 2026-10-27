@@ -1027,7 +1027,9 @@ The Go-side gates do the arity and kind checks per edge on the fixtures
 `TestGateL4_VertexIdsAreGlobalOrdinals`). The HTTP → SQL "done" fixture
 (`testdata/dataflow/httpsql`, `TestGateL4_HTTPToSQLPath`) does a BFS over the emitted JSON graph.
 The handler's `r` reaches `database/sql.DB.Query`'s `query` formal through a VTA-bound `param_in`
-into `sqlRepo.Find`, and a handler that never queries does not reach it.
+into `sqlRepo.Find`. A handler that never queries does not reach it, and neither does a separate
+entry, `Audit`, reach `Find`'s `id`. `TestGateL4_HTTPToSQLSanitizerIsSDKSemantics` pins the
+sanitizer variant (§ Limitations).
 
 **Metamorphic relations.** `scripts/metamorphic.sh` (memos, the default) passes on this HEAD with
 0 violations in all 14 relations. It covered 20–32 sites for MR1–MR6, MR14 and MR15, and 33M
@@ -1075,6 +1077,22 @@ over-approximation or reported as degraded.
   the Kubernetes root. The SDK then refuses to certify "no flow" over that graph (spec §4.15).
   That is safe, but it means `exhausted` is never returned on most real apps until D8 is
   modelled.
+- **Library models and sanitizers change summaries, not statement-level reachability**
+  [user, 2026-10-27].
+  - L4 is reaching-definitions data flow. In `n, err := strconv.Atoi(id)` the host statement
+    links `id` to `n` and `err` (the L3 call rule), and that is correct.
+  - `--library-models` `strconv/Atoi: []` removes only the Atoi call site's `summary` edges, so
+    the done fixture's sanitized path still reaches `DB.Query`.
+  - An SDK callable sanitizer cuts only nodes under the sanitizer's id, never the caller's host.
+  - A variable cut on `n` within `SanitizedFind` is bypassed three ways, each correct
+    dependence:
+    1. `err` → `if err != nil` → the Query statement (cdg, implicit flow);
+    2. `return nil, err` → the caller → the receiver `actual_in`;
+    3. the caller's host feeding `id` into the receiver `actual_in` (coarse host wiring).
+  - Sanitizer semantics are the SDK taint analysis's job: [codellm-devkit/.github#103](https://github.com/codellm-devkit/.github/issues/103).
+    `TestGateL4_HTTPToSQLSanitizerIsSDKSemantics` pins each fact.
+  - The same statement-level call rule exists in codeanalyzer-python
+    (`access_paths.py:500-501`, `:350-356`), so this is cross-language.
 - **Library callbacks are not edges.** In `sort.Slice(xs, less)` and `http.HandleFunc(path, h)`,
   the function value flows into the stand-in, but the library calling it back is not modelled.
   Taint that *starts* in a handler (its own parameters) is unaffected.

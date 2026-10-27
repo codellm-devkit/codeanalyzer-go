@@ -116,7 +116,9 @@ Reuses Group A ids/spans and the L3 vocabulary unchanged; every L4 fact is an ad
   interface call binds the interface method (pass-through summary) *and* every VTA target.
 - **Stand-ins:** `external_symbols[].receiver {name, type}` and `.body` (formal vertices only,
   ids `<external-id>@formal_in:<i>`); summary all-to-all unless `--library-models` overrides it
-  (keys `<import-path>/<sig>`, values `[in, out]` `of` pairs).
+  (keys `<import-path>/<sig>`, values `[in, out]` `of` pairs). A model changes summaries, not
+  statement-level reachability; sanitizer semantics are the SDK's [user, 2026-10-27;
+  codellm-devkit/.github#103].
 - **`degraded[]`** envelope leaf `{code, detail?, packages[]?, callables[]?}`, absent when
   nothing degraded; codes `no_ssa | no_vta | partial_ssa | partial_types | unmapped_ssa |
   l3_skipped | range_func` (open vocabulary). `--strict` exits non-zero on any.
