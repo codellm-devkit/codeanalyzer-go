@@ -25,8 +25,13 @@ import (
 type SymbolTableBuilder struct {
 	projectDir string
 	fset       *token.FileSet
-	// pkgs is the flat list of loaded packages, keyed by package path.
+	// pkgs is the flat list of loaded packages, keyed by package path. With
+	// tests loaded, a package's test variant "p [p.test]" replaces the plain
+	// p here (L1–L3 read the variant, which holds every file of p).
 	pkgs map[string]*packages.Package
+	// loaded is every loaded package with types, in load order: test
+	// variants and the plain packages they shadow in pkgs alike.
+	loaded []*packages.Package
 }
 
 // NewSymbolTableBuilder creates a builder for projectDir.
@@ -97,6 +102,7 @@ func (b *SymbolTableBuilder) Build(targetFiles []string, skipTests bool) (map[st
 		}
 		if pkg.Types != nil {
 			b.pkgs[pkg.PkgPath] = pkg
+			b.loaded = append(b.loaded, pkg)
 		}
 	}
 	tooNew.warn()

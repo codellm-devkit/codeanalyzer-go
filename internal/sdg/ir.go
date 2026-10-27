@@ -87,6 +87,7 @@ type Result struct {
 type Input struct {
 	Fset        *token.FileSet
 	Pkgs        map[string]*packages.Package
+	Variants    []*packages.Package // every loaded package, test variants included (SymbolTableBuilder.Loaded); nil = Pkgs' values
 	ProjectDir  string
 	SymbolTable map[string]schema.GoFile
 	Externals   map[string]schema.GoExternalCallee

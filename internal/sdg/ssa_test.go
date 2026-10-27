@@ -44,7 +44,7 @@ func loadInputOpts(t *testing.T, name string, skipTests bool) Input {
 	edges := cg.Build(st)
 	units := b.L3Units(st)
 	return Input{
-		Fset: b.Fset(), Pkgs: b.Pkgs(), ProjectDir: dir, SymbolTable: st,
+		Fset: b.Fset(), Pkgs: b.Pkgs(), Variants: b.Loaded(), ProjectDir: dir, SymbolTable: st,
 		Externals: cg.Externals(), CallGraph: edges,
 		Units: units, L3: dataflow.RunWithSideTables(b.Fset(), units, 3, 1), K: 3, Jobs: 1,
 	}
@@ -54,7 +54,7 @@ func loadInputOpts(t *testing.T, name string, skipTests bool) Input {
 // skipped), sorted.
 var dataflowPkgs = []string{
 	"example.com/dataflow/asm", "example.com/dataflow/flow", "example.com/dataflow/generic", "example.com/dataflow/httpsql", "example.com/dataflow/initclosure", "example.com/dataflow/inits",
-	"example.com/dataflow/l1", "example.com/dataflow/linedir", "example.com/dataflow/sdg", "example.com/dataflow/vend",
+	"example.com/dataflow/l1", "example.com/dataflow/linedir", "example.com/dataflow/sdg", "example.com/dataflow/variant/p", "example.com/dataflow/variant/u", "example.com/dataflow/vend",
 	"example.com/dataflow/wrap", "example.com/dataflow/xfile", "example.com/dataflow/xtest", "example.com/dataflow/xtest/user",
 }
 

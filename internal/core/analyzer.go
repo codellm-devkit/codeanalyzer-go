@@ -147,6 +147,7 @@ func (a *Analyzer) Analyze() (*schema.GoApplication, error) {
 		res := sdg.Run(sdg.Input{
 			Fset:        builder.Fset(),
 			Pkgs:        builder.Pkgs(),
+			Variants:    builder.Loaded(),
 			ProjectDir:  a.opts.InputPath,
 			SymbolTable: symbolTable,
 			Externals:   app.Externals,

@@ -64,7 +64,7 @@ func Analyze(dir string, level int, targets []string) (*Run, error) {
 	if level >= 4 {
 		res = dataflow.RunWithSideTables(b.Fset(), units, k, jobs)
 		r := sdg.Run(sdg.Input{
-			Fset: b.Fset(), Pkgs: b.Pkgs(), ProjectDir: dir, SymbolTable: st,
+			Fset: b.Fset(), Pkgs: b.Pkgs(), Variants: b.Loaded(), ProjectDir: dir, SymbolTable: st,
 			Externals: app.Externals, CallGraph: app.CallGraph,
 			Units: units, L3: res, K: k, Jobs: jobs,
 		})

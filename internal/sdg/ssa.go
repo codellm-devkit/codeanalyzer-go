@@ -3,6 +3,7 @@ package sdg
 import (
 	"fmt"
 	"go/types"
+	"slices"
 	"sort"
 	"strings"
 
@@ -32,7 +33,8 @@ func installCallHook(prog *ssa.Program) {
 	}
 }
 
-// buildSSA builds go/ssa over the project packages of in.Pkgs (spec §4.8, D2).
+// buildSSA builds go/ssa over the project packages (projectPackages: every
+// loaded variant) (spec §4.8, D2).
 //
 // ssautil.Packages gets only the project packages, so SSA bodies exist for
 // them alone; every dependency (stdlib, modules, vendored code) is created
@@ -100,6 +102,7 @@ func buildSSA(in Input) (*ssa.Program, []*ssa.Package, []Degraded) {
 	var deg []Degraded
 	if len(failed) > 0 {
 		sort.Strings(failed)
+		failed = slices.Compact(failed) // two variants of one path
 		deg = append(deg, Degraded{
 			Code:     CodePartialSSA,
 			Detail:   fmt.Sprintf("%d package(s) have no SSA (type errors or a recovered build panic)", len(failed)),
@@ -126,17 +129,34 @@ func buildPackage(p *ssa.Package) (err error) {
 	return nil
 }
 
-// projectPackages returns the packages of in.Pkgs that hold project code (a
-// Go file under ProjectDir, not vendored), sorted by path. Generated test
-// mains live in the build cache and so are never project packages.
+// projectPackages returns the loaded packages that hold project code (a Go
+// file under ProjectDir, not vendored), sorted by (path, ID): every variant
+// of in.Variants, else in.Pkgs. With tests loaded, a package path has two
+// variants — the test variant "p [p.test]" (in.Pkgs keeps only it) and the
+// plain p every other package imports — and both are project packages: SSA
+// needs the plain p's bodies for VTA to see the types that flow through it
+// (F2). The variants share their files' syntax, so both join the same
+// units. Generated test mains live in the build cache and so are never
+// project packages.
 func projectPackages(in Input) []*packages.Package {
+	all := in.Variants
+	if all == nil {
+		for _, p := range in.Pkgs {
+			all = append(all, p)
+		}
+	}
 	var out []*packages.Package
-	for _, p := range in.Pkgs {
+	for _, p := range all {
 		if isProject(in.ProjectDir, p) {
 			out = append(out, p)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].PkgPath < out[j].PkgPath })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].PkgPath != out[j].PkgPath {
+			return out[i].PkgPath < out[j].PkgPath
+		}
+		return out[i].ID < out[j].ID
+	})
 	return out
 }
 

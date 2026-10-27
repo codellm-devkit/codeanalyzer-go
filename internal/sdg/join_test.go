@@ -291,10 +291,10 @@ func TestJoin_ExternalTestPackage(t *testing.T) {
 			}
 
 			// Every SSA (*Counter).Add, of every variant: with tests, the
-			// test variant "xtest [xtest.test]" (a root, built from a.go's
-			// shared syntax) and the plain xtest that user imports (not a
-			// root: created from types, a bodiless stub). Both join the one
-			// callable: by syntax and by Object().
+			// test variant "xtest [xtest.test]" and the plain xtest that
+			// user imports are both roots built from a.go's shared syntax
+			// (F2: the plain one's bodies carry the types user sees). Both
+			// join the one callable by syntax.
 			wantAdd := dataflow.L3Key{Path: aGo, Signature: xt + ".Counter.Add"}
 			kinds := map[joinKind]int{}
 			for fn := range ssautil.AllFunctions(prog) {
@@ -306,11 +306,9 @@ func TestJoin_ExternalTestPackage(t *testing.T) {
 					kinds[kind]++
 				}
 			}
-			if kinds[joinBody] != 1 {
-				t.Errorf("(*Counter).Add has %d SSA bodies, want 1 (kinds %v)", kinds[joinBody], kinds)
-			}
-			if !skip && kinds[joinWrapper] != 1 {
-				t.Errorf("tests: (*Counter).Add has %d types-only stubs, want 1 (kinds %v)", kinds[joinWrapper], kinds)
+			wantBodies := map[bool]int{true: 1, false: 2}[skip]
+			if kinds[joinBody] != wantBodies || len(kinds) != 1 {
+				t.Errorf("(*Counter).Add joins %v, want %d SSA bodies and nothing else", kinds, wantBodies)
 			}
 			// user.Use calls the plain xtest's stubs; they still name the
 			// in-project callables, never an external.
