@@ -147,9 +147,11 @@ func (d *dispatch) funcTarget(j *join, obj *types.Func) (Target, bool) {
 //     through a pointer that itself originates in library code.
 //
 // A value project code built (MakeInterface), a parameter, a free variable
-// or a load of project storage is VTA's: false. The remaining gap is a
-// library-originated value first stored in a project struct field or
-// global and then read back (spec §4.8).
+// or a load of project storage is VTA's: false. The walk is
+// intraprocedural, so the remaining gap is a library-originated value that
+// reaches the call through project code: stored in a project struct field
+// or global and read back, or a project function's result or parameter
+// (spec §4.8).
 func (c *cha) libraryOrigin(v ssa.Value, seen map[ssa.Value]bool) bool {
 	if seen[v] {
 		return false

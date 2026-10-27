@@ -573,9 +573,12 @@ built per D2 (amended, A12): `ssautil.Packages` over the **same** `go/packages` 
   implements the interface (`types.Implements`) adds the method its method set selects, mapped by
   the join. A receiver that originates in project code (a `MakeInterface`, a parameter, a free
   variable, a load of project storage) gets no CHA target: VTA covers it. Not a `call_graph` edge
-  (F7). **Remaining gap:** a library-originated value first stored in a project struct field or
-  global, then read back and called (the load is project storage, so the walk stops), is VTA's
-  alone and misses the concrete type — recorded in §6 beside library callbacks.
+  (F7). The origin walk is intraprocedural. **Remaining gap:** a library-originated value that
+  reaches the call through project code — first stored in a project struct field or global and
+  read back, or returned by a project function (`func FromCtx(ctx) Store { return
+  ctx.Value(k).(Store) }`), or passed in as a parameter — is VTA's alone (the walk stops at the
+  project load, call result or parameter) and misses the concrete type. Recorded in §6 beside
+  library callbacks.
 - **Interfaces with no symbol-table node (ruling, Task 10) [call].** `error.Error()` (the universe
   `error`), methods of interface literals (`interface{ M() }`), and methods promoted through an
   embedded interface whose origin is declared outside the symbol table have no callable id and no
@@ -1018,11 +1021,12 @@ addition now; the cross-language SDK taint revisit is deferred (§11).
   is not an edge. Taint *starting* in a handler is unaffected (sources are the handler's own
   params). Recorded limitation.
 - **Not modelled:** a value that came out of library code (`ctx.Value(k)`, `sync.Map.Load`, a
-  library call's result), first stored in a project struct field or global and then read back
-  and called through an interface. The targeted CHA complement (§4.8) covers the call made on the
-  library-originated value directly; once the value is in project storage the receiver's origin
-  is a project load, and VTA, which sees no concrete type in library code, finds none. The call
-  keeps its D7 interface method (pass-through, empty footprint). Recorded limitation.
+  library call's result) and reaches an interface call through project code: stored in a
+  project struct field or global and read back, returned by a project function, or passed as a
+  parameter. The targeted CHA complement (§4.8) covers the call made on the library-originated
+  value in the same function; otherwise the receiver's origin is a project load, call result or
+  parameter, and VTA, which sees no concrete type in library code, finds none. The call keeps
+  its D7 interface method (pass-through, empty footprint). Recorded limitation.
 - **SDK addressing:** `("query", "database/sql.DB.Query")` resolves through the Go backend's
   `resolve_callable` (domain = analysed callables ∪ stand-ins) then `resolve_value` over the stand-in
   body's `formal_in` `of`. Shared `commons/` code is untouched.

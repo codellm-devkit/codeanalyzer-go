@@ -1102,8 +1102,9 @@ over-approximation or reported as degraded.
   every project type implementing the interface. Measured (go1.26.4, `-j 8`): chi +54 targets at
   15 sites (the `w.(http.Flusher)` pattern), param_in 1,895 → 1,961 (+3.5%), param_out
   1,649 → 1,770 (+7.3%); nats-server +317 targets at 63 sites, param_in 862,765 → 863,075
-  (+0.04%), param_out 431,327 → 431,854 (+0.12%). Remaining gap: a library-originated value
-  first stored in a project struct field or global, then read back and called, gets VTA's
+  (+0.04%), param_out 431,327 → 431,854 (+0.12%). Remaining gap (the origin walk is
+  intraprocedural): a library-originated value that reaches the call through project code — a
+  project struct field or global, a project function's result or parameter — gets VTA's
   targets only.
 - **A15: summaries are near all-to-all** (74–94% of sites, table above). Under the coarse host
   wiring, a summary edge adds no reachability for the SDK's context-insensitive walk. It is a
