@@ -39,9 +39,12 @@
 #   2. cango -a 3 -j 1
 #   3. cango -a 3 -j N     (N = CPU count)
 #   4. cango -a 3 -j N     (second run)
-#   5. cango -a 4 -j 1 -v  (only when CANGO_LEVELS includes 4)
-# and compares the three -a 3 analysis.json files byte for byte. A run that exits non-zero or
-# times out (the -a 4 run included) fails the app, and the script then exits 1. It records wall time, peak
+#   5. cango -a 4 -j 1 -v  (only when CANGO_LEVELS includes 4; steps 5-7)
+#   6. cango -a 4 -j N
+#   7. cango -a 4 -j N     (second run)
+# and compares the three -a 3 analysis.json files byte for byte, and the three -a 4 ones. A run that
+# exits non-zero or times out (the -a 4 runs included), or a byte difference at either level, fails
+# the app, and the script then exits 1. It records wall time, peak
 # RSS (macOS /usr/bin/time -l), module/callable/body-node/edge counts, external_symbols, the
 # call_graph split, the prepare-time type-check status, the number of type-error warnings
 # ("package ..." stderr lines), the analyzer's too-old-toolchain warning, and the number of
@@ -62,10 +65,15 @@
 #   RUN_TIMEOUT per-run limit, seconds   (default 3600); on expiry the run is killed, the app
 #               is marked TIMEOUT and its remaining runs are skipped
 #   CANGO_LEVELS levels to run (default "2 3"). Levels 2 and 3 always run (the L3 baseline);
-#               adding 4 (e.g. "2 3 4") also runs step 5 and records its wall time, peak RSS, and the
-#               SSA build time, VTA time and VTA edge count from its -v log.
-#   EVAL_PRUNE  1 = after the comparison, delete the warm-up and both -j N analysis.json files
-#               (keeps a2j1 and a3j1, and every .err/.time). For very large apps.
+#               adding 4 (e.g. "2 3 4") also runs steps 5-7 and records, from the -a 4 -j 1 run:
+#               wall time, peak RSS (the whole process: L1-L3, SSA, the L4 overlay and the
+#               emission) and its ratio to -a 3, user CPU, analysis.json bytes, the SSA build, VTA
+#               and L4-overlay times, and from its -v log the L4 counts (vertices, param_in,
+#               param_out, summary, port ddg, points-to ddg, stand-ins, call sites with dispatch
+#               targets, unmapped SSA functions/calls) and the degraded codes; plus the -a 4 -j N
+#               wall time and the -a 4 byte-identity check.
+#   EVAL_PRUNE  1 = after the comparison, delete the warm-up, both -j N and every -a 4
+#               analysis.json file (keeps a2j1 and a3j1, and every .err/.time). For very large apps.
 # Any other environment (GOOS, GOFLAGS, ...) is inherited by the analyzer unchanged.
 #
 # Requires: git, go, /usr/bin/time -l (BSD/macOS), cmp. jq is used for counts; without it the
@@ -150,7 +158,7 @@ if [ "${1:-}" = "--clean" ]; then
   [ -d "$EVAL_OUT" ] || exit 0
   case $EVAL_OUT in /|"$HOME"|"$EVAL_SRC") echo "refusing to clean $EVAL_OUT" >&2; exit 2 ;; esac
   for n in $(manifest_names) $(ls "$EVAL_OUT" 2>/dev/null | sed -n 's/-a3j1$//p'); do
-    for t in warm a2j1 a3j1 a3jN a3jN2 a4j1; do
+    for t in warm a2j1 a3j1 a3jN a3jN2 a4j1 a4jN a4jN2; do
       rm -rf "$EVAL_OUT/$n-$t" "$EVAL_OUT/$n-$t.err" "$EVAL_OUT/$n-$t.time" "$EVAL_OUT/$n-$t.timeout"
     done
     rm -rf "$EVAL_OUT/cache-$n"
@@ -352,9 +360,30 @@ run_one() {
   RC=$?
   if [ -e "$dir.timeout" ]; then RC=124; fi
   WALL=$(awk '/ real /{print $1}' "$dir.time")
+  USER=$(awk '/ real /{print $3}' "$dir.time")
   RSS=$(awk '/maximum resident set size/{printf "%d", $1/1048576}' "$dir.time")
+  BYTES=$(wc -c <"$dir/analysis.json" 2>/dev/null | tr -d ' ')
   [ -n "$WALL" ] || WALL=n/a
+  [ -n "$USER" ] || USER=n/a
   [ -n "$RSS" ] || RSS=n/a
+  [ -n "$BYTES" ] || BYTES=n/a
+}
+
+# l4_log ERRFILE -> the L4 columns of the note from an -a 4 -v stderr log: SSA, VTA and overlay
+# times, then vertices | param_in | param_out | summary | port ddg | points-to | stand-ins |
+# call sites with targets | unmapped functions/calls | degraded codes (sorted, comma-joined).
+l4_log() {
+  local e=$1 ssa vta ov counts sites unm codes
+  ssa=$(sed -n 's/.*L4: SSA built .* in \(.*\)$/\1/p' "$e" 2>/dev/null | head -1)
+  vta=$(sed -n 's/.*L4: VTA over .* edges in \(.*\)$/\1/p' "$e" 2>/dev/null | head -1)
+  ov=$(sed -n 's/.*L4: [0-9]* vertices, .* stand-ins in \(.*\)$/\1/p' "$e" 2>/dev/null | head -1)
+  counts=$(sed -n 's/.*L4: \([0-9]*\) vertices, \([0-9]*\) port edges (\([0-9]*\) points-to), \([0-9]*\) summary edges, \([0-9]*\) param_in, \([0-9]*\) param_out, \([0-9]*\) stand-ins in .*/\1 | \5 | \6 | \4 | \2 | \3 | \7/p' "$e" 2>/dev/null | head -1)
+  sites=$(sed -n 's/.*L4: dispatch: \([0-9]*\) call sites with targets.*/\1/p' "$e" 2>/dev/null | head -1)
+  unm=$(sed -n 's/.*L4: SSA join: .*; \([0-9]*\) functions, \([0-9]*\) calls unmapped in .*/\1\/\2/p' "$e" 2>/dev/null | head -1)
+  codes=$(sed -n 's/.*L4 degraded: \([a-z_]*\) .*/\1/p' "$e" 2>/dev/null | sort -u | paste -sd, -)
+  [ -n "$counts" ] || counts="n/a | n/a | n/a | n/a | n/a | n/a | n/a"
+  printf '%s | %s | %s | %s | %s | %s | %s' "${ssa:-n/a}" "${vta:-n/a}" "${ov:-n/a}" "$counts" \
+    "${sites:-n/a}" "${unm:-n/a}" "${codes:-none}"
 }
 
 BUILD_INFO=$(go version -m "$CANGO" 2>/dev/null)
@@ -368,7 +397,8 @@ CANGO_DIRTY=$(printf '%s\n' "$BUILD_INFO" | awk -F'=' '/vcs.modified=/{print $2}
   echo "Analyzer: $("$CANGO" --version 2>&1 | head -1), built with ${CANGO_GO:-unknown} (runtime.Version), rev ${CANGO_REV:-unknown}; runs use GOTOOLCHAIN=$RUN_GO; host: $(uname -sm); j=$JOBS; all runs --eager."
   echo
   if [ "$RUN_L4" -eq 1 ]; then
-    L4H=" wall a4 j1 (s) | RSS a4 j1 (MB) | RSS a4/a3 | SSA a4 | VTA a4 | VTA edges |"; L4S="---|---|---|---|---|---|"
+    L4H=" wall a4 j1 (s) | wall a4 jN (s) | user CPU a4 j1 (s) | RSS a4 j1 (MB) | RSS a4/a3 | JSON a3 (B) | JSON a4 (B) | SSA | VTA | L4 overlay | vertices | param_in | param_out | summary | port ddg | points-to | stand-ins | sites with targets | unmapped fn/calls | degraded | a4 -j identical |"
+    L4S="---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
   else
     L4H=""; L4S=""
   fi
@@ -397,12 +427,12 @@ for T in $TARGETS; do
   status=ok
 
   rm -f "$EVAL_OUT/$name"-*.timeout
-  W3=n/a; WN=n/a; R3=n/a; RC3=0; RCN=0; RCN2=0
+  W3=n/a; WN=n/a; R3=n/a; B3=n/a; RC3=0; RCN=0; RCN2=0
   # Warm-up (discarded): populates the Go build/module cache and the OS file cache so the
   # timed -a 2 and -a 3 runs are comparable.
   run_one "$name" warm 2 1;        RCW=$RC
   run_one "$name" a2j1 2 1;        W2=$WALL; RC2=$RC
-  if [ "$RCW" -ne 124 ] && [ "$RC" -ne 124 ]; then run_one "$name" a3j1 3 1;        W3=$WALL; R3=$RSS; RC3=$RC; fi
+  if [ "$RCW" -ne 124 ] && [ "$RC" -ne 124 ]; then run_one "$name" a3j1 3 1;        W3=$WALL; R3=$RSS; RC3=$RC; B3=$BYTES; fi
   if [ "$RC3" -ne 124 ] && [ "$RC2" -ne 124 ]; then
     run_one "$name" a3jN 3 "$JOBS";  WN=$WALL; RCN=$RC
     if [ "$RCN" -ne 124 ]; then run_one "$name" a3jN2 3 "$JOBS"; RCN2=$RC; fi
@@ -410,17 +440,25 @@ for T in $TARGETS; do
 
   L4COLS=""
   if [ "$RUN_L4" -eq 1 ]; then
-    W4=n/a; R4=n/a; RATIO=n/a; RC4=0
+    W4=n/a; WN4=n/a; U4=n/a; R4=n/a; B4=n/a; RATIO=n/a; RC4=0; RCN4=0; RCN42=0; ident4=n/a
     if [ "$RC3" -ne 124 ] && [ "$RC2" -ne 124 ]; then
-      run_one "$name" a4j1 4 1 -v; W4=$WALL; R4=$RSS; RC4=$RC
-      if [ "$RC4" -ne 0 ]; then W4="$W4 (rc $RC4)"; fi
+      run_one "$name" a4j1 4 1 -v; W4=$WALL; U4=$USER; R4=$RSS; B4=$BYTES; RC4=$RC
+      if [ "$RC4" -ne 124 ]; then run_one "$name" a4jN 4 "$JOBS"; WN4=$WALL; RCN4=$RC; fi
+      if [ "$RC4" -ne 124 ] && [ "$RCN4" -ne 124 ]; then run_one "$name" a4jN2 4 "$JOBS"; RCN42=$RC; fi
+      # One status for the triple: the first non-zero rc (124 = timeout).
+      for r in $RC4 $RCN4 $RCN42; do [ "$RC4" -eq 0 ] && RC4=$r; done
+      if [ "$RC4" -ne 0 ]; then W4="$W4 (rc $RC4)"
+      else
+        a4=$EVAL_OUT/$name-a4j1/analysis.json
+        if cmp -s "$a4" "$EVAL_OUT/$name-a4jN/analysis.json" && cmp -s "$a4" "$EVAL_OUT/$name-a4jN2/analysis.json"; then
+          ident4=yes
+        else
+          ident4=NO
+        fi
+      fi
     fi
     case $R3$R4 in *[!0-9]*|"") ;; *) RATIO=$(awk -v a="$R4" -v b="$R3" 'BEGIN{printf "%.2f", a/b}') ;; esac
-    e4=$EVAL_OUT/$name-a4j1.err
-    SSA4=$(sed -n 's/.*L4: SSA built .* in \(.*\)$/\1/p' "$e4" 2>/dev/null | head -1)
-    VTA4=$(sed -n 's/.*L4: VTA over .* edges in \(.*\)$/\1/p' "$e4" 2>/dev/null | head -1)
-    VE4=$(sed -n 's/.*L4: VTA over .*: \([0-9]*\) edges in .*/\1/p' "$e4" 2>/dev/null | head -1)
-    L4COLS=" $W4 | $R4 | $RATIO | ${SSA4:-n/a} | ${VTA4:-n/a} | ${VE4:-n/a} |"
+    L4COLS=" $W4 | $WN4 | $U4 | $R4 | $RATIO | $B3 | $B4 | $(l4_log "$EVAL_OUT/$name-a4j1.err") | $ident4 |"
   fi
 
   ident=n/a
@@ -438,9 +476,15 @@ for T in $TARGETS; do
       ident=NO; status="FAIL(-j differs)"; FAILS="$FAILS $name"
     fi
   fi
-  # A failed or timed-out -a 4 run fails the app too (the -a 3 checks above stand).
+  # A failed or timed-out -a 4 run, or -a 4 outputs that differ, fail the app too (the -a 3
+  # checks above stand).
+  s4=""
   if [ "$RUN_L4" -eq 1 ] && [ "$RC4" -ne 0 ]; then
     if [ "$RC4" -eq 124 ]; then s4="TIMEOUT(a4 >${RUN_TIMEOUT}s)"; else s4="FAIL(rc a4=$RC4)"; fi
+  elif [ "$RUN_L4" -eq 1 ] && [ "$ident4" = NO ]; then
+    s4="FAIL(a4 -j differs)"
+  fi
+  if [ -n "$s4" ]; then
     if [ "$status" = ok ]; then status=$s4; else status="$status $s4"; fi
     case " $FAILS " in *" $name "*) ;; *) FAILS="$FAILS $name" ;; esac
   fi
@@ -461,7 +505,8 @@ EOC
 
   if [ "$EVAL_PRUNE" = 1 ] && [ "$ident" = yes ]; then
     rm -f "$EVAL_OUT/$name-warm/analysis.json" "$EVAL_OUT/$name-a3jN/analysis.json" \
-          "$EVAL_OUT/$name-a3jN2/analysis.json" "$EVAL_OUT/$name-a4j1/analysis.json"
+          "$EVAL_OUT/$name-a3jN2/analysis.json" "$EVAL_OUT/$name-a4j1/analysis.json" \
+          "$EVAL_OUT/$name-a4jN/analysis.json" "$EVAL_OUT/$name-a4jN2/analysis.json"
   fi
 done
 

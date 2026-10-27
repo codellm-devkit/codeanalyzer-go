@@ -16,6 +16,18 @@ while [ $# -gt 0 ]; do
   shift
 done
 [ -n "$out" ] && echo '{"application":{"symbol_table":{},"call_graph":[]}}' >"$out/analysis.json"
+# NONDET_LEVEL: a run at that level appends a per-run nonce (a nondeterministic analyzer).
+[ "$level" = "${NONDET_LEVEL:-}" ] && echo "$$-$RANDOM" >>"$out/analysis.json"
+# At -a 4 with -v, print the L4 log lines eval_l3.sh parses.
+if [ "$level" = 4 ]; then
+  echo "[codeanalyzer-go] L4: SSA built 2 project packages in 5ms" >&2
+  echo "[codeanalyzer-go] L4: SSA join: 9 functions (1 by wrapper, 0 without a unit), 20 calls; 1 functions, 3 calls unmapped in 1ms" >&2
+  echo "[codeanalyzer-go] L4: VTA over 12 functions (3 library targets): 30 edges in 2ms" >&2
+  echo "[codeanalyzer-go] L4: dispatch: 7 call sites with targets; 4 call_graph edges and 1 externals added by VTA" >&2
+  echo "[codeanalyzer-go] L4: 40 vertices, 50 port edges (6 points-to), 8 summary edges, 11 param_in, 10 param_out, 5 stand-ins in 4ms" >&2
+  echo "[codeanalyzer-go WARN] L4 degraded: unmapped_ssa (1 SSA function(s) and 3 call instruction(s) map to no callable or call node): example.com/a" >&2
+  echo "[codeanalyzer-go WARN] L4 degraded: range_func (range-over-func is not modelled at L4 (D8)): example.com/b" >&2
+fi
 [ "$level" = "${FAIL_LEVEL:-}" ] && exit 3
 exit 0
 STUB
@@ -32,6 +44,10 @@ check() { # want-rc want-note-substring env...
   fi
 }
 check 0 "| app | ok |" CANGO_LEVELS="2 3 4"
+# The -a 4 triple: -j 1, -j N and a rerun, compared byte for byte; the L4 log counts and codes.
+check 0 "| 40 | 11 | 10 | 8 | 50 | 6 | 5 | 7 | 1/3 | range_func,unmapped_ssa | yes |" CANGO_LEVELS="2 3 4"
+check 1 "FAIL(a4 -j differs)" CANGO_LEVELS="2 3 4" NONDET_LEVEL=4
+check 1 "FAIL(-j differs)" CANGO_LEVELS="2 3" NONDET_LEVEL=3
 check 1 "FAIL(rc a4=3)" CANGO_LEVELS="2 3 4" FAIL_LEVEL=4
 check 1 "FAIL(rc a2=0 j1=3" CANGO_LEVELS="2 3" FAIL_LEVEL=3
 exit $fail
