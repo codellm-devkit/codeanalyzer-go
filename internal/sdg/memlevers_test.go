@@ -51,7 +51,9 @@ func TestRun_RestoresGCPercent(t *testing.T) {
 }
 
 // TestSDG_ReleasedCachesAreNotRebuilt (Task 15b): with the memory levers on,
-// a unit's flow graph, call sites and wiring are each built at most once —
+// a unit's flow graph, call sites and wiring are each built at most once,
+// and fill never recomputes summary edges releaseSCC produced ("summ"
+// misses: none) —
 // a cache released before its last reader is rebuilt silently, which costs
 // time and memory but changes no fact, so only a miss count catches it —
 // and fill leaves the per-unit caches empty.
@@ -82,10 +84,34 @@ func TestSDG_ReleasedCachesAreNotRebuilt(t *testing.T) {
 					}
 				}
 			}
+			if n := len(builds["summ"]); n != 0 {
+				t.Errorf("fill recomputed the summary edges of %d units: releaseSCC's were released before fill read them", n)
+			}
 			if len(b.graph)+len(b.sites)+len(b.wired)+len(b.summ) != 0 {
 				t.Errorf("after fill: %d graphs, %d sites, %d wirings, %d summaries still cached",
 					len(b.graph), len(b.sites), len(b.wired), len(b.summ))
 			}
 		})
+	}
+}
+
+// TestSDG_SummaryMissHookFires: the "summ" miss TestSDG_ReleasedCachesAreNotRebuilt
+// counts is live — with the memory levers off, releaseSCC never runs, so
+// fill computes every unit's summary edges through the miss path.
+func TestSDG_SummaryMissHookFires(t *testing.T) {
+	defer func(v bool) { memLevers = v }(memLevers)
+	memLevers = false
+	misses := 0
+	defer func(f func(string, dataflow.L3Key)) { onCacheMiss = f }(onCacheMiss)
+	onCacheMiss = func(cache string, _ dataflow.L3Key) {
+		if cache == "summ" {
+			misses++
+		}
+	}
+	in := loadInput(t, "dataflow")
+	res, d := dispatchRun(in)
+	newSDGBuilder(in, d).fill(&res)
+	if misses != len(in.Units) {
+		t.Errorf("summ misses with the levers off = %d, want one per unit (%d)", misses, len(in.Units))
 	}
 }

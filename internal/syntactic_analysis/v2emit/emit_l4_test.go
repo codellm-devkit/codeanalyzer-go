@@ -1,6 +1,7 @@
 package v2emit
 
 import (
+	"fmt"
 	"math/rand/v2"
 	"strings"
 	"testing"
@@ -35,20 +36,27 @@ func TestCompareOrdinal_MatchesMintedIds(t *testing.T) {
 // TestL4Overlay_DuplicateKeyKeepsSmallerID: two callables sharing a target
 // key (declaring file and signature) route its param edges and degraded
 // entries to the lexically smaller id, whichever is applied first —
-// emission walks maps, so last-write-wins would be nondeterministic.
+// emission walks maps, so last-write-wins would be nondeterministic — and
+// the clash is warned once, naming both ids.
 func TestL4Overlay_DuplicateKeyKeepsSmallerID(t *testing.T) {
 	key := dataflow.L3Key{Path: "a.go", Signature: "example.com/a.F"}
 	small, big := "can://app/go/a.go/example.com/a.F", "can://app/go/b.go/example.com/a.F"
+	var warned []string
 	prev := warnf
-	warnf = func(string, ...any) {}
+	warnf = func(format string, args ...any) { warned = append(warned, fmt.Sprintf(format, args...)) }
 	defer func() { warnf = prev }()
 	for _, order := range [][]string{{small, big}, {big, small}} {
+		warned = nil
 		o := newL4Overlay(4, &sdg.Result{}, sigIndex{})
 		for _, id := range order {
 			o.apply(&v2.Callable{ID: id, Body: map[string]v2.BodyNode{}}, key)
 		}
 		if got := o.ids[sdg.Target{Callable: key}]; got != small {
 			t.Errorf("apply order %v: target routes to %s, want %s", order, got, small)
+		}
+		if len(warned) != 1 || !strings.Contains(warned[0], small) || !strings.Contains(warned[0], big) ||
+			!strings.Contains(warned[0], "share the target key") {
+			t.Errorf("apply order %v: warnings %q, want one naming both ids", order, warned)
 		}
 	}
 }

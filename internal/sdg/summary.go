@@ -28,7 +28,8 @@ type sdgBuilder struct {
 }
 
 // onCacheMiss, when set, is called each time the builder builds unit k's
-// entry of a per-unit cache ("graph", "sites" or "wired"). A test seam:
+// entry of a per-unit cache ("graph", "sites" or "wired"), or recomputes
+// its summary edges because releaseSCC's ("summ") are gone. A test seam:
 // TestSDG_ReleasedCachesAreNotRebuilt checks that, with the memory levers
 // on, no entry is built twice — a cache released before its last reader
 // (releaseSCC, releaseUnit) is rebuilt silently, costing time, not facts.
@@ -272,6 +273,9 @@ type unitGraph struct {
 func (b *sdgBuilder) summary(k dataflow.L3Key) []SummaryEdge {
 	if s, ok := b.summ[k]; ok {
 		return s
+	}
+	if onCacheMiss != nil {
+		onCacheMiss("summ", k)
 	}
 	return b.summaryEdges(k)
 }
