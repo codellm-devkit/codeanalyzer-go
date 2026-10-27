@@ -279,6 +279,11 @@ example.com/dataflow/sdg.PassOuter
 example.com/dataflow/sdg.PrunedCall
 	246:2 -> @formal_out <return> reaching-defs
 	@formal_in:0 -> 246:2 v reaching-defs
+example.com/dataflow/sdg.ScalarSink
+	510:2 -> 510:2/actual_in:0 v reaching-defs
+	510:2/actual_out -> 510:2 <return> reaching-defs
+	511:2 -> @formal_out <return> reaching-defs
+	@formal_in:0 -> 509:2 a reaching-defs
 example.com/dataflow/sdg.Stores
 	40:2 -> 40:2/actual_in:0 s reaching-defs
 	40:2 -> 40:2/actual_in:1 k reaching-defs
@@ -405,6 +410,9 @@ example.com/dataflow/sdg.readConfig
 	@formal_in:0 -> 118:2 example.com/dataflow/sdg::Config reaching-defs
 example.com/dataflow/sdg.readConst
 	126:2 -> @formal_out <return> reaching-defs
+example.com/dataflow/sdg.sinkInt
+	504:27 -> @formal_out <return> reaching-defs
+	@formal_in:0 -> 504:27 v reaching-defs
 example.com/dataflow/sdg.sqlStore.Get
 	29:2 -> @formal_out:0 <return> reaching-defs
 	@formal_in:0 -> 29:2 s.dsn reaching-defs

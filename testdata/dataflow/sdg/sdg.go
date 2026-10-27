@@ -499,3 +499,14 @@ func CaptureAlias(p *Inner, x int) {
 	f := func() { q := p; q.n = x }
 	f()
 }
+
+// sinkInt is a sink with no by-ref or global output.
+func sinkInt(v int) int { return v }
+
+// ScalarSink passes a local scalar computed from a parameter to sinkInt (the
+// metamorphic relations' constant-argument and call-routing sites).
+func ScalarSink(a int) int {
+	x := a + 1
+	sinkInt(x)
+	return x
+}

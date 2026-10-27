@@ -1025,6 +1025,28 @@ determinism (`-j 1` vs `-j N`, two runs), monotonicity (`-a 1..4` superset via a
 Python's `test_v2_superset.py`), cross-projection (Neo4j vs JSON), Neo4j conformance, SDK model
 validation of every level's output.
 
+**Metamorphic relations** (`internal/metamorphic`; Task 17b, amended 2026-10-27). A relation
+transforms a copy of a module, analyzes it in-process at `-a 4`, and compares the result with
+the original's through a position map. Callables are keyed by signature (plus the declaring file
+for the per-file `init`), not by module id. There are three oracles: **exact** (the normalized
+views are equal), **delta** (the view changes by exactly the edges each site declares, nothing
+else changes, and the expected CDG is a reference post-dominator CDG of the expected CFG), and
+**reach** (one-way: every `formal_in` → `actual_in`/`formal_out` flow of a sample of callables
+survives over ddg ∪ cdg ∪ summary ∪ param_in ∪ param_out). MR1 adds blank lines and comments
+(exact). MR2 reverses the top-level declarations (exact). MR3 moves a function and a method to
+a new file (exact). MR4 alpha-renames locals (exact modulo spelling). MR5 introduces an alias
+(reach). MR6 extracts a helper (reach). MR7 runs `--target-files` at `-a 3` against a full run
+(exact on that file). MR8 wraps a statement in `if c {}`. MR9 inserts a kill. MR10 inserts a
+copy. MR11 swaps two independent statements. MR12 adds an early `if c { return }`. MR8–MR12
+use the delta oracle, on local scalars in callables with an L3 result and no defer or goto.
+MR13 replaces a sink argument with a constant: it is a precision relation, so the flow into
+that `actual_in` must be gone and nothing else may be added. MR14 routes a call through a
+one-implementation interface, a closure or `defer` (reach, plus the summary edges for the
+interface form). MR15 extracts a helper and inlines it back (exact, byte-identical source).
+Loops, `select`/`switch`/`fallthrough`, panic edges and the defer chain are out of scope for
+the delta relations. The fixtures (`testdata/dataflow` flow and sdg, chi) run in `go test`;
+the eval apps run behind the `metamorphic` build tag (`scripts/metamorphic.sh`).
+
 **SDK gates:** slice gate (exact set on a `can://…@line:col` criterion); taint gate (known
 source→sink found; sanitizer variant reported cut, not dropped; contiguous witness); a pair with no
 flow lands in `exhausted`; context-sensitivity only as far as summaries support; JSON and Neo4j
