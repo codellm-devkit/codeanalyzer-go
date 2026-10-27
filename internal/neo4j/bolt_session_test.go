@@ -74,12 +74,14 @@ func TestEagerPurge_OnlyOnFullRun(t *testing.T) {
 }
 
 // fakeDB is a DB-free SessionWithContext for the push algorithm: reads
-// answer the schema-version gate with SchemaVersion and the content_hash
-// diff with hashes[module id] (an unchanged module when it equals the local
-// hash); every write statement is recorded with its parameters.
+// answer the stored-application gate with SchemaVersion and level (when
+// non-zero; else no stored level) and the content_hash diff with
+// hashes[module id] (an unchanged module when it equals the local hash);
+// every write statement is recorded with its parameters.
 type fakeDB struct {
 	neo4j.SessionWithContext
 	hashes map[string]string
+	level  int64
 	writes []fakeStmt
 }
 
@@ -109,7 +111,11 @@ func (s *fakeDB) ExecuteRead(ctx context.Context, work neo4j.ManagedTransactionW
 func (tx fakeTx) Run(_ context.Context, q string, params map[string]any) (neo4j.ResultWithContext, error) {
 	switch {
 	case strings.Contains(q, "a.schema_version"):
-		return &fakeResult{rec: &neo4j.Record{Keys: []string{"v"}, Values: []any{SchemaVersion}}}, nil
+		var lvl any
+		if tx.db.level != 0 {
+			lvl = tx.db.level
+		}
+		return &fakeResult{rec: &neo4j.Record{Keys: []string{"v", "l"}, Values: []any{SchemaVersion, lvl}}}, nil
 	case strings.Contains(q, "m.content_hash"):
 		h, ok := tx.db.hashes[params["id"].(string)]
 		if !ok {
@@ -240,6 +246,61 @@ func TestBolt_LazyPushUpsertsL4RowsOfUnchangedModules(t *testing.T) {
 	for _, n := range rows.Nodes {
 		if !nodes[n.Value] {
 			t.Fatalf("eager push skipped %s", n.Value)
+		}
+	}
+}
+
+// TestBolt_LazyPushForcesFullOnLowerStoredLevel: a graph first pushed at a
+// lower level (an L3 push) has no L4 rows, and a lazy L4 push must not skip
+// an unchanged module's L3 nodes: they may be missing L4 vertices' parents,
+// and an edge MATCH on a missing endpoint drops the row silently. A stored
+// max_level below the current one forces every module's upsert; an equal
+// (or higher) stored level keeps the content_hash diff.
+func TestBolt_LazyPushForcesFullOnLowerStoredLevel(t *testing.T) {
+	a := buildDataflowL4(t)
+	if a.MaxLevel != 4 {
+		t.Fatalf("fixture max_level = %d, want 4", a.MaxLevel)
+	}
+	rows := Project(a)
+	byModule, _, _ := partitionNodes(rows.Nodes)
+	hashes := map[string]string{}
+	for m, ns := range byModule {
+		hashes[m] = moduleHash(ns)
+	}
+	push := func(stored int64) map[string]bool {
+		db := &fakeDB{hashes: hashes, level: stored}
+		w := &boltWriter{ctx: context.Background(), session: db, rows: rows, appID: a.Application.ID}
+		if err := w.run(); err != nil {
+			t.Fatal(err)
+		}
+		nodes, _ := db.pushed()
+		return nodes
+	}
+	moduleNodes := 0
+	for _, ns := range byModule {
+		moduleNodes += len(ns)
+	}
+	if moduleNodes == 0 {
+		t.Fatal("fixture has no module-owned nodes")
+	}
+	for _, stored := range []int64{1, 3} {
+		nodes := push(stored)
+		for m, ns := range byModule {
+			for _, n := range ns {
+				if !nodes[n.Value] {
+					t.Fatalf("stored level %d: module %s node %s not upserted", stored, m, n.Value)
+				}
+			}
+		}
+	}
+	for _, stored := range []int64{4, 5} {
+		nodes := push(stored)
+		for _, ns := range byModule {
+			for _, n := range ns {
+				if nodes[n.Value] {
+					t.Fatalf("stored level %d: unchanged module node %s upserted", stored, n.Value)
+				}
+			}
 		}
 	}
 }

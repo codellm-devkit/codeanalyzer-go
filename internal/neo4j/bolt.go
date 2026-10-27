@@ -16,8 +16,9 @@ import (
 //
 // Algorithm:
 //  1. ensure constraints + indexes;
-//  2. schema-version gate: read :GoApplication.schema_version scoped to this
-//     app's id; a mismatch forces a full re-UPSERT (never a delete — that is
+//  2. stored-application gate: read :GoApplication.schema_version and
+//     max_level scoped to this app's id; a version mismatch, or a stored level
+//     below this push's, forces a full re-UPSERT (never a delete — that is
 //     --eager's job);
 //  3. partition nodes by owning module (NodeRow.module); shared nodes (externals,
 //     neutral repo nodes) have none and are MERGE-only, always upserted; L4
@@ -90,11 +91,12 @@ func (w *boltWriter) run() error {
 		return err
 	}
 
-	// Schema-version gate: a producer/consumer mismatch forces a full re-upsert
-	// (it never deletes). We detect it but the upsert path below is already a
-	// full MERGE of every current node, so a mismatch simply means we don't
-	// trust the per-module content_hash diff and upsert everything.
-	forceFull, err := w.schemaVersionMismatch()
+	// Stored-application gate: a producer/consumer version mismatch, or a
+	// graph pushed at a lower level, forces a full re-upsert (it never
+	// deletes). The upsert path below is already a full MERGE of every
+	// current node, so it simply means we don't trust the per-module
+	// content_hash diff and upsert everything.
+	forceFull, err := w.storedAppStale()
 	if err != nil {
 		return err
 	}
@@ -183,14 +185,26 @@ func (w *boltWriter) ensureDDL() error {
 	})
 }
 
-// schemaVersionMismatch reads the stored :GoApplication.schema_version for THIS
-// app and compares to the producer's SchemaVersion. A mismatch (or absence)
-// returns true → the caller upserts everything rather than trusting the diff.
-func (w *boltWriter) schemaVersionMismatch() (bool, error) {
+// storedAppStale reads the stored :GoApplication.schema_version and
+// max_level for THIS app and reports whether the content_hash diff cannot be
+// trusted, so the caller upserts everything:
+//
+//   - a stored schema_version different from the producer's SchemaVersion;
+//   - a stored max_level below this push's. A module's content_hash covers
+//     its source, not the level it was analysed at, so an unchanged module
+//     of a graph pushed at L3 still lacks what an L4 push adds to it — its L4
+//     vertices are upserted (D5), but rows the diff skips stay at L3, and an
+//     edge row whose endpoint is missing is dropped by its MATCH silently.
+//
+// No stored application (first push) forces nothing beyond the normal
+// upsert, nor does a stored level at or above this push's.
+func (w *boltWriter) storedAppStale() (bool, error) {
 	var stored string
+	var storedLevel int64
+	haveLevel := false
 	err := w.read(func(tx neo4j.ManagedTransaction) error {
 		res, err := tx.Run(w.ctx,
-			"MATCH (a:GoApplication {id: $id}) RETURN a.schema_version AS v",
+			"MATCH (a:GoApplication {id: $id}) RETURN a.schema_version AS v, a.max_level AS l",
 			map[string]any{"id": w.appID})
 		if err != nil {
 			return err
@@ -199,15 +213,32 @@ func (w *boltWriter) schemaVersionMismatch() (bool, error) {
 			if v, ok := res.Record().Get("v"); ok && v != nil {
 				stored, _ = v.(string)
 			}
+			if l, ok := res.Record().Get("l"); ok && l != nil {
+				storedLevel, haveLevel = l.(int64)
+			}
 		}
 		return res.Err()
 	})
 	if err != nil {
 		return false, err
 	}
-	// No stored version (first push) is not a "mismatch" that forces anything
-	// beyond the normal upsert; a DIFFERENT stored version does.
-	return stored != "" && stored != SchemaVersion, nil
+	if stored != "" && stored != SchemaVersion {
+		return true, nil
+	}
+	return haveLevel && storedLevel < int64(w.pushLevel()), nil
+}
+
+// pushLevel is the max_level of the application row this push carries (0
+// when it carries none).
+func (w *boltWriter) pushLevel() int {
+	for _, n := range w.rows.Nodes {
+		if n.Labels[0] == LabelApplication && n.Value == w.appID {
+			if l, ok := n.Props["max_level"].(int); ok {
+				return l
+			}
+		}
+	}
+	return 0
 }
 
 // ─── destructive steps (--eager only) ─────────────────────────────────────────
