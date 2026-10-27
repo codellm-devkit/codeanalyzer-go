@@ -616,24 +616,22 @@ func anyBase(a, b dataflow.Path) bool { return a.Base != nil && b.Base != nil }
 
 // flatDDGAlias is BuildDDGAlias's reference, formulated independently: over
 // flatReaching, a use u also links from a reaching def d of another base
-// whose spelling has a suffix when d's suffix, rebased onto u's base,
-// interferes with u (Covers either way) and mayAlias(d, u). nil mayAlias is
-// flatDDG.
+// when mayAlias(d, u) and, dropping at most one leading step from each, d's
+// remaining steps rebased onto u's base interfere with u's remaining steps
+// rebased likewise (Covers either way). nil mayAlias is flatDDG.
 func flatDDGAlias(nodes []dataflow.Node, cfg []dataflow.CfgEdge, du map[string]dataflow.DefUse, mayAlias func(a, b dataflow.Path) bool) []dataflow.DdgEdge {
 	edges := map[dataflow.DdgEdge]bool{}
 	for k, ins := range flatReaching(nodes, cfg, du) {
 		for d := range ins {
-			suffix := d.Path.Spell[len(dataflow.SpellBase(d.Path.Spell)):]
 			for _, u := range du[k].Uses {
 				if d.Path.Covers(u) || u.Covers(d.Path) {
 					edges[dataflow.DdgEdge{Src: d.Node, Dst: k, Var: u.Spell}] = true
 					continue
 				}
-				if mayAlias == nil || suffix == "" || u.Base == d.Path.Base {
+				if mayAlias == nil || d.Path.Base == nil || u.Base == d.Path.Base {
 					continue
 				}
-				r := dataflow.Path{Base: u.Base, Spell: dataflow.SpellBase(u.Spell) + suffix}
-				if (r.Covers(u) || u.Covers(r)) && mayAlias(d.Path, u) {
+				if flatWindow(d.Path, u) && mayAlias(d.Path, u) {
 					edges[dataflow.DdgEdge{Src: d.Node, Dst: k, Var: u.Spell}] = true
 				}
 			}
@@ -645,6 +643,30 @@ func flatDDGAlias(nodes []dataflow.Node, cfg []dataflow.CfgEdge, du map[string]d
 	}
 	sort.Slice(res, func(i, j int) bool { return ddgLess(res[i], res[j]) })
 	return res
+}
+
+// flatWindow is the one-step offset window on spellings: both suffixes,
+// each with up to one leading step dropped, rebased onto u's base.
+func flatWindow(d, u dataflow.Path) bool {
+	tails := func(p dataflow.Path) []string {
+		suf := p.Spell[len(dataflow.SpellBase(p.Spell)):]
+		out := []string{suf}
+		if steps := dataflow.PathSteps(p.Spell); len(steps) > 0 {
+			out = append(out, suf[len(steps[0]):])
+		}
+		return out
+	}
+	head := dataflow.SpellBase(u.Spell)
+	for _, ds := range tails(d) {
+		for _, us := range tails(u) {
+			a := dataflow.Path{Base: u.Base, Spell: head + ds}
+			b := dataflow.Path{Base: u.Base, Spell: head + us}
+			if a.Covers(b) || b.Covers(a) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // TestDDG_KillBucketsMatchFlat (#27 item 1): BuildDDG tests kills only within
@@ -735,21 +757,26 @@ func TestDDG_KillBucketsMatchFlat(t *testing.T) {
 }
 
 // TestDDGAlias_Rule pins BuildDDGAlias on a hand-built line, with p and q
-// pointers of one type (may alias) and v an int:
+// pointers of one type and v an int, under an oracle that, like the L4
+// typeOracle, lets only a write through a pointer (a def with a step) alias:
 //
 //	@entry  defines p, q, v
 //	1:1     p.f = v
-//	1:2     q.f = v       (a strong def through q: kills q.f… only)
-//	1:3     use p.f, q.f.g, q, p.g
-//	1:4     q = nil       (a bare def: rebinds q, writes no aliased memory)
+//	1:2     q.f = v; q.g.h = v (strong defs through q: kill q.f…, q.g.h… only)
+//	1:3     use p.f, q.f.g, q, p.g, p.h.f.k, p.k.m
+//	1:4     q = nil            (a bare def: rebinds q, writes no aliased memory)
 //	1:5     use p.f
 //
-// 1:1's p.f reaches 1:2's bare use q (the pointer q.f = v reads). At 1:3,
-// by alias: 1:2's q.f may have written p.f, yet 1:1's p.f still
-// reaches by its own base (alias never kills); 1:1's p.f reaches q.f.g (its
-// suffix covers) and the bare use q (a bare use reads the whole pointee);
-// p.g's suffix is incompatible with q.f. At 1:5 nothing aliases: 1:4 killed
-// q.f by q's own base, and its bare def of q aliases nothing, like @entry's.
+// 1:1's p.f reaches 1:2's bare use q. At 1:3, by alias: 1:2's q.f may have
+// written p.f, yet 1:1's p.f still reaches by its own base (alias never
+// kills); 1:1's p.f reaches q.f.g (its suffix covers) and the bare use q.
+// The one-step offset window admits p.g and p.k.m against q.f (one leading
+// step dropped from each leaves [] against [] or [.m]: q.f's storage may be
+// what p.k points to), and p.h.f.k against q.f (.h dropped); the oracle
+// decides them (yes). p.k.m against q.g.h is outside the window ([.h]
+// against [.m] at best): the oracle is never asked about that pair. At 1:5 nothing aliases: 1:4
+// killed q's defs by its own base, and its bare def of q aliases nothing,
+// like @entry's.
 func TestDDGAlias_Rule(t *testing.T) {
 	ptr := types.NewPointer(types.NewStruct(nil, nil))
 	p := types.NewVar(token.NoPos, nil, "p", ptr)
@@ -768,26 +795,46 @@ func TestDDGAlias_Rule(t *testing.T) {
 	du := map[string]dataflow.DefUse{
 		entry: {Defs: []dataflow.Path{P(p, "p"), P(q, "q"), P(v, "v")}},
 		"1:1": {Defs: []dataflow.Path{P(p, "p.f")}, Uses: []dataflow.Path{P(p, "p"), P(v, "v")}},
-		"1:2": {Defs: []dataflow.Path{P(q, "q.f")}, Uses: []dataflow.Path{P(q, "q"), P(v, "v")}},
-		"1:3": {Uses: []dataflow.Path{P(p, "p.f"), P(q, "q.f.g"), P(q, "q"), P(p, "p.g")}},
+		"1:2": {Defs: []dataflow.Path{P(q, "q.f"), P(q, "q.g.h")}, Uses: []dataflow.Path{P(q, "q"), P(v, "v")}},
+		"1:3": {Uses: []dataflow.Path{P(p, "p.f"), P(q, "q.f.g"), P(q, "q"), P(p, "p.g"), P(p, "p.h.f.k"), P(p, "p.k.m")}},
 		"1:4": {Defs: []dataflow.Path{P(q, "q")}},
 		"1:5": {Uses: []dataflow.Path{P(p, "p.f")}},
 	}
-	mayAlias := func(a, b dataflow.Path) bool { return a.Base != v && b.Base != v && a.Base != nil && b.Base != nil }
+	asked := map[[2]string]bool{}
+	mayAlias := func(a, b dataflow.Path) bool {
+		asked[[2]string{a.Spell, b.Spell}] = true
+		return a.Base != v && b.Base != v && a.Base != nil && b.Base != nil && len(dataflow.PathSteps(a.Spell)) > 0
+	}
 	base := dataflow.BuildDDG(nodes, cfg, du)
 	got := dataflow.BuildDDGAlias(nodes, cfg, du, mayAlias)
 	ddg, alias := dataflow.BuildDDGSplit(nodes, cfg, du, mayAlias)
 	if !reflect.DeepEqual(ddg, base) {
 		t.Errorf("split ddg != BuildDDG:\n got %v\nwant %v", ddg, base)
 	}
+	var plain []dataflow.DdgEdge
+	for _, e := range alias {
+		if e.Def != "" {
+			t.Errorf("%v: Def set off @entry", e)
+		}
+		plain = append(plain, e.DdgEdge)
+	}
 	want := []dataflow.DdgEdge{
-		dd("1:1", "1:2", "q"), // the bare use q at 1:2, as p covers p.f on its own base
+		dd("1:1", "1:2", "q"), // the bare use q at 1:2 reads the object p.f is in
 		dd("1:1", "1:3", "q"),
 		dd("1:1", "1:3", "q.f.g"),
 		dd("1:2", "1:3", "p.f"),
+		dd("1:2", "1:3", "p.g"),
+		dd("1:2", "1:3", "p.h.f.k"),
+		dd("1:2", "1:3", "p.k.m"),
 	}
-	if !reflect.DeepEqual(alias, want) {
-		t.Errorf("alias edges:\n got %v\nwant %v", alias, want)
+	if !reflect.DeepEqual(plain, want) {
+		t.Errorf("alias edges:\n got %v\nwant %v", plain, want)
+	}
+	if asked[[2]string{"q.g.h", "p.k.m"}] {
+		t.Errorf("oracle asked about q.g.h, p.k.m outside the window")
+	}
+	if !asked[[2]string{"q.f", "p.k.m"}] {
+		t.Errorf("oracle not asked about q.f, p.k.m inside the window")
 	}
 	for _, e := range base {
 		if !slices.Contains(got, e) {

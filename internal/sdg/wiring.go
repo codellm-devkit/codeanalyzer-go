@@ -78,8 +78,8 @@ func (p *ports) wire(k dataflow.L3Key) []PortEdge {
 	}
 
 	var mayAlias func(a, b dataflow.Path) bool
-	if aliasOracle != nil {
-		mayAlias = memoOracle(aliasOracle)
+	if newAliasOracle != nil {
+		mayAlias = newAliasOracle(u, p.rootOf(u)).MayAlias
 	}
 	resolved, alias := dataflow.BuildDDGSplit(w.r.Nodes, w.r.Cfg, w.du, mayAlias)
 	for _, e := range resolved {
@@ -140,7 +140,7 @@ func (p *ports) wire(k dataflow.L3Key) []PortEdge {
 	// re-solve, mapped onto the vertices like the re-solved edges, minus any
 	// (src, dst, var) an L3 or reaching-defs edge already has.
 	for _, e := range alias {
-		src, dst, v, ok := w.port(e, false)
+		src, dst, v, ok := w.portFrom(e.DdgEdge, e.Def, false)
 		if !ok || l3[dataflow.DdgEdge{Src: src, Dst: dst, Var: v}] {
 			continue
 		}
@@ -160,7 +160,14 @@ func (p *ports) wire(k dataflow.L3Key) []PortEdge {
 //     with a formal_in; else nothing (the L3 edge stays L3's);
 //   - any other edge: as is, from the base's formal_in instead of @entry.
 func (w *wiring) port(e dataflow.DdgEdge, inL3 bool) (src, dst, v string, ok bool) {
-	b := dataflow.SpellBase(e.Var)
+	return w.portFrom(e, dataflow.SpellBase(e.Var), inL3)
+}
+
+// portFrom is port with the base whose formal_in an edge from @entry starts
+// at given: the use's base for a re-solved edge (def and use share it), the
+// def's for an alias edge (AliasEdge.Def: @entry defines a value base whose
+// address is taken, and the use reads it through another base).
+func (w *wiring) portFrom(e dataflow.DdgEdge, b string, inL3 bool) (src, dst, v string, ok bool) {
 	src = e.Src
 	fi, hasIn := w.inOf(b)
 	fromEntry := hasIn && src == dataflow.EntryKey

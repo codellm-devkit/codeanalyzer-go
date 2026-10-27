@@ -635,6 +635,47 @@ oracle"); `go/pointer` (deprecated).
 The oracle's API is frozen as an interface so an Andersen implementation can replace it later
 without schema change (`prov` stays `points-to`).
 
+**As built (Task 17 and its fix round 1) [call].** `AliasOracle.MayAlias(d, u)` asks whether a write
+to `d` may change memory a read of `u` observes. The oracle is built per callable
+(`newAliasOracle(unit, root)`). The solver re-runs the same reaching-definitions fixpoint over the
+port wiring's augmented `du'`. It never adds a kill across bases. It consults the oracle only for a
+def and a use of different bases inside a **one-step offset window**: after at most one leading step
+is dropped from each, the suffixes are prefix-compatible.
+- **Anchors.** The oracle matches each path at offset 0 (its base) or offset 1 (its base and first
+  step). The anchored prefix is one of two things:
+  - a *reference*: the object it points to. A bare def of a reference rebinds it and writes
+    nothing that another base observes.
+  - an *address-taken value*: its own storage.
+- **Compatible references.**
+  - Pointee types are compared structurally on the underlying types, with `types.Identical` on the
+    element types. This covers pointers, slices, maps (key and element), chans of either direction,
+    and identical signatures. So `type Bytes []byte` aliases `[]byte`, and `http.Header` aliases
+    `map[string][]string`.
+  - Any two interface (or type-parameter) types are compatible.
+  - An interface is compatible with a type that implements it.
+- **Address-taken values.** A value x is address-taken when the callable's top-level declaration
+  (closures included) contains any of:
+  - `&x`, `&x.f…` or `&x[i]…`;
+  - `x[:]` or `x[i:j]` on an array value;
+  - a call or method value of a pointer-receiver method on x or `x.f…`.
+
+  Package-level variables are always address-taken.
+- **Address-taken matching.** An address-taken value of type T may alias:
+  - a `*T`;
+  - an interface that `*T` implements;
+  - for an array `[N]E`, a `[]E`.
+
+  A field whose address is taken, or a field of reference type, matches at offset 1. So `p := &o.f;
+  p.g = v` reaches `o.f.g`, and `m := s.cache; m[k] = v` reaches `s.cache[k]`.
+- **Never alias.** Two distinct value variables never share storage. Neither do value copies that are
+  not address-taken.
+- **Known gaps (false negatives).**
+  - Offsets deeper than one step (`&x.f.g` against a `*G`).
+  - Two prefixes of one base that alias each other.
+  - An interface holding a value struct whose reference field is written through the interface.
+
+  The Andersen upgrade closes them.
+
 ### 4.11 Neo4j projection [call]
 
 Fill the reserved overlay, no contract renames:

@@ -37,6 +37,9 @@ type ports struct {
 	calls map[dataflow.L3Key]map[string]*ast.CallExpr // unit → call key → call
 	kept  map[dataflow.L3Key]map[string]bool          // unit → its kept L3 node keys
 	names map[string]string                           // interned formal keys and `of`s (intern)
+	// fnsByPath is every unit function by file (rootOf, the alias oracle's
+	// address-taken scan root); built on first use.
+	fnsByPath map[string][]ast.Node
 }
 
 func newPorts(in Input, d *dispatch) *ports {

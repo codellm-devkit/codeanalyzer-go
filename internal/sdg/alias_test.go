@@ -1,8 +1,13 @@
 package sdg
 
 import (
+	"flag"
+	"fmt"
+	"go/ast"
 	"go/token"
 	"go/types"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -13,6 +18,8 @@ import (
 
 	"github.com/codellm-devkit/codeanalyzer-go/internal/dataflow"
 )
+
+var update = flag.Bool("update", false, "rewrite golden files")
 
 func pt(src, dst, v string) PortEdge {
 	return PortEdge{Src: src, Dst: dst, Var: v, Prov: ProvPointsTo}
@@ -28,11 +35,13 @@ func pointsTo(es []PortEdge) []PortEdge {
 	return out
 }
 
-// runAlias runs L4 over testdata/dataflow with the alias oracle o (nil: off).
-func runAlias(t *testing.T, o AliasOracle) Result {
+// runAlias runs L4 over testdata/dataflow with the alias pass on or off.
+func runAlias(t *testing.T, on bool) Result {
 	t.Helper()
-	defer func(v AliasOracle) { aliasOracle = v }(aliasOracle)
-	aliasOracle = o
+	defer func(v func(dataflow.Unit, ast.Node) AliasOracle) { newAliasOracle = v }(newAliasOracle)
+	if !on {
+		newAliasOracle = nil
+	}
 	return Run(loadInput(t, "dataflow"))
 }
 
@@ -44,8 +53,10 @@ func runAlias(t *testing.T, o AliasOracle) Result {
 //
 // AliasPtrWhole returns the bare req (ruling, Task 17: the use side is
 // unrestricted): the write p.UserID is prefix-compatible with the whole read.
+// The fix-round-1 fixtures (address-taken values, reference fields copied
+// out, unrelated interfaces) are pinned whole too.
 func TestAlias_PointerCopyLinks(t *testing.T) {
-	res := runAlias(t, typeOracle{})
+	res := runAlias(t, true)
 	for _, c := range []struct {
 		fn   string
 		want []PortEdge
@@ -54,6 +65,17 @@ func TestAlias_PointerCopyLinks(t *testing.T) {
 		{"AliasPtrWhole", []PortEdge{pt("368:2", "369:2", "req"), pt("368:2", "@formal_out:1", "req")}},
 		// aliasAssign (q := p; q.n = v): q.n = v reaches p's formal_out.
 		{"aliasAssign", []PortEdge{pt("153:2", "@formal_out", "p")}},
+		// Fix round 1, I3: address-taken values. The value's own def
+		// (`var req Req`, storage) reaches the use p of `p.UserID = id`: p
+		// points into it.
+		{"AliasPtrValue", []PortEdge{pt("388:2", "390:2", "p"), pt("390:2", "391:2", "req.UserID")}},
+		{"AliasArraySlice", []PortEdge{pt("396:2", "398:2", "s"), pt("398:2", "399:2", "arr[*]")}},
+		{"AliasFieldAddr", []PortEdge{pt("405:2", "407:2", "p"), pt("407:2", "408:2", "o.Inner.n")}},
+		// Option A: reference-typed fields copied out (one-step offset).
+		{"AliasRefField", []PortEdge{pt("424:2", "425:2", "s.m[*]"), pt("424:2", "@formal_out:1", "s")}},
+		{"AliasPtrField", []PortEdge{pt("436:2", "437:2", "r.ptr.n"), pt("436:2", "@formal_out:1", "r")}},
+		// I2: an io.Writer and an io.Reader holding one *bytes.Buffer.
+		{"AliasIfaces", []PortEdge{pt("445:2", "446:2", "r"), pt("445:2", "@formal_out:1", "f"), pt("446:2", "@formal_out:1", "f")}},
 	} {
 		if got := pointsTo(res.Callables[sdgKey(c.fn)].Ddg); !slices.Equal(got, c.want) {
 			t.Errorf("%s points-to edges:\n got  %+v\n want %+v", c.fn, got, c.want)
@@ -62,51 +84,101 @@ func TestAlias_PointerCopyLinks(t *testing.T) {
 }
 
 // TestAlias_ValueCopiesNeverAlias: AliasValue copies req by value (no
-// reference inside Req), so the write to the copy reaches nothing through
-// req: no points-to edge. The oracle itself refuses value types, nil bases
-// and pseudo paths, and accepts an interface its operand implements (T or
-// *T), a global pointer with a local one, and identical reference types.
+// reference inside Req) and AliasValueCopies copies s twice, no address
+// taken: no points-to edge. The oracle table pins the type rules (typeOracle's
+// doc; fix round 1, I1–I3).
 func TestAlias_ValueCopiesNeverAlias(t *testing.T) {
-	res := runAlias(t, typeOracle{})
-	if got := pointsTo(res.Callables[sdgKey("AliasValue")].Ddg); len(got) != 0 {
-		t.Errorf("AliasValue has points-to edges %+v", got)
+	res := runAlias(t, true)
+	for _, fn := range []string{"AliasValue", "AliasValueCopies"} {
+		if got := pointsTo(res.Callables[sdgKey(fn)].Ddg); len(got) != 0 {
+			t.Errorf("%s has points-to edges %+v", fn, got)
+		}
 	}
 
 	pkg := types.NewPackage("example.com/p", "p")
-	v := func(name string, t types.Type) dataflow.Path {
-		return dataflow.Path{Base: types.NewVar(token.NoPos, pkg, name, t), Spell: name + ".f"}
+	newNamed := func(name string, u types.Type) *types.Named {
+		return types.NewNamed(types.NewTypeName(token.NoPos, pkg, name, nil), u, nil)
 	}
-	st := types.NewStruct([]*types.Var{types.NewField(token.NoPos, pkg, "f", types.Typ[types.Int], false)}, nil)
-	named := types.NewNamed(types.NewTypeName(token.NoPos, pkg, "S", nil), st, nil)
-	m := types.NewFunc(token.NoPos, pkg, "M", types.NewSignatureType(types.NewVar(token.NoPos, pkg, "s", types.NewPointer(named)), nil, nil, nil, nil, false))
-	named.AddMethod(m)
-	iface := types.NewInterfaceType([]*types.Func{types.NewFunc(token.NoPos, pkg, "M", types.NewSignatureType(nil, nil, nil, nil, nil, false))}, nil).Complete()
-	other := types.NewInterfaceType([]*types.Func{types.NewFunc(token.NoPos, pkg, "N", types.NewSignatureType(nil, nil, nil, nil, nil, false))}, nil).Complete()
-	gv := types.NewVar(token.NoPos, pkg, "G", types.NewPointer(named))
-	pkg.Scope().Insert(gv)
-	global := dataflow.Path{Base: gv, Spell: "example.com/p::G.f"}
+	field := func(name string, t types.Type) *types.Var { return types.NewField(token.NoPos, pkg, name, t, false) }
+	S := newNamed("S", types.NewStruct([]*types.Var{field("f", types.Typ[types.Int])}, nil))
+	S.AddMethod(types.NewFunc(token.NoPos, pkg, "M", types.NewSignatureType(types.NewVar(token.NoPos, pkg, "s", types.NewPointer(S)), nil, nil, nil, nil, false)))
+	method := func(name string) *types.Interface {
+		return types.NewInterfaceType([]*types.Func{types.NewFunc(token.NoPos, pkg, name, types.NewSignatureType(nil, nil, nil, nil, nil, false))}, nil).Complete()
+	}
+	I, J := newNamed("I", method("M")), newNamed("J", method("N"))
+	Inner := newNamed("Inner", types.NewStruct([]*types.Var{field("n", types.Typ[types.Int])}, nil))
+	Outer := newNamed("Outer", types.NewStruct([]*types.Var{types.NewField(token.NoPos, pkg, "Inner", Inner, true)}, nil))
+	bytesT := types.NewSlice(types.Typ[types.Byte])
+	Bytes := newNamed("Bytes", bytesT)
+	header := types.NewMap(types.Typ[types.String], types.NewSlice(types.Typ[types.String]))
+	Header := newNamed("Header", header)
+	ch := func(d types.ChanDir) types.Type { return types.NewChan(d, types.Typ[types.Int]) }
+	fn := types.NewSignatureType(nil, nil, nil, types.NewTuple(types.NewVar(token.NoPos, pkg, "", types.Typ[types.Int])), nil, false)
+	arr := types.NewArray(types.Typ[types.Int], 4)
 
-	o := typeOracle{}
+	o := newTypeOracle(dataflow.Unit{}, nil).(*typeOracle)
+	vars := map[string]*types.Var{}
+	P := func(name string, t types.Type, spell string) dataflow.Path {
+		v, ok := vars[name]
+		if !ok {
+			v = types.NewVar(token.NoPos, pkg, name, t)
+			vars[name] = v
+		}
+		return dataflow.Path{Base: v, Spell: spell}
+	}
+	gv := types.NewVar(token.NoPos, pkg, "G", types.NewPointer(S))
+	pkg.Scope().Insert(gv)
+	gs := types.NewVar(token.NoPos, pkg, "GS", S)
+	pkg.Scope().Insert(gs)
+	taken := P("x", S, "x.f")
+	o.taken[taken.Base] = true
+	tarr := P("arr", arr, "arr[*]")
+	o.taken[tarr.Base] = true
+	o.takenSub[subKey{tarr.Base, "[*]"}] = true
+	to := P("o", Outer, "o.Inner.n")
+	o.taken[to.Base] = true
+	o.takenSub[subKey{to.Base, ".Inner"}] = true
+
 	for _, c := range []struct {
 		what string
-		a, b dataflow.Path
+		d, u dataflow.Path
 		want bool
 	}{
-		{"value structs", v("a", named), v("b", named), false},
-		{"ints", v("a", types.Typ[types.Int]), v("b", types.Typ[types.Int]), false},
-		{"identical pointers", v("a", types.NewPointer(named)), v("b", types.NewPointer(named)), true},
-		{"pointer, value", v("a", types.NewPointer(named)), v("b", named), false},
-		{"different pointers", v("a", types.NewPointer(named)), v("b", types.NewPointer(types.Typ[types.Int])), false},
-		{"*S implements I", v("a", types.NewPointer(named)), v("b", iface), true},
-		{"I, *S", v("a", iface), v("b", types.NewPointer(named)), true},
-		{"S's *S implements I, but S is a value", v("a", named), v("b", iface), false},
-		{"*S does not implement J", v("a", types.NewPointer(named)), v("b", other), false},
-		{"global and local pointer", global, v("b", types.NewPointer(named)), true},
-		{"nil base", dataflow.Path{Spell: "u.f"}, v("b", types.NewPointer(named)), false},
-		{"pseudo path", dataflow.Path{Spell: "<defer>:9:9"}, v("b", types.NewPointer(named)), false},
+		{"value structs", P("a1", S, "a1.f"), P("b1", S, "b1.f"), false},
+		{"ints", P("a2", types.Typ[types.Int], "a2"), P("b2", types.Typ[types.Int], "b2"), false},
+		{"identical pointers", P("a3", types.NewPointer(S), "a3.f"), P("b3", types.NewPointer(S), "b3.f"), true},
+		{"bare def of a pointer rebinds it", P("a3", nil, "a3"), P("b3", nil, "b3.f"), false},
+		{"pointer, untaken value", P("a3", nil, "a3.f"), P("b4", S, "b4.f"), false},
+		{"different pointees", P("a3", nil, "a3.f"), P("b5", types.NewPointer(types.Typ[types.Int]), "b5.*"), false},
+		{"*S implements I", P("a3", nil, "a3.f"), P("i1", I, "i1.*"), true},
+		{"I, *S", P("i1", nil, "i1.*"), P("a3", nil, "a3.f"), true},
+		{"value S, I (only *S implements)", P("a1", nil, "a1.f"), P("i1", nil, "i1.*"), false},
+		{"*S does not implement J", P("a3", nil, "a3.f"), P("j1", J, "j1.*"), false},
+		{"I2: two unrelated interfaces", P("i1", nil, "i1.*"), P("j1", nil, "j1.*"), true},
+		{"I1: Bytes vs []byte", P("s1", Bytes, "s1[*]"), P("s2", bytesT, "s2[*]"), true},
+		{"I1: Header vs map[string][]string", P("h1", Header, "h1[*]"), P("h2", header, "h2[*]"), true},
+		{"I1: chan int vs <-chan int", P("c1", ch(types.SendRecv), "c1[*]"), P("c2", ch(types.RecvOnly), "c2[*]"), true},
+		{"I1: chan<- int vs chan int", P("c3", ch(types.SendOnly), "c3[*]"), P("c1", nil, "c1[*]"), true},
+		{"I1: []int vs []string", P("s3", types.NewSlice(types.Typ[types.Int]), "s3[*]"), P("s4", types.NewSlice(types.Typ[types.String]), "s4[*]"), false},
+		{"I1: identical funcs", P("f1", fn, "f1.*"), P("f2", fn, "f2.*"), true},
+		{"global and local pointer", dataflow.Path{Base: gv, Spell: "example.com/p::G.f"}, P("a3", nil, "a3.f"), true},
+		{"I3: *S write, taken S read", P("a3", nil, "a3.f"), taken, true},
+		{"I3: taken S write, *S read", P("x", nil, "x.f"), P("a3", nil, "a3.f"), true},
+		{"I3: taken S bare def, *S read", P("x", nil, "x"), P("a3", nil, "a3.f"), true},
+		{"I3: global value is always taken", P("a3", nil, "a3.f"), dataflow.Path{Base: gs, Spell: "example.com/p::GS.f"}, true},
+		{"I3: two taken values never share storage", P("x", nil, "x.f"), dataflow.Path{Base: gs, Spell: "example.com/p::GS.f"}, false},
+		{"I3: sliced array vs []int", P("s3", nil, "s3[*]"), tarr, true},
+		{"I3: &o.Inner offset, p.n vs o.Inner.n", P("p1", types.NewPointer(Inner), "p1.n"), to, true},
+		{"I3: &o.Inner offset, reverse", to, P("p1", nil, "p1.n"), true},
+		{"I3: *Inner vs untaken Outer field", P("p1", nil, "p1.n"), P("o2", Outer, "o2.Inner.n"), false},
+		{"ref field: m vs s.m", P("m1", Header, "m1[*]"), P("hs", newNamed("HS", types.NewStruct([]*types.Var{field("m", header)}, nil)), "hs.m[*]"), true},
+		{"ref field: bare read of the struct", P("m1", nil, "m1[*]"), P("hs", nil, "hs"), true},
+		{"ref field: field rebind writes no target", P("hs", nil, "hs.m"), P("m1", nil, "m1[*]"), false},
+		{"nil base", dataflow.Path{Spell: "u.f"}, P("a3", nil, "a3.f"), false},
+		{"pseudo path", dataflow.Path{Spell: "<defer>:9:9"}, P("a3", nil, "a3.f"), false},
 	} {
-		if got := o.MayAlias(c.a, c.b); got != c.want {
-			t.Errorf("%s: MayAlias = %v, want %v", c.what, got, c.want)
+		if got := o.MayAlias(c.d, c.u); got != c.want {
+			t.Errorf("%s: MayAlias(%s, %s) = %v, want %v", c.what, c.d.Spell, c.u.Spell, got, c.want)
 		}
 	}
 }
@@ -121,10 +193,10 @@ func TestAlias_ValueCopiesNeverAlias(t *testing.T) {
 // skipped units get none.
 func TestAlias_AddsOnly(t *testing.T) {
 	in := loadInput(t, "dataflow")
-	defer func(v AliasOracle) { aliasOracle = v }(aliasOracle)
-	aliasOracle = nil
+	defer func(v func(dataflow.Unit, ast.Node) AliasOracle) { newAliasOracle = v }(newAliasOracle)
+	newAliasOracle = nil
 	off := Run(in)
-	aliasOracle = typeOracle{}
+	newAliasOracle = newTypeOracle
 	on := Run(loadInput(t, "dataflow"))
 
 	var nPT, nSumm int
@@ -207,10 +279,10 @@ func TestAlias_AddsOnly(t *testing.T) {
 // lacks it off.
 func TestAlias_SummaryThroughAlias(t *testing.T) {
 	want := SummaryEdge{Src: "382:2/actual_in:1", Dst: "382:2/actual_out"}
-	if got := runAlias(t, typeOracle{}).Callables[sdgKey("CallAliasAssign")].Summary; !slices.Contains(got, want) {
+	if got := runAlias(t, true).Callables[sdgKey("CallAliasAssign")].Summary; !slices.Contains(got, want) {
 		t.Errorf("CallAliasAssign summary %+v lacks %+v", got, want)
 	}
-	if got := runAlias(t, nil).Callables[sdgKey("CallAliasAssign")].Summary; slices.Contains(got, want) {
+	if got := runAlias(t, false).Callables[sdgKey("CallAliasAssign")].Summary; slices.Contains(got, want) {
 		t.Errorf("CallAliasAssign summary %+v has %+v without the alias pass", got, want)
 	}
 }
@@ -235,5 +307,39 @@ func TestAlias_SkippedAndNoVTA(t *testing.T) {
 	}
 	if got := pointsTo(res.Callables[sdgKey("AliasPtr")].Ddg); !slices.Contains(got, pt("360:2", "361:2", "req.UserID")) {
 		t.Errorf("no_vta AliasPtr points-to edges %+v lack 360:2 → 361:2", got)
+	}
+}
+
+// TestWiring_GoldenWithAliasOff (M5) pins wire's output for every sdg
+// fixture unit with the alias pass off, byte for byte, against
+// testdata/wire_sdg_off.golden, which was generated by the pre-refactor
+// wiring (7ec77e7) over this fixture: the port() refactor of the wiring is
+// output-neutral. Regenerate with -update only for an intended change.
+func TestWiring_GoldenWithAliasOff(t *testing.T) {
+	defer func(v func(dataflow.Unit, ast.Node) AliasOracle) { newAliasOracle = v }(newAliasOracle)
+	newAliasOracle = nil
+	in, _, p := runPorts(t)
+	var b strings.Builder
+	for _, u := range in.Units {
+		if u.Key.Path != sdgFile {
+			continue
+		}
+		fmt.Fprintf(&b, "%s\n", u.Key.Signature)
+		for _, e := range p.wire(u.Key) {
+			fmt.Fprintf(&b, "\t%s -> %s %s %s\n", e.Src, e.Dst, e.Var, e.Prov)
+		}
+	}
+	golden := filepath.Join("testdata", "wire_sdg_off.golden")
+	if *update {
+		if err := os.WriteFile(golden, []byte(b.String()), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.String() != string(want) {
+		t.Errorf("wire output (alias off) differs from %s; diff with -update", golden)
 	}
 }

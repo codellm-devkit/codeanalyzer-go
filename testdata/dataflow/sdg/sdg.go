@@ -381,3 +381,68 @@ func AliasValue(req Req, id string) string {
 func CallAliasAssign(p *Inner, v int) {
 	aliasAssign(p, v)
 }
+
+// AliasPtrValue takes req's address (spec §4.10's motivating case): the
+// write through p reaches the read of the value req.
+func AliasPtrValue(id string) string {
+	var req Req
+	p := &req
+	p.UserID = id
+	return req.UserID
+}
+
+// AliasArraySlice writes the array arr through its slice s.
+func AliasArraySlice(v int) int {
+	var arr [4]int
+	s := arr[:]
+	s[0] = v
+	return arr[0]
+}
+
+// AliasFieldAddr writes o's embedded Inner through its address p: a
+// one-step offset (p.n is o.Inner.n).
+func AliasFieldAddr(v int) int {
+	var o Outer
+	p := &o.Inner
+	p.n = v
+	return o.Inner.n
+}
+
+// AliasValueCopies copies s twice by value, no address taken: the write to
+// s1 never reaches s2 (Inner holds no reference).
+func AliasValueCopies(s Inner, v int) int {
+	s1 := s
+	s2 := s
+	s1.n = v
+	return s2.n
+}
+
+// AliasRefField copies the map field s.m out: the write through m reaches
+// the read through s.m (a reference-typed field, one-step offset).
+func AliasRefField(s memStore, k, v string) string {
+	m := s.m
+	m[k] = v
+	return s.m[k]
+}
+
+type ptrHolder struct {
+	ptr *Inner
+}
+
+// AliasPtrField copies the pointer field r.ptr out: the write through p
+// reaches the read through r.ptr.
+func AliasPtrField(r ptrHolder, v int) int {
+	p := r.ptr
+	p.n = v
+	return r.ptr.n
+}
+
+// AliasIfaces holds one value in two unrelated interfaces: the write
+// through w may change what r reads.
+func AliasIfaces(f *bytes.Buffer, p []byte) int {
+	var r io.Reader = f
+	var w io.Writer = f
+	w.Write(p)
+	n, _ := r.Read(p)
+	return n
+}
