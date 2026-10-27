@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"sort"
 	"testing"
 
@@ -519,14 +520,17 @@ func TestDDG_ValueStructWithSliceIsWrittenThrough(t *testing.T) {
 	}
 }
 
-// flatDDG is a reference reaching-definitions DDG with the kill rule of
-// BuildDDG tested against every definition of the body (no bucketing), on
-// plain map sets: the oracle TestDDG_KillBucketsMatchFlat compares against.
-func flatDDG(nodes []dataflow.Node, cfg []dataflow.CfgEdge, du map[string]dataflow.DefUse) []dataflow.DdgEdge {
-	type def struct {
-		node string
-		path dataflow.Path
-	}
+// flatDef is a definition of the flat reference: a node and a path.
+type flatDef struct {
+	Node string
+	Path dataflow.Path
+}
+
+// flatReaching is a reference reaching-definitions fixpoint with the kill
+// rule of BuildDDG tested against every definition of the body (no
+// bucketing), on plain map sets: IN of every CFG node.
+func flatReaching(nodes []dataflow.Node, cfg []dataflow.CfgEdge, du map[string]dataflow.DefUse) map[string]map[flatDef]bool {
+	type def = flatDef
 	isNode := map[string]bool{}
 	for _, n := range nodes {
 		if n.Parent == "" {
@@ -554,7 +558,7 @@ func flatDDG(nodes []dataflow.Node, cfg []dataflow.CfgEdge, du map[string]datafl
 			shallow[p] = true
 		}
 		for _, p := range du[k].Defs {
-			if p == d.path || !shallow[p] && p.Covers(d.path) {
+			if p == d.Path || !shallow[p] && p.Covers(d.Path) {
 				return true
 			}
 		}
@@ -579,7 +583,7 @@ func flatDDG(nodes []dataflow.Node, cfg []dataflow.CfgEdge, du map[string]datafl
 				}
 			}
 			for _, d := range all {
-				if d.node == k {
+				if d.Node == k {
 					next[d] = true
 				}
 			}
@@ -596,12 +600,41 @@ func flatDDG(nodes []dataflow.Node, cfg []dataflow.CfgEdge, du map[string]datafl
 			out[k] = next
 		}
 	}
+	return in
+}
+
+// flatDDG is the reference DDG over flatReaching: each use links from each
+// reaching def it interferes with. TestDDG_KillBucketsMatchFlat compares
+// BuildDDG against it.
+func flatDDG(nodes []dataflow.Node, cfg []dataflow.CfgEdge, du map[string]dataflow.DefUse) []dataflow.DdgEdge {
+	return flatDDGAlias(nodes, cfg, du, nil)
+}
+
+// anyBase is the broadest oracle: any two resolved bases may alias. The flat
+// alias gate uses it so that the matching, not the oracle, is under test.
+func anyBase(a, b dataflow.Path) bool { return a.Base != nil && b.Base != nil }
+
+// flatDDGAlias is BuildDDGAlias's reference, formulated independently: over
+// flatReaching, a use u also links from a reaching def d of another base
+// whose spelling has a suffix when d's suffix, rebased onto u's base,
+// interferes with u (Covers either way) and mayAlias(d, u). nil mayAlias is
+// flatDDG.
+func flatDDGAlias(nodes []dataflow.Node, cfg []dataflow.CfgEdge, du map[string]dataflow.DefUse, mayAlias func(a, b dataflow.Path) bool) []dataflow.DdgEdge {
 	edges := map[dataflow.DdgEdge]bool{}
-	for k := range isNode {
-		for d := range in[k] {
+	for k, ins := range flatReaching(nodes, cfg, du) {
+		for d := range ins {
+			suffix := d.Path.Spell[len(dataflow.SpellBase(d.Path.Spell)):]
 			for _, u := range du[k].Uses {
-				if d.path.Covers(u) || u.Covers(d.path) {
-					edges[dataflow.DdgEdge{Src: d.node, Dst: k, Var: u.Spell}] = true
+				if d.Path.Covers(u) || u.Covers(d.Path) {
+					edges[dataflow.DdgEdge{Src: d.Node, Dst: k, Var: u.Spell}] = true
+					continue
+				}
+				if mayAlias == nil || suffix == "" || u.Base == d.Path.Base {
+					continue
+				}
+				r := dataflow.Path{Base: u.Base, Spell: dataflow.SpellBase(u.Spell) + suffix}
+				if (r.Covers(u) || u.Covers(r)) && mayAlias(d.Path, u) {
+					edges[dataflow.DdgEdge{Src: d.Node, Dst: k, Var: u.Spell}] = true
 				}
 			}
 		}
@@ -622,7 +655,7 @@ func flatDDG(nodes []dataflow.Node, cfg []dataflow.CfgEdge, du map[string]datafl
 func TestDDG_KillBucketsMatchFlat(t *testing.T) {
 	_, thisFile, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(thisFile), "..", "..", "testdata")
-	total := 0
+	total, aliased := 0, 0
 	for _, dir := range []string{"dataflow", "chi"} {
 		fset, cases := loadDiffCases(t, filepath.Join(root, dir))
 		for _, c := range cases {
@@ -634,10 +667,18 @@ func TestDDG_KillBucketsMatchFlat(t *testing.T) {
 				t.Errorf("%s: bucketed DDG (%d edges) != flat (%d edges)", c.name, len(got), len(want))
 			}
 			total += len(got)
+			gotA, wantA := dataflow.BuildDDGAlias(kept, es, du, anyBase), flatDDGAlias(kept, es, du, anyBase)
+			if !reflect.DeepEqual(gotA, wantA) {
+				t.Errorf("%s: bucketed alias DDG (%d edges) != flat (%d edges)", c.name, len(gotA), len(wantA))
+			}
+			aliased += len(gotA) - len(got)
 		}
 	}
 	if total < 1000 {
 		t.Errorf("kill-bucket gate covered only %d edges", total)
+	}
+	if aliased < 100 {
+		t.Errorf("alias gate covered only %d alias edges", aliased)
 	}
 
 	// Hand-built: x (outer), x (shadowing inner, same spelling), the
@@ -681,11 +722,87 @@ func TestDDG_KillBucketsMatchFlat(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("hand-built kills:\n got %v\nwant %v", got, want)
 	}
+	if gotA, wantA := dataflow.BuildDDGAlias(nodes, cfg, du, anyBase), flatDDGAlias(nodes, cfg, du, anyBase); !reflect.DeepEqual(gotA, wantA) {
+		t.Errorf("hand-built alias kills:\n got %v\nwant %v", gotA, wantA)
+	}
 	// The unresolved u (1:4) kills u.f of 1:1 and 1:3 by spelling head: only
 	// 1:4's own u reaches 1:6's u.f.
 	for _, g := range got {
 		if g.Dst == "1:6" && g.Var == "u.f" && g.Src != "1:4" {
 			t.Errorf("hand-built kills: %v survives the unresolved u = … at 1:4", g)
 		}
+	}
+}
+
+// TestDDGAlias_Rule pins BuildDDGAlias on a hand-built line, with p and q
+// pointers of one type (may alias) and v an int:
+//
+//	@entry  defines p, q, v
+//	1:1     p.f = v
+//	1:2     q.f = v       (a strong def through q: kills q.f… only)
+//	1:3     use p.f, q.f.g, q, p.g
+//	1:4     q = nil       (a bare def: rebinds q, writes no aliased memory)
+//	1:5     use p.f
+//
+// 1:1's p.f reaches 1:2's bare use q (the pointer q.f = v reads). At 1:3,
+// by alias: 1:2's q.f may have written p.f, yet 1:1's p.f still
+// reaches by its own base (alias never kills); 1:1's p.f reaches q.f.g (its
+// suffix covers) and the bare use q (a bare use reads the whole pointee);
+// p.g's suffix is incompatible with q.f. At 1:5 nothing aliases: 1:4 killed
+// q.f by q's own base, and its bare def of q aliases nothing, like @entry's.
+func TestDDGAlias_Rule(t *testing.T) {
+	ptr := types.NewPointer(types.NewStruct(nil, nil))
+	p := types.NewVar(token.NoPos, nil, "p", ptr)
+	q := types.NewVar(token.NoPos, nil, "q", ptr)
+	v := types.NewVar(token.NoPos, nil, "v", types.Typ[types.Int])
+	P := func(b types.Object, s string) dataflow.Path { return dataflow.Path{Base: b, Spell: s} }
+	keys := []string{entry, "1:1", "1:2", "1:3", "1:4", "1:5", exit}
+	var nodes []dataflow.Node
+	var cfg []dataflow.CfgEdge
+	for i, k := range keys {
+		nodes = append(nodes, dataflow.Node{Key: k})
+		if i > 0 {
+			cfg = append(cfg, dataflow.CfgEdge{Src: keys[i-1], Dst: k, Kind: "fallthrough"})
+		}
+	}
+	du := map[string]dataflow.DefUse{
+		entry: {Defs: []dataflow.Path{P(p, "p"), P(q, "q"), P(v, "v")}},
+		"1:1": {Defs: []dataflow.Path{P(p, "p.f")}, Uses: []dataflow.Path{P(p, "p"), P(v, "v")}},
+		"1:2": {Defs: []dataflow.Path{P(q, "q.f")}, Uses: []dataflow.Path{P(q, "q"), P(v, "v")}},
+		"1:3": {Uses: []dataflow.Path{P(p, "p.f"), P(q, "q.f.g"), P(q, "q"), P(p, "p.g")}},
+		"1:4": {Defs: []dataflow.Path{P(q, "q")}},
+		"1:5": {Uses: []dataflow.Path{P(p, "p.f")}},
+	}
+	mayAlias := func(a, b dataflow.Path) bool { return a.Base != v && b.Base != v && a.Base != nil && b.Base != nil }
+	base := dataflow.BuildDDG(nodes, cfg, du)
+	got := dataflow.BuildDDGAlias(nodes, cfg, du, mayAlias)
+	ddg, alias := dataflow.BuildDDGSplit(nodes, cfg, du, mayAlias)
+	if !reflect.DeepEqual(ddg, base) {
+		t.Errorf("split ddg != BuildDDG:\n got %v\nwant %v", ddg, base)
+	}
+	want := []dataflow.DdgEdge{
+		dd("1:1", "1:2", "q"), // the bare use q at 1:2, as p covers p.f on its own base
+		dd("1:1", "1:3", "q"),
+		dd("1:1", "1:3", "q.f.g"),
+		dd("1:2", "1:3", "p.f"),
+	}
+	if !reflect.DeepEqual(alias, want) {
+		t.Errorf("alias edges:\n got %v\nwant %v", alias, want)
+	}
+	for _, e := range base {
+		if !slices.Contains(got, e) {
+			t.Errorf("BuildDDGAlias lost BuildDDG edge %v", e)
+		}
+	}
+	if len(got) != len(base)+len(alias) {
+		t.Errorf("BuildDDGAlias = %d edges, want BuildDDG %d + alias %d", len(got), len(base), len(alias))
+	}
+	for _, e := range []dataflow.DdgEdge{dd("1:1", "1:3", "p.f"), dd("1:1", "1:5", "p.f")} {
+		if !slices.Contains(base, e) {
+			t.Errorf("%v: q.f = v killed p.f across bases: %v", e, base)
+		}
+	}
+	if nilA := dataflow.BuildDDGAlias(nodes, cfg, du, nil); !reflect.DeepEqual(nilA, base) {
+		t.Errorf("nil oracle: got %v, want BuildDDG %v", nilA, base)
 	}
 }

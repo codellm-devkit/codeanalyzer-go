@@ -43,7 +43,14 @@ func (p Path) Covers(q Path) bool {
 	}
 	ph, ps := splitSpell(p.Spell)
 	qh, qs := splitSpell(q.Spell)
-	if ph != qh || len(ps) > len(qs) {
+	return ph == qh && stepsCover(ps, qs)
+}
+
+// stepsCover is Covers on step lists alone, bases ignored: ps is a prefix of
+// qs, a final wildcard of ps matching any non-empty remainder. The alias
+// rule (BuildDDGAlias) compares the suffixes of two different bases with it.
+func stepsCover(ps, qs []string) bool {
+	if len(ps) > len(qs) {
 		return false
 	}
 	for i, s := range ps {

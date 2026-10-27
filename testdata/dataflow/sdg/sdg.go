@@ -347,3 +347,37 @@ func implicit(x int) int {
 	}
 	return 0
 }
+
+// Req is a request whose field a pointer copy writes (Task 17, §4.10).
+type Req struct {
+	UserID string
+}
+
+// AliasPtr writes req.UserID through the pointer copy p: the write reaches
+// the return's read of req.UserID only through the may-alias oracle.
+func AliasPtr(req *Req, id string) string {
+	p := req
+	p.UserID = id
+	return req.UserID
+}
+
+// AliasPtrWhole is AliasPtr returning the whole pointer: the bare use req
+// is prefix-compatible with the aliased write p.UserID.
+func AliasPtrWhole(req *Req, id string) *Req {
+	p := req
+	p.UserID = id
+	return req
+}
+
+// AliasValue copies req by value: the write to the copy never reaches req.
+func AliasValue(req Req, id string) string {
+	p := req
+	p.UserID = id
+	return req.UserID
+}
+
+// CallAliasAssign calls aliasAssign, whose v reaches its p only through the
+// alias q: the call has a summary edge from v's actual_in to p's actual_out.
+func CallAliasAssign(p *Inner, v int) {
+	aliasAssign(p, v)
+}

@@ -43,6 +43,52 @@ import (
 // cfg or the DefUse lists. The output is deduplicated, sorted by (Src, Dst,
 // Var) and non-nil. Its prov (["ssa"] at L3) is added at emission.
 func BuildDDG(nodes []Node, cfg []CfgEdge, du map[string]DefUse) []DdgEdge {
+	ddg, _ := solveDDG(nodes, cfg, du, nil)
+	return ddg
+}
+
+// BuildDDGAlias is BuildDDG with a may-alias oracle (spec §4.10): the same
+// reaching-definitions fixpoint, kills and use matching, plus one rule. A
+// use u at n also links from a def d in IN(n) whose base differs from u's
+// when
+//
+//   - d's path has a non-empty suffix (a step after its base): a bare def
+//     `p = …` rebinds the variable and writes no memory another base can
+//     reach (ruling, Task 17), so only a write through a base aliases. Hence
+//     no alias edge leaves @entry, whose defs are all bare. The use side is
+//     unrestricted: a bare use (`return req`) reads the whole pointee;
+//   - the suffixes are prefix-compatible, in Covers' two-directional sense
+//     with the bases ignored (d.f covers u.f.g, u.* covers d.f); and
+//   - mayAlias(d.path, u) holds.
+//
+// Alias never kills: a strong def through one base kills only the defs of
+// its own base (BuildDDG's KILL), so a def that may be overwritten through
+// an alias still reaches. The edge is d.node → n with Var = u.Spell, as for
+// BuildDDG. The output is BuildDDG's plus the alias edges, deduplicated,
+// sorted by (Src, Dst, Var) and non-nil; a nil mayAlias yields BuildDDG.
+func BuildDDGAlias(nodes []Node, cfg []CfgEdge, du map[string]DefUse, mayAlias func(a, b Path) bool) []DdgEdge {
+	ddg, alias := solveDDG(nodes, cfg, du, mayAlias)
+	if len(alias) == 0 {
+		return ddg
+	}
+	out := append(ddg, alias...)
+	sortDdg(out)
+	return out
+}
+
+// BuildDDGSplit is BuildDDGAlias split in two: BuildDDG's edges, and the
+// edges only the alias rule yields (none of which is in the first list),
+// each sorted by (Src, Dst, Var). One fixpoint serves both: the L4 port
+// wiring (package sdg) maps the first to reaching-defs port edges and the
+// second to its points-to delta.
+func BuildDDGSplit(nodes []Node, cfg []CfgEdge, du map[string]DefUse, mayAlias func(a, b Path) bool) (ddg, alias []DdgEdge) {
+	return solveDDG(nodes, cfg, du, mayAlias)
+}
+
+// solveDDG is the fixpoint and use matching of BuildDDG and BuildDDGAlias:
+// the BuildDDG edges, and (mayAlias non-nil) the alias-only edges, both
+// sorted, the first non-nil.
+func solveDDG(nodes []Node, cfg []CfgEdge, du map[string]DefUse, mayAlias func(a, b Path) bool) (ddg, alias []DdgEdge) {
 	g := newPdomGraph(nodes, cfg)
 	n := len(g.keys)
 
@@ -167,10 +213,74 @@ func BuildDDG(nodes []Node, cfg []CfgEdge, du map[string]DefUse) []DdgEdge {
 		}
 	}
 
+	if mayAlias != nil {
+		alias = aliasEdges(g.keys, du, in, func(i int) Path { return defs[i].path }, func(i int) string { return g.keys[defs[i].node] }, edges, mayAlias)
+	}
+	return sortedDdg(edges), alias
+}
+
+// aliasEdges is BuildDDGAlias's alias rule over a solved fixpoint: for each
+// node with uses, each reaching def with a suffix is matched against each
+// use of a different base. Edges already in base are skipped. The result is
+// sorted (nil when empty).
+func aliasEdges(keys []string, du map[string]DefUse, in [][]uint64, pathOf func(int) Path, nodeOf func(int) string, base map[DdgEdge]bool, mayAlias func(a, b Path) bool) []DdgEdge {
+	type use struct {
+		path  Path
+		steps []string
+	}
+	steps := map[int][]string{} // def index → its steps; absent: not yet split
+	edges := map[DdgEdge]bool{}
+	for v, k := range keys {
+		var uses []use
+		for _, u := range du[k].Uses {
+			_, s := splitSpell(u.Spell)
+			uses = append(uses, use{u, s})
+		}
+		if len(uses) == 0 {
+			continue
+		}
+		for w, x := range in[v] {
+			for x != 0 {
+				b := bits.TrailingZeros64(x)
+				x &^= 1 << b
+				i := w*64 + b
+				ds, ok := steps[i]
+				if !ok {
+					_, ds = splitSpell(pathOf(i).Spell)
+					steps[i] = ds
+				}
+				if len(ds) == 0 {
+					continue // a bare def writes no aliased memory
+				}
+				d := pathOf(i)
+				for _, u := range uses {
+					if u.path.Base == d.Base || !(stepsCover(ds, u.steps) || stepsCover(u.steps, ds)) {
+						continue
+					}
+					e := DdgEdge{Src: nodeOf(i), Dst: k, Var: u.path.Spell}
+					if !base[e] && !edges[e] && mayAlias(d, u.path) {
+						edges[e] = true
+					}
+				}
+			}
+		}
+	}
+	if len(edges) == 0 {
+		return nil
+	}
+	return sortedDdg(edges)
+}
+
+func sortedDdg(edges map[DdgEdge]bool) []DdgEdge {
 	res := make([]DdgEdge, 0, len(edges))
 	for e := range edges {
 		res = append(res, e)
 	}
+	sortDdg(res)
+	return res
+}
+
+func sortDdg(res []DdgEdge) {
 	sort.Slice(res, func(i, j int) bool {
 		a, b := res[i], res[j]
 		if a.Src != b.Src {
@@ -181,7 +291,6 @@ func BuildDDG(nodes []Node, cfg []CfgEdge, du map[string]DefUse) []DdgEdge {
 		}
 		return a.Var < b.Var
 	})
-	return res
 }
 
 // killBucket is the kill index key of a path: its Base, or for a nil Base

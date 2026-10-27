@@ -839,3 +839,28 @@ func TestEmitL4_UnresolvedRefIsDroppedAndWarned(t *testing.T) {
 		t.Errorf("no warning names the unresolved ref; warned %q", warned)
 	}
 }
+
+// TestGateL4_PointsToEdges (spec §4.10): AliasPtr's write through the copy
+// p reaches the read through req, and req's formal_out, as ddg edges with
+// prov ["points-to"], distinct from the reaching-defs edges on the same
+// endpoints.
+func TestGateL4_PointsToEdges(t *testing.T) {
+	fx := buildL4(t, "dataflow")
+	mod := v2.ModuleID(fx.l4.Application.ID, "sdg/sdg.go")
+	id := v2.CallableID(mod, "example.com/dataflow/sdg.AliasPtr")
+	var got [][3]string
+	for _, c := range l4Callables(fx.l4) {
+		if c.ID != id {
+			continue
+		}
+		for _, e := range c.Ddg {
+			if slices.Equal(e.Prov, []string{"points-to"}) {
+				got = append(got, [3]string{e.Src, e.Dst, e.Var})
+			}
+		}
+	}
+	want := [][3]string{{"360:2", "361:2", "req.UserID"}, {"360:2", "@formal_out:1", "req"}}
+	if !slices.Equal(got, want) {
+		t.Errorf("AliasPtr points-to ddg = %v, want %v", got, want)
+	}
+}

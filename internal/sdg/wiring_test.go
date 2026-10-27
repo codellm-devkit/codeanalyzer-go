@@ -185,8 +185,9 @@ func nodeOf(r dataflow.Result, key string) dataflow.Node {
 
 // TestWiring_L3EdgesUntouched: the augmented re-solve keeps every L3 ddg
 // edge (weak defs kill nothing), no port edge repeats an L3 edge, none ends
-// at @exit, every prov is reaching-defs, every endpoint is a kept body node
-// or a vertex of the callable, and the output is sorted and unique.
+// at @exit, every prov is reaching-defs or (the alias delta, Task 17)
+// points-to, every endpoint is a kept body node or a vertex of the callable,
+// and the output is sorted and unique.
 func TestWiring_L3EdgesUntouched(t *testing.T) {
 	in, _, p := runPorts(t)
 	n := 0
@@ -216,7 +217,7 @@ func TestWiring_L3EdgesUntouched(t *testing.T) {
 			if l3[dataflow.DdgEdge{Src: e.Src, Dst: e.Dst, Var: e.Var}] {
 				t.Errorf("%s: port edge %+v repeats an L3 edge", u.Key.Signature, e)
 			}
-			if e.Dst == dataflow.ExitKey || e.Prov != ProvReachingDefs || !ends[e.Src] || !ends[e.Dst] {
+			if e.Dst == dataflow.ExitKey || e.Prov != ProvReachingDefs && e.Prov != ProvPointsTo || !ends[e.Src] || !ends[e.Dst] {
 				t.Errorf("%s: bad port edge %+v", u.Key.Signature, e)
 			}
 			if i > 0 && comparePortEdge(got[i-1], e) >= 0 {

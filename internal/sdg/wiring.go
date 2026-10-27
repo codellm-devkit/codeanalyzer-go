@@ -42,11 +42,18 @@ const ProvReachingDefs = "reaching-defs"
 // An edge's var is the `of` of the vertex it touches, the formal_out's when
 // it ends at one; a body → body edge keeps the L3 path spelling.
 //
+// The same re-solve, with aliasOracle consulted (dataflow.BuildDDGSplit),
+// yields the points-to delta (spec §4.10): each alias-only edge, mapped by
+// the rules above (port), prov "points-to", unless its (src, dst, var)
+// already is an L3 or reaching-defs edge. It never removes or changes one:
+// alias adds no kills. A skipped unit gets none (its wiring is already
+// all-to-all).
+//
 // A unit with no L3 result (l3_skipped) has no body nodes to wire: it is
 // wired pass-through (wireSkipped).
 //
-// The edges are sorted by (Src, Dst, Var) and unique; none repeats an L3
-// edge.
+// The edges are sorted by (Src, Dst, Var, Prov) and unique; none repeats an
+// L3 edge, and no (src, dst, var) has both provs.
 func (p *ports) wire(k dataflow.L3Key) []PortEdge {
 	u, ok := p.units[k]
 	if !ok {
@@ -70,29 +77,14 @@ func (p *ports) wire(k dataflow.L3Key) []PortEdge {
 		}
 	}
 
-	for _, e := range dataflow.BuildDDG(w.r.Nodes, w.r.Cfg, w.du) {
-		b := dataflow.SpellBase(e.Var)
-		switch {
-		case e.Dst == dataflow.ExitKey:
-			fo, ok := w.exitOut[e.Var]
-			if !ok {
-				continue
-			}
-			src := e.Src
-			if fi, ok := w.inOf(b); ok && src == dataflow.EntryKey {
-				src = fi
-			}
-			add(src, fo.Key, fo.Of)
-		case l3[e]:
-			if fi, ok := w.inOf(b); ok && e.Src == dataflow.EntryKey {
-				add(fi, e.Dst, e.Var)
-			}
-		default:
-			src := e.Src
-			if fi, ok := w.inOf(b); ok && src == dataflow.EntryKey {
-				src = fi
-			}
-			add(src, e.Dst, e.Var)
+	var mayAlias func(a, b dataflow.Path) bool
+	if aliasOracle != nil {
+		mayAlias = memoOracle(aliasOracle)
+	}
+	resolved, alias := dataflow.BuildDDGSplit(w.r.Nodes, w.r.Cfg, w.du, mayAlias)
+	for _, e := range resolved {
+		if src, dst, v, ok := w.port(e, l3[e]); ok {
+			add(src, dst, v)
 		}
 	}
 
@@ -143,7 +135,50 @@ func (p *ports) wire(k dataflow.L3Key) []PortEdge {
 			}
 		}
 	}
+
+	// The points-to delta (spec §4.10): the alias-only edges of the same
+	// re-solve, mapped onto the vertices like the re-solved edges, minus any
+	// (src, dst, var) an L3 or reaching-defs edge already has.
+	for _, e := range alias {
+		src, dst, v, ok := w.port(e, false)
+		if !ok || l3[dataflow.DdgEdge{Src: src, Dst: dst, Var: v}] {
+			continue
+		}
+		if !out[PortEdge{Src: src, Dst: dst, Var: v, Prov: ProvReachingDefs}] {
+			out[PortEdge{Src: src, Dst: dst, Var: v, Prov: ProvPointsTo}] = true
+		}
+	}
 	return sortedPortEdges(out)
+}
+
+// port maps a re-solved ddg edge e of the unit onto its port edge (wire's
+// rules), ok false when e yields none. inL3 says e is an L3 edge.
+//
+//   - e → @exit on an output base: e.Src → its formal_out, var the
+//     formal_out's `of`; on any other base, nothing;
+//   - an L3 edge: only its formal_in mirror, when it leaves @entry on a base
+//     with a formal_in; else nothing (the L3 edge stays L3's);
+//   - any other edge: as is, from the base's formal_in instead of @entry.
+func (w *wiring) port(e dataflow.DdgEdge, inL3 bool) (src, dst, v string, ok bool) {
+	b := dataflow.SpellBase(e.Var)
+	src = e.Src
+	fi, hasIn := w.inOf(b)
+	fromEntry := hasIn && src == dataflow.EntryKey
+	if fromEntry {
+		src = fi
+	}
+	switch {
+	case e.Dst == dataflow.ExitKey:
+		fo, ok := w.exitOut[e.Var]
+		if !ok {
+			return "", "", "", false
+		}
+		return src, fo.Key, fo.Of, true
+	case inL3:
+		return src, e.Dst, e.Var, fromEntry
+	default:
+		return src, e.Dst, e.Var, true
+	}
 }
 
 // resolve re-solves unit k's reaching definitions over the augmented DefUse

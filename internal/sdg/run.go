@@ -121,12 +121,17 @@ func dispatchRun(in Input) (Result, *dispatch) {
 func overlay(in Input, d *dispatch, res *Result) {
 	start := time.Now()
 	newSDGBuilder(in, d).fill(res)
-	var nv, nd, ns int
+	var nv, nd, np, ns int
 	for _, c := range res.Callables {
 		nv, nd, ns = nv+len(c.Vertices), nd+len(c.Ddg), ns+len(c.Summary)
+		for _, e := range c.Ddg {
+			if e.Prov == ProvPointsTo {
+				np++
+			}
+		}
 	}
-	utils.Info("L4: %d vertices, %d port edges, %d summary edges, %d param_in, %d param_out, %d stand-ins in %s",
-		nv, nd, ns, len(res.ParamIn), len(res.ParamOut), len(res.Externals), time.Since(start).Round(time.Millisecond))
+	utils.Info("L4: %d vertices, %d port edges (%d points-to), %d summary edges, %d param_in, %d param_out, %d stand-ins in %s",
+		nv, nd, np, ns, len(res.ParamIn), len(res.ParamOut), len(res.Externals), time.Since(start).Round(time.Millisecond))
 }
 
 // funcSet is projectFuncs under recover: it builds functions on demand
