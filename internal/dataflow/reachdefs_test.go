@@ -480,6 +480,10 @@ func TestDDG_ClosureCaptureWrites(t *testing.T) {
 	hasDDG(t, "CaptureNested", dd("613:2", "620:2", "x"))
 	// go func(){ x = <-ch }() at 627:5: the go node hosts the literal.
 	hasDDG(t, "CaptureGo", dd("627:5", "628:2", "x"))
+	// func(){ q := p; q.n = 1 }() at 716:2 writes through p by an alias:
+	// no path of p, but p may hold a reference, so the host weak-defines
+	// p.*, which reaches return p.n (found by metamorphic relation MR5).
+	hasDDG(t, "CaptureAliasWrite", dd("716:2", "717:2", "p.n"))
 }
 
 // TestDDG_DeferOperandAfterReassign (D1 gap 3): in `defer fill(b); b[0] = s;

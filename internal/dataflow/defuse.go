@@ -114,13 +114,16 @@ const DeferPrefix = "<defer>:"
 //   - Capture writes (gap 1). A function literal may run at any later point
 //     (called in place, stored, passed to once.Do, deferred, launched), and
 //     its writes to the variables it captures are writes of this callable.
-//     Let W be the union of CaptureWrites over the outermost literals of fn's
+//     Let W be the union of hostWrites over the outermost literals of fn's
 //     body (a literal nested in another belongs to the outer one's unit, and
 //     CaptureWrites already includes what it writes). The host of a literal
 //     (the node whose DefUse is computed from an expression containing it:
 //     for `defer func(){…}()` the deferred call node, for `go func(){…}()`
-//     the go node) weak-defines each path of CaptureWrites(lit). Every strong
-//     def in fn whose base is a base of W is weak instead (@entry excepted:
+//     the go node) weak-defines each path of CaptureWrites(lit), and x.* for
+//     every capture x that may hold a reference (hostWrites: a write
+//     through a local alias, `q := p; q.n = v`, is no path of p). W is the
+//     union of those. Every strong def in fn whose base is a base of W is
+//     weak instead (@entry excepted:
 //     nothing reaches it to kill). This is flow-insensitive per captured
 //     variable on purpose: `h := func(){ x = 1 }; x = 2; h()` must not let
 //     x = 2 kill the closure's write.
@@ -635,15 +638,15 @@ func (c *collector) captureUses(lit *ast.FuncLit) {
 	}
 }
 
-// captureWrites weak-defines CaptureWrites(lit), with the callable-level
-// facts only.
+// captureWrites weak-defines hostWrites(lit), with the callable-level facts
+// only.
 func (c *collector) captureWrites(lit *ast.FuncLit) {
 	if c.facts == nil {
 		return
 	}
 	ws, ok := c.facts.capW[lit]
 	if !ok {
-		ws = CaptureWrites(lit, c.info, c.k)
+		ws = hostWrites(lit, c.info, c.k)
 	}
 	for _, p := range ws {
 		c.add(kindWeak, p)

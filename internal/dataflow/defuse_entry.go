@@ -3,6 +3,7 @@ package dataflow
 import (
 	"go/ast"
 	"go/types"
+	"slices"
 	"sort"
 
 	"github.com/codellm-devkit/codeanalyzer-go/internal/astwalk"
@@ -144,7 +145,7 @@ func freeVars(lit *ast.FuncLit, info *types.Info) []types.Object {
 // facts are the callable-level inputs of DefUseOf's D1 rules (spec §4.5 "L3
 // precision"), computed once per callable from its body.
 type facts struct {
-	// capW is CaptureWrites of each outermost function literal of the body.
+	// capW is hostWrites of each outermost function literal of the body.
 	capW map[*ast.FuncLit][]Path
 	// weakBases is the base of every path in W, the union of capW: a strong
 	// def on one of them is weak (gap 1).
@@ -163,7 +164,7 @@ func newFacts(fn ast.Node, info *types.Info, k int, keyOf map[ast.Node]string) *
 	}
 	f := &facts{capW: map[*ast.FuncLit][]Path{}, weakBases: map[types.Object]bool{}}
 	for _, l := range astwalk.Literals(body) {
-		ws := CaptureWrites(l.Lit, info, k)
+		ws := hostWrites(l.Lit, info, k)
 		f.capW[l.Lit] = ws
 		for _, p := range ws {
 			f.weakBases[p.Base] = true
@@ -171,6 +172,38 @@ func newFacts(fn ast.Node, info *types.Info, k int, keyOf map[ast.Node]string) *
 	}
 	f.deferOps = deferOperandBases(body, info, keyOf)
 	return f
+}
+
+// hostWrites is what the host of function literal lit weak-defines (D1 gap
+// 1): CaptureWrites(lit), plus x.* for every capture x whose type may hold a
+// reference (MayHoldRef). The literal may write through x without writing a
+// path of x (`q := p; q.n = v` defines q.n, never p.*), exactly as a callee
+// may write through a reference argument (the call rule), so a reference-
+// holding capture is written through by the shared by-ref predicate, as at
+// L4 (sdg writtenCaptures).
+func hostWrites(lit *ast.FuncLit, info *types.Info, k int) []Path {
+	ws := CaptureWrites(lit, info, k)
+	seen := map[Path]bool{}
+	for _, p := range ws {
+		seen[p] = true
+	}
+	var add []Path
+	for _, v := range freeVars(lit, info) {
+		if !MayHoldRef(v.Type()) {
+			continue
+		}
+		p := pathB{base: v, head: baseSpell(v)}.with(".*").limit(k)
+		if !seen[p] {
+			seen[p] = true
+			add = append(add, p)
+		}
+	}
+	if len(add) == 0 {
+		return ws
+	}
+	out := append(slices.Clip(ws), add...)
+	sortPaths(out)
+	return out
 }
 
 // CaptureWrites returns the paths function literal lit, or any literal nested

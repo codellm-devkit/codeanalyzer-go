@@ -326,7 +326,10 @@ port wiring (§9 Phase 2 prerequisites), and L4 still adds capture ports on top:
 - **Gap 1 — writes to captured variables inside closures.** `func(){ x = secret }()` or
   `once.Do(func(){ cfg = load() })` writes `x` / `cfg` in the closure's own body. **L3 fix:** the
   node containing the literal weak-defines each captured variable the literal (or a literal nested
-  in it) may write; the write-set is computed syntactically per literal. In sequential code a
+  in it) may write; the write-set is computed syntactically per literal, and (amended 2026-10-27,
+  from metamorphic relation MR5) also holds `x.*` for every captured `x` that may hold a reference
+  (`MayHoldRef`): a write through a local alias, `q := p; q.n = v`, writes no path of `p`. In
+  sequential code a
   closure cannot run before it exists, so this is complete apart from goroutine interleaving (a
   non-goal). Expect more `ddg` edges at capture sites (measured on Kubernetes). **L4** then adds a
   traceable source through capture ports (§4.6 closures rule).

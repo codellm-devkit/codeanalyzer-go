@@ -270,12 +270,13 @@ func TestDefUse_DeferRegistrationCarriesArgs(t *testing.T) {
 
 	// defer func(){…}(): nothing is evaluated at registration but the func
 	// value; the deferred call uses what the closure captures and (D1 gap 1)
-	// weak-defines what it writes of them: err = nil.
+	// weak-defines what it writes of them: err = nil, and err.* (an
+	// interface may hold a reference: hostWrites).
 	reg, _ = fx.du(t, "Defers", "defer func() {", 0)
 	call, ck = fx.du(t, "Defers", "defer func() {", len("defer "))
 	d = "<defer>:" + ck
 	wantDU(t, "defer func(){…}", reg, nil, ss(d), nil)
-	wantDU(t, "func(){…}() (deferred)", call, nil, ss("err"), ss(d, "err", "n", "x"))
+	wantDU(t, "func(){…}() (deferred)", call, nil, ss("err", "err.*"), ss(d, "err", "n", "x"))
 
 	reg, _ = fx.du(t, "Defers", "defer mut2(s, x)", 0)
 	call, ck = fx.du(t, "Defers", "defer mut2(s, x)", len("defer "))
@@ -332,7 +333,7 @@ func TestDefUse_EntryDefinesParamsReceiverNamedResults(t *testing.T) {
 		t.Errorf("EntryBases(closure) = %v, want %v", names, want)
 	}
 	h, _ := fx.du(t, "Entry", "h := func", 0)
-	wantDU(t, "h := func…", h, ss("h"), nil, ss("a", "r"))
+	wantDU(t, "h := func…", h, ss("h"), ss("r.*"), ss("a", "r"))
 
 	// A flow-fixture function with no package vars: params only.
 	wantDU(t, "Bump @entry", flowDU(t, "Bump", dataflow.EntryKey), ss("n"), nil, nil)
@@ -460,8 +461,9 @@ func TestDefUse_CaptureWrites(t *testing.T) {
 	wantDU(t, "DeferWrap 557:2", flowDU(t, "DeferWrap", "557:2"), nil, ss("<defer>:557:8"), nil)
 	wantDU(t, "DeferWrap 557:8", flowDU(t, "DeferWrap", "557:8"), nil, ss("err", "err.*"), ss("<defer>:557:8", "err"))
 	wantDU(t, "DeferWrap 555:2", flowDU(t, "DeferWrap", "555:2"), nil, ss("err"), nil)
-	// go func(){ x = <-ch }(): the go node is the host.
-	wantDU(t, "CaptureGo 627:5", flowDU(t, "CaptureGo", "627:5"), nil, ss("x"), ss("ch", "x"))
+	// go func(){ x = <-ch }(): the go node is the host; ch, a channel, may
+	// hold a reference, so it weak-defines ch.* too (hostWrites).
+	wantDU(t, "CaptureGo 627:5", flowDU(t, "CaptureGo", "627:5"), nil, ss("ch.*", "x"), ss("ch", "x"))
 	wantDU(t, "CaptureGo 626:2", flowDU(t, "CaptureGo", "626:2"), nil, ss("x"), nil)
 }
 

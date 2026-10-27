@@ -703,3 +703,16 @@ func PlainRecv(p plain) int {
 func (e *early) Bump() int { return f(e.n) }
 
 type early struct{ n int }
+
+// aliasT has a scalar field n.
+type aliasT struct{ n int }
+
+// CaptureAliasWrite writes through a local alias of the captured pointer p
+// inside a literal called in place: the literal writes no path of p, but p
+// may hold a reference, so its host weak-defines p.* and the write reaches
+// the later read of p.n (found by metamorphic relation MR5).
+func CaptureAliasWrite() int {
+	p := &aliasT{}
+	func() { q := p; q.n = 1 }()
+	return p.n
+}
