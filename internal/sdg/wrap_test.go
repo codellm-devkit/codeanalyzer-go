@@ -41,3 +41,26 @@ func TestVTA_TargetsBehindSyntheticWrappers(t *testing.T) {
 		}
 	}
 }
+
+// TestVTA_NoEdgeForTargetsVTADidNotFind (F7): a call_graph edge prov ["vta"]
+// is one VTA produced. HandleBound's f(id) has no L2 callee; its targets
+// include the interface method Store.Find (bound by D7, from the $bound
+// wrapper VTA returned, not a VTA callee of the site's own) and sqlStore.Find
+// (VTA, through the wrapper). Only the latter is an edge. The interface
+// method stays a target: its param edges are unchanged.
+func TestVTA_NoEdgeForTargetsVTADidNotFind(t *testing.T) {
+	_, res, d := runDispatch(t)
+	src := wrapKey("HandleBound")
+	if ts := d.targets(src, "39:9"); !slices.Contains(ts, Target{Callable: wrapKey("Store.Find")}) {
+		t.Fatalf("targets(HandleBound, 39:9) = %v, want Store.Find among them", ts)
+	}
+	var got []string
+	for _, e := range res.CallEdges {
+		if e.Source == src.Signature {
+			got = append(got, e.Target)
+		}
+	}
+	if want := []string{wrapPkg + ".sqlStore.Find"}; !slices.Equal(got, want) {
+		t.Errorf("VTA edges from HandleBound = %v, want %v", got, want)
+	}
+}

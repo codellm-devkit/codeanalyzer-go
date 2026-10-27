@@ -33,10 +33,17 @@ type l2Edge struct{ path, src, dst string }
 type dispatch struct {
 	sites  map[siteKey][]Target      // each sorted by compareTarget, no duplicates
 	static map[siteKey]Target        // the L2 static callee of a site, when it maps to a target
+	byVTA  map[siteTarget]bool       // the (site, target) pairs VTA produced: the call_graph edge candidates
 	bySig  map[string]dataflow.L3Key // symbol-table callable of each signature (init excepted)
 	l2     map[l2Edge]bool
 	l2Ext  map[string]schema.GoExternalCallee // in.Externals, read-only
 	newExt map[string]schema.GoExternalCallee // externals L2 never saw
+}
+
+// siteTarget is one target of one call site.
+type siteTarget struct {
+	site siteKey
+	t    Target
 }
 
 // compareTarget orders targets by Callable (Path, Signature), then External.
@@ -57,6 +64,7 @@ func newDispatch(in Input) *dispatch {
 	d := &dispatch{
 		sites:  map[siteKey][]Target{},
 		static: map[siteKey]Target{},
+		byVTA:  map[siteTarget]bool{},
 		l2:     make(map[l2Edge]bool, len(in.CallGraph)),
 		l2Ext:  in.Externals,
 		newExt: map[string]schema.GoExternalCallee{},
@@ -203,6 +211,9 @@ func (d *dispatch) addVTA(j *join, cg *callgraph.Graph) {
 			for _, fn := range throughWrappers(cg, e.Callee.Func) {
 				if t, ok := d.calleeTarget(j, fn); ok {
 					d.add(site, t)
+					if !isIfaceMethod(fn) {
+						d.byVTA[siteTarget{site, t}] = true
+					}
 				}
 			}
 		}
@@ -238,6 +249,18 @@ func throughWrappers(cg *callgraph.Graph, fn *ssa.Function) []*ssa.Function {
 		}
 	}
 	return out
+}
+
+// isIfaceMethod reports whether fn stands for an interface method (a $bound
+// or $thunk of one): no concrete callee, so VTA found no edge to it — D7
+// binds the interface method itself (addInvokes).
+func isIfaceMethod(fn *ssa.Function) bool {
+	obj, ok := fn.Object().(*types.Func)
+	if !ok {
+		return false
+	}
+	recv := obj.Type().(*types.Signature).Recv()
+	return recv != nil && types.IsInterface(recv.Type())
 }
 
 // isWrapper reports whether fn is SSA-synthesized code with no syntax of its
@@ -283,7 +306,9 @@ func (d *dispatch) external(obj *types.Func, sig string) {
 }
 
 // result is the Result of the dispatch: one call_graph edge per (caller,
-// target) pair that L2 lacks, prov ["vta"], weight 1 — Source the caller's
+// target) pair VTA produced (byVTA) that L2 lacks, prov ["vta"], weight 1 —
+// a target bound otherwise (the D7 interface method, L2's static callee) is
+// no edge, though it keeps its param edges — Source the caller's
 // signature and SourcePath its declaring file, as L2 has them (closures
 // included), Target the callee signature (the full external signature for an
 // external) and TargetPath the callee's declaring file (empty for an
@@ -296,6 +321,9 @@ func (d *dispatch) result(deg []Degraded) Result {
 	var ids []edgeID
 	for site, ts := range d.sites {
 		for _, t := range ts {
+			if !d.byVTA[siteTarget{site, t}] {
+				continue
+			}
 			id := edgeID{site.unit.Path, site.unit.Signature, t.External, ""}
 			if t.External == "" {
 				id.dst, id.dstPath = t.Callable.Signature, t.Callable.Path
