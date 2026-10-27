@@ -112,6 +112,9 @@ python3 -I scripts/l3_metrics.py cobra=/tmp/eval-out/cobra-a3j1/analysis.json \
 - **What `eval_l3.sh` does.** It runs a warm-up, `-a 2 -j 1`, `-a 3 -j 1` and two `-a 3 -j N`,
   all `--eager`, with each app's manifest env (dae: `GOOS=linux`). It records wall time and peak
   RSS from `/usr/bin/time -l`, then compares the three `-a 3` outputs byte for byte.
+- **Metamorphic relations (`scripts/metamorphic.sh`).** Run the default, `scripts/metamorphic.sh`
+  (memos, about 2 min), for any L3/L4 change; run `scripts/metamorphic.sh --all` (memos and
+  nats-server, about 25 min) before a release and for the Task 18 eval.
 - **What `scripts/l3_metrics.py` does.** It produces every count, ratio, distribution and check in
   this note. It has no dependencies and loads one file at a time; the 318 MB Kubernetes root file
   takes about 10 s. The per-family protobuf breakdown and the before/after edge diffs were

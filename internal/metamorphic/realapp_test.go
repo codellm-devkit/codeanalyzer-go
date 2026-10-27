@@ -9,13 +9,14 @@ package metamorphic
 //
 // Each app is $EVAL_SRC/<name> (default /tmp/eval). A missing app is
 // skipped. MR_APPS (space-separated) picks the apps, MR_RELATIONS the
-// relations (all when unset). Each relation samples 20 files and 50
-// callables with seed 1.
+// relations (all when unset). Each relation samples MR_SAMPLE_FILES files
+// (default 20) and MR_SAMPLE_CALLABLES callables (default 50) with seed 1.
 
 import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -36,9 +37,22 @@ func realTargets(t *testing.T) []*target {
 			t.Logf("%s: not prepared at %s; skipped", n, dir)
 			continue
 		}
-		out = append(out, &target{name: n, dir: dir, nFiles: 20, nCallables: 50})
+		out = append(out, &target{name: n, dir: dir, nFiles: envInt(t, "MR_SAMPLE_FILES", 20), nCallables: envInt(t, "MR_SAMPLE_CALLABLES", 50)})
 	}
 	return out
+}
+
+// envInt is the positive integer in env var name, or def when unset.
+func envInt(t *testing.T, name string, def int) int {
+	v := os.Getenv(name)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		t.Fatalf("%s=%q: want a positive integer", name, v)
+	}
+	return n
 }
 
 func TestMR_RealApps(t *testing.T) {

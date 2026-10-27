@@ -78,9 +78,14 @@ func testdata(name string) string {
 	return filepath.Join(filepath.Dir(file), "..", "..", "testdata", name)
 }
 
+// examples is testdata/metamorphic: small functions written to be eligible
+// sites of every relation, and the convention pins (conventions.go).
+var examples = &target{name: "examples", dir: testdata("metamorphic")}
+
 var fixtures = []*target{
 	{name: "dataflow", dir: testdata("dataflow"), pkgDirs: []string{"flow", "sdg"}},
 	{name: "chi", dir: testdata("chi"), nFiles: 12, nCallables: 60},
+	examples,
 }
 
 // load loads the target's workspace and its original analysis once.
@@ -678,7 +683,11 @@ func TestRefCDG(t *testing.T) {
 				t.Errorf("%s %s: cdg differs from the reference: %s", tg.name, id, d)
 			}
 		}
-		if n < 50 {
+		floor := 50
+		if tg == examples {
+			floor = 30 // a small module of focused examples
+		}
+		if n < floor {
 			t.Errorf("%s: only %d callables", tg.name, n)
 		}
 	}
@@ -711,18 +720,63 @@ func copyOf(t *testing.T, dir string) string {
 	return dst
 }
 
-// ─── one relation per oracle, on one named fixture site ───────────────────────
+// ─── one relation per oracle, on one named example ────────────────────────────
 //
 // The table above runs every relation on whole samples. These three pin one
-// site each, so a relation's shape reads end to end.
+// site each on testdata/metamorphic, so a relation's shape reads end to end.
+// Keys are found by statement text (stmtKey), never by line number.
 
-// TestMR2_ReverseDeclarations_Exact: reversing sdg/stdlib.go's declarations
-// leaves the -a 4 analysis exactly as it was, once every key is moved to its
-// statement's new line.
+const exPkg = "example.com/metamorphic."
+
+// stmtKey is the body key of the statement of examples file rel that starts
+// with text, in function fn (the first such statement).
+func stmtKey(t *testing.T, rel, fn, text string) string {
+	t.Helper()
+	f := examples.ws.Files[rel]
+	if f == nil {
+		t.Fatalf("no file %s", rel)
+	}
+	for _, fd := range funcDecls(f) {
+		if fd.Name.Name != fn {
+			continue
+		}
+		var key string
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			if st, ok := n.(ast.Stmt); ok && key == "" {
+				if _, block := st.(*ast.BlockStmt); !block && strings.HasPrefix(string(f.Src[f.off(st.Pos()):f.off(st.End())]), text) {
+					key = f.key(st.Pos())
+				}
+			}
+			return key == ""
+		})
+		if key != "" {
+			return key
+		}
+	}
+	t.Fatalf("%s: no statement %q in %s", rel, text, fn)
+	return ""
+}
+
+// siteIn is the site of res in callable id.
+func siteIn(t *testing.T, res *Result, id string) Site {
+	t.Helper()
+	for _, s := range res.Sites {
+		if s.Callable == id {
+			return s
+		}
+	}
+	t.Fatalf("no site in %s", id)
+	return Site{}
+}
+
+// TestMR2_ReverseDeclarations_Exact: reversing mr01_04_layout.go's
+// declarations (the method Scale goes back below its type) leaves the -a 4
+// analysis exactly as it was, once every key moves to its statement's new
+// line.
 func TestMR2_ReverseDeclarations_Exact(t *testing.T) {
-	tg := fixtures[0]
+	tg := examples
 	tg.load(t)
-	res, post := transformAndAnalyze(t, tg, MR2, tg.ws, []string{"sdg/stdlib.go"}, tg.pre.view)
+	res, post := transformAndAnalyze(t, tg, MR2, tg.ws, []string{"mr01_04_layout.go"}, tg.pre.view)
 	mapped, unmapped := tg.pre.view.Map(res.Map)
 	if len(unmapped) > 0 {
 		t.Fatalf("keys do not map: %v", unmapped)
@@ -732,39 +786,33 @@ func TestMR2_ReverseDeclarations_Exact(t *testing.T) {
 	}
 }
 
-// TestMR9_InsertKill_Delta: in ScalarSink, inserting `x = 0` before
-// `sinkInt(x)` moves every def edge of `x := a + 1` on x to the kill and
-// splices the kill into the CFG; the CDG is the reference CDG of that CFG,
-// and nothing else in the application changes.
+// TestMR9_InsertKill_Delta: in KillOneUse, inserting `x = 0` before
+// `sinkInt(x)` moves both def edges of `x := a + 1` on x (to the call and
+// to the return) to the kill and splices the kill into the CFG; the CDG is
+// the reference CDG of that CFG, and nothing else in the module changes.
 func TestMR9_InsertKill_Delta(t *testing.T) {
-	tg := fixtures[0]
+	tg := examples
 	tg.load(t)
-	res, post := transformAndAnalyze(t, tg, MR9, tg.ws, []string{"sdg/sdg.go"}, tg.pre.view)
-	var site *Site
-	for i, s := range res.Sites {
-		if strings.HasSuffix(s.Callable, ".ScalarSink") {
-			site = &res.Sites[i]
-		}
-	}
-	if site == nil {
-		t.Fatal("MR9 chose no site in ScalarSink")
-	}
-	var k Ref // the kill, a node the transform adds (its one mark)
+	res, post := transformAndAnalyze(t, tg, MR9, tg.ws, []string{"mr09_kill.go"}, tg.pre.view)
+	site := siteIn(t, res, exPkg+"KillOneUse")
+	var k Ref // the kill, the node the transform adds (its one mark)
 	for m := range site.Delta.Nodes {
 		k = Mark(m)
 	}
-	want := Delta{Site: site.Desc, Callable: site.Callable, CDGFromCFG: true,
-		Nodes: site.Delta.Nodes,
+	d := stmtKey(t, "mr09_kill.go", "KillOneUse", "x := a + 1")
+	u := stmtKey(t, "mr09_kill.go", "KillOneUse", "sinkInt(x)")
+	r := stmtKey(t, "mr09_kill.go", "KillOneUse", "return x")
+	want := Delta{Site: site.Desc, Callable: site.Callable, CDGFromCFG: true, Nodes: site.Delta.Nodes,
 		Remove: []DEdge{
-			DDG(Pre("509:2"), Pre("510:2"), "x"),
-			DDG(Pre("509:2"), Pre("511:2"), "x"),
-			CFG(Pre("509:2"), Pre("510:2"), "fallthrough"),
+			DDG(Pre(d), Pre(u), "x"),
+			DDG(Pre(d), Pre(r), "x"),
+			CFG(Pre(d), Pre(u), "fallthrough"),
 		},
 		Add: []DEdge{
-			DDG(k, Pre("510:2"), "x"),
-			DDG(k, Pre("511:2"), "x"),
-			CFG(Pre("509:2"), k, "fallthrough"),
-			CFG(k, Pre("510:2"), "fallthrough"),
+			DDG(k, Pre(u), "x"),
+			DDG(k, Pre(r), "x"),
+			CFG(Pre(d), k, "fallthrough"),
+			CFG(k, Pre(u), "fallthrough"),
 		},
 	}
 	mapped, unmapped := tg.pre.view.Map(res.Map)
@@ -783,24 +831,23 @@ func TestMR9_InsertKill_Delta(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d := Diff(exp, post.view, Scope{}, 20); len(d) > 0 {
-		t.Errorf("MR9 delta:\n%s", strings.Join(d, "\n"))
+	if diff := Diff(exp, post.view, Scope{}, 20); len(diff) > 0 {
+		t.Errorf("MR9 delta:\n%s", strings.Join(diff, "\n"))
 	}
 }
 
-// TestMR5_IntroduceAlias_Reach: rewriting `q.n = v` in aliasAssign as
-// `mr5q := q; mr5q.n = v` (an alias of an alias) keeps every flow from the
-// formal_ins of aliasAssign and of its caller CallAliasAssign: v still
-// reaches the formal_out of p.
+// TestMR5_IntroduceAlias_Reach: rewriting `p.n = v` in SetPtr as
+// `q := p; q.n = v` keeps every flow from SetPtr's formal_ins: v still
+// reaches the formal_out of p, now through the alias oracle.
 func TestMR5_IntroduceAlias_Reach(t *testing.T) {
-	tg := fixtures[0]
+	tg := examples
 	tg.load(t)
-	res, post := transformAndAnalyze(t, tg, MR5, tg.ws, []string{"sdg/sdg.go"}, tg.pre.view)
-	f := "example.com/dataflow/sdg.aliasAssign"
+	res, post := transformAndAnalyze(t, tg, MR5, tg.ws, []string{"mr05_alias.go"}, tg.pre.view)
+	f := exPkg + "SetPtr"
 	if !slices.Contains(res.Touched, f) {
 		t.Fatalf("MR5 did not rewrite %s", f)
 	}
-	rr := CheckReach(tg.pre.view, post.view, res.Map, []string{f, "example.com/dataflow/sdg.CallAliasAssign"}, 2, seed)
+	rr := CheckReach(tg.pre.view, post.view, res.Map, []string{f}, 1, seed)
 	if rr.Pairs == 0 {
 		t.Fatal("no flow checked")
 	}
@@ -808,8 +855,168 @@ func TestMR5_IntroduceAlias_Reach(t *testing.T) {
 		t.Errorf("MR5: lost %v, unlocated %v", rr.Lost, rr.Unlocated)
 	}
 	// The flow the alias carries: v (formal_in 1) → p's formal_out.
-	g := post.view.Graph(true)
-	if !g.Reach(Node(f, "@formal_in:1"))[Node(f, "@formal_out")] {
-		t.Error("after MR5, v no longer reaches aliasAssign's formal_out for p")
+	if !post.view.Graph(true).Reach(Node(f, "@formal_in:1"))[Node(f, "@formal_out")] {
+		t.Error("after MR5, v no longer reaches SetPtr's formal_out for p")
+	}
+}
+
+// ─── the examples module ──────────────────────────────────────────────────────
+
+// TestExamples_EveryRelationHasASite: every relation MR1-MR15 transforms at
+// least one site of testdata/metamorphic (a relation whose sites all
+// vanished would pass vacuously).
+func TestExamples_EveryRelationHasASite(t *testing.T) {
+	tg := examples
+	tg.load(t)
+	for _, r := range relations {
+		res, err := tg.ws.Apply(r.t, tg.files(), filepath.Join(t.TempDir(), r.name), seed, tg.pre.view)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("%s: %d sites", r.name, len(res.Sites))
+		if len(res.Sites) == 0 {
+			t.Errorf("%s has no site on the examples module (skipped: %v)", r.name, res.Skipped)
+		}
+	}
+	if fs := Sample(tg.files(), 2, seed); len(fs) == 0 {
+		t.Error("MR7 has no file on the examples module")
+	}
+	ext, err := tg.ws.Apply(MR6, tg.files(), filepath.Join(t.TempDir(), "mr15"), seed, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ext.Files) == 0 {
+		t.Error("MR15 has no site on the examples module")
+	}
+}
+
+// ─── convention pins (testdata/metamorphic/conventions.go) ────────────────────
+//
+// Task 17b encoded four analyzer conventions as oracle rules. Each test pins
+// the analyzer fact its rule rests on, so a change that invalidates the rule
+// fails here first, naming it, instead of silently weakening a relation.
+
+// TestConvention_CaptureSiteActualInIsNotASink pins rule (i), the
+// reachability oracle's sink set: a capture site's actual_in has exactly
+// one out-edge, the param_in to its closure's capture formal_in (no ddg,
+// no summary), so it is not a sink. A call node's actual_in is one.
+func TestConvention_CaptureSiteActualInIsNotASink(t *testing.T) {
+	const rule = "rule (i), capture-site actual_ins are not reachability sinks (CheckReach, View.isSink)"
+	tg := examples
+	tg.load(t)
+	v := tg.pre.view
+	id := exPkg + "ConvCaptureSite"
+	site := stmtKey(t, "conventions.go", "ConvCaptureSite", "f := func()") // the literal's host
+	litKey := ""
+	for k, b := range v.Calls[id].Body {
+		if strings.HasSuffix(k, "/actual_in:0") && strings.Split(b, "|")[1] == site {
+			litKey = strings.TrimSuffix(k, "/actual_in:0")
+		}
+	}
+	if litKey == "" {
+		t.Fatalf("%s: ConvCaptureSite has no capture site hosted at %s", rule, site)
+	}
+	ain := Node(id, litKey+"/actual_in:0")
+	g := v.Graph(false)
+	succ := g[ain]
+	if len(succ) != 1 || !strings.HasPrefix(succ[0], id+".closure_1|@formal_in:") {
+		t.Errorf("%s: %s's out-edges are %v, want exactly the param_in to closure_1's capture formal_in", rule, ain, succ)
+	}
+	if v.isSink(ain) {
+		t.Errorf("%s: %s is treated as a sink", rule, ain)
+	}
+	call := Node(exPkg+"KillOneUse", stmtKey(t, "mr09_kill.go", "KillOneUse", "sinkInt(x)")+"/actual_in:0")
+	if !v.isSink(call) {
+		t.Errorf("%s: the call actual_in %s is not a sink", rule, call)
+	}
+}
+
+// TestConvention_GuardSelfLoopOnlyInLoops pins rule (ii), MR8's guard edge:
+// the header `if c := true; c` folds init and condition into one node, so
+// the guard c adds the ddg self-loop B→B on c exactly when the wrapped
+// statement is on a CFG cycle (here, in a loop body), and no edge in
+// straight-line code.
+func TestConvention_GuardSelfLoopOnlyInLoops(t *testing.T) {
+	const rule = "rule (ii), MR8's guard self-loop B→B on c iff the wrapped statement is in a loop"
+	tg := examples
+	tg.load(t)
+	res, post := transformAndAnalyze(t, tg, MR8, tg.ws, []string{"conventions.go"}, tg.pre.view)
+	for fn, wantLoop := range map[string]bool{"ConvGuardInLoop": true, "ConvGuardStraight": false} {
+		id := exPkg + fn
+		s := siteIn(t, res, id)
+		var b string
+		for m := range s.Delta.Nodes {
+			b = res.Marks[m].Key()
+		}
+		var guard []string
+		for e := range post.view.Calls[id].Edges {
+			if f := strings.Split(e, "|"); f[0] == "ddg" && strings.HasPrefix(f[3], "mr8c") {
+				guard = append(guard, e)
+			}
+		}
+		switch {
+		case wantLoop && (len(guard) != 1 || !strings.HasPrefix(guard[0], "ddg|"+b+"|"+b+"|")):
+			t.Errorf("%s: %s: guard edges %v, want the one self-loop on %s", rule, fn, guard, b)
+		case !wantLoop && len(guard) != 0:
+			t.Errorf("%s: %s: guard edges %v, want none", rule, fn, guard)
+		}
+	}
+}
+
+// TestConvention_DiscardedResultReachesOnlyViaHost pins rule (iii), MR14(b)'s
+// cut: a discarded result's actual_out has the one out-edge actual_out →
+// call node (the coarse host wiring, spec §4.7), and the call node reaches
+// the rest of the callable only by control dependence (it may panic, an
+// exception edge), so the closure form may lose that path.
+func TestConvention_DiscardedResultReachesOnlyViaHost(t *testing.T) {
+	const rule = "rule (iii), MR14(b) cuts a discarded <return> actual_out (reaches on only via host cdg)"
+	tg := examples
+	tg.load(t)
+	c := tg.pre.view.Calls[exPkg+"ConvDiscardedResult"]
+	call := stmtKey(t, "conventions.go", "ConvDiscardedResult", "p.sum()")
+	ret := stmtKey(t, "conventions.go", "ConvDiscardedResult", "return p.a")
+	out := edgesOf(c, "ddg")
+	from := filter(out, func(e edgeRec) bool { return e.src == call+"/actual_out" })
+	if len(from) != 1 || from[0].dst != call || from[0].label != "<return>" {
+		t.Errorf("%s: %s/actual_out edges %v, want only → the call node on <return>", rule, call, from)
+	}
+	if !c.Edges["cdg|"+call+"|"+ret+"|"] {
+		t.Errorf("%s: no cdg %s → %s (the call may panic)", rule, call, ret)
+	}
+	if len(filter(out, func(e edgeRec) bool { return e.src == call && e.dst == ret })) != 0 {
+		t.Errorf("%s: the call node has a ddg edge to the return: the result is not discarded", rule)
+	}
+}
+
+// TestConvention_NamedResultPortMovesToKill pins rule (iv), MR9 on a named
+// result: the def `n = a + 1` reaches @formal_out through the @exit port
+// edge (reaching-defs, var <return>), and the kill MR9 inserts before the
+// return takes it over.
+func TestConvention_NamedResultPortMovesToKill(t *testing.T) {
+	const rule = "rule (iv), MR9's kill takes over a named result's D → @formal_out port edge"
+	tg := examples
+	tg.load(t)
+	id := exPkg + "ConvNamedKill"
+	d := stmtKey(t, "conventions.go", "ConvNamedKill", "n = a + 1")
+	port := "ddg|" + d + "|@formal_out|<return>|reaching-defs"
+	if !tg.pre.view.Calls[id].Edges[port] {
+		t.Fatalf("%s: no port edge %s before the kill", rule, port)
+	}
+	res, post := transformAndAnalyze(t, tg, MR9, tg.ws, []string{"conventions.go"}, tg.pre.view)
+	s := siteIn(t, res, id)
+	var k string
+	for m := range s.Delta.Nodes {
+		k = res.Marks[m].Key()
+	}
+	nd, _, ok := (&mapper{pm: res.Map}).key("conventions.go", d)
+	if !ok {
+		t.Fatalf("%s: %s does not map", rule, d)
+	}
+	edges := post.view.Calls[id].Edges
+	if edges["ddg|"+nd+"|@formal_out|<return>|reaching-defs"] {
+		t.Errorf("%s: the def %s still reaches @formal_out past the kill", rule, nd)
+	}
+	if !edges["ddg|"+k+"|@formal_out|<return>|reaching-defs"] {
+		t.Errorf("%s: the kill %s has no port edge to @formal_out", rule, k)
 	}
 }
