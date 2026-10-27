@@ -334,6 +334,10 @@ subset of `-a 4` output, and `-j 1` and `-j N` output are byte-identical.
 - **Known limits** (see `docs/design/notes/l3-dataflow-metrics.md` § L4):
   - library code calling back into the project (`sort.Slice`, `http.HandleFunc`) is not an
     edge;
+  - an interface call on a value that came out of library code (`ctx.Value(k).(Store)`,
+    `sync.Map.Load`) binds every project type implementing the interface (a targeted CHA
+    complement), but a value first stored in a project struct field or global and read back
+    later gets VTA's targets only, which miss the concrete type;
   - range-over-func is not modelled (`range_func`);
   - summaries are close to all-to-all, by design;
   - `summary` edges whose two ends are both `<global>:` vertices are omitted

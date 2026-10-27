@@ -552,6 +552,30 @@ built per D2 (amended, A12): `ssautil.Packages` over the **same** `go/packages` 
   call-site `summary` edges are the union over targets. **D7:** an interface call *always* binds to
   the interface method (pass-through) and every VTA target, even when every target is in-project —
   per the anti-goal. Cost: every interface call (`io.Writer`) carries an all-to-all summary.
+  A target VTA did not produce — the D7 interface method, or a CHA-complement target (below) — is
+  a dispatch target with its param edges but **no `call_graph` edge** [final review F7]: `prov
+  ["vta"]` means VTA found it, and L2 already carries the static edge where it resolved.
+- **Through synthetic wrappers [final review F1].** When VTA's callee at a project call site is a
+  synthetic wrapper with no syntax (`$bound`, `$thunk`, a promotion or pointer wrapper), the
+  wrapper's own call of what it wraps is a synthetic call site no call node joins. For an
+  interface method's wrapper — a method value `f := s.Find; f(id)`, or a struct embedding the
+  interface — VTA's concrete callees sit only there. The wrapper's VTA out-edges are followed
+  transitively (cycle-safe) and their joined callees are targets, and `call_graph` edges, of the
+  original site.
+- **Targeted CHA complement [final review F3; controller ruling].** VTA propagates types through
+  project bodies only, so a value that passes through library storage — `ctx.Value(k).(Store)`,
+  `sync.Map.Load`, a library call's result — reaches an interface call with no concrete type VTA
+  sees, and only the D7 interface method (empty footprint) would remain. For an `invoke` site whose
+  receiver SSA value originates — through `Phi`, `Extract`, `ChangeInterface`, field reads and
+  `UnOp` loads — in a `TypeAssert`, the result of a call to a non-project function (or of a
+  library interface's method), or a load of a library global or through a library-typed
+  pointer or field, every **project** named type `T` or `*T` (non-generic) whose method set
+  implements the interface (`types.Implements`) adds the method its method set selects, mapped by
+  the join. A receiver that originates in project code (a `MakeInterface`, a parameter, a free
+  variable, a load of project storage) gets no CHA target: VTA covers it. Not a `call_graph` edge
+  (F7). **Remaining gap:** a library-originated value first stored in a project struct field or
+  global, then read back and called (the load is project storage, so the walk stops), is VTA's
+  alone and misses the concrete type — recorded in §6 beside library callbacks.
 - **Interfaces with no symbol-table node (ruling, Task 10) [call].** `error.Error()` (the universe
   `error`), methods of interface literals (`interface{ M() }`), and methods promoted through an
   embedded interface whose origin is declared outside the symbol table have no callable id and no
@@ -987,6 +1011,12 @@ addition now; the cross-language SDK taint revisit is deferred (§11).
   `http.HandleFunc(path, h)`): the function-value argument flows in, but the library calling it back
   is not an edge. Taint *starting* in a handler is unaffected (sources are the handler's own
   params). Recorded limitation.
+- **Not modelled:** a value that came out of library code (`ctx.Value(k)`, `sync.Map.Load`, a
+  library call's result), first stored in a project struct field or global and then read back
+  and called through an interface. The targeted CHA complement (§4.8) covers the call made on the
+  library-originated value directly; once the value is in project storage the receiver's origin
+  is a project load, and VTA, which sees no concrete type in library code, finds none. The call
+  keeps its D7 interface method (pass-through, empty footprint). Recorded limitation.
 - **SDK addressing:** `("query", "database/sql.DB.Query")` resolves through the Go backend's
   `resolve_callable` (domain = analysed callables ∪ stand-ins) then `resolve_value` over the stand-in
   body's `formal_in` `of`. Shared `commons/` code is untouched.

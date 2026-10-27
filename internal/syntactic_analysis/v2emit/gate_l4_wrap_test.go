@@ -56,3 +56,29 @@ func TestGateL4_FlowBehindSyntheticWrappers(t *testing.T) {
 		}
 	}
 }
+
+// TestGateL4_FlowThroughLibraryStorage (F3): on testdata/dataflow/libstore,
+// a Store put in a context.Context or a sync.Map comes back out of library
+// code and is called; each handler's id reaches Exec's query formal through
+// the CHA complement's sqlStore.Find, and the handler's formal_out of the
+// global sqlStore.Find writes exists.
+func TestGateL4_FlowThroughLibraryStorage(t *testing.T) {
+	a := buildL4(t, "dataflow/libstore").l4
+	if len(a.Degraded) != 0 {
+		t.Fatalf("libstore degraded: %+v", a.Degraded)
+	}
+	mod := v2.ModuleID(a.Application.ID, "libstore.go")
+	pkg := "example.com/dataflow/libstore."
+	fn := func(name string) string { return v2.CallableID(mod, pkg+name) }
+	sink := l4Vertex(t, a, fn("Exec"), "formal_in", "query")
+	g := newSDGGraph(a)
+	for _, h := range []string{"HandleCtx", "HandleMap"} {
+		src := l4Vertex(t, a, fn(h), "formal_in", "id")
+		if p := g.path(src, sink); p == nil {
+			t.Errorf("%s's id does not reach Exec's query", h)
+		}
+		if !hasVertex(a, fn(h), "formal_out", "<global>:example.com/dataflow/libstore::lastQuery") {
+			t.Errorf("%s has no formal_out of the global sqlStore.Find writes", h)
+		}
+	}
+}

@@ -1096,6 +1096,15 @@ over-approximation or reported as degraded.
 - **Library callbacks are not edges.** In `sort.Slice(xs, less)` and `http.HandleFunc(path, h)`,
   the function value flows into the stand-in, but the library calling it back is not modelled.
   Taint that *starts* in a handler (its own parameters) is unaffected.
+- **Library-stored dynamic types (final review F3).** VTA sees no concrete type in library code.
+  An interface call whose receiver comes straight out of library code (`ctx.Value(k).(Store)`,
+  `sync.Map.Load`, a library call's result, a library field) gets a targeted CHA complement:
+  every project type implementing the interface. Measured (go1.26.4, `-j 8`): chi +54 targets at
+  15 sites (the `w.(http.Flusher)` pattern), param_in 1,895 → 1,961 (+3.5%), param_out
+  1,649 → 1,770 (+7.3%); nats-server +317 targets at 63 sites, param_in 862,765 → 863,075
+  (+0.04%), param_out 431,327 → 431,854 (+0.12%). Remaining gap: a library-originated value
+  first stored in a project struct field or global, then read back and called, gets VTA's
+  targets only.
 - **A15: summaries are near all-to-all** (74–94% of sites, table above). Under the coarse host
   wiring, a summary edge adds no reachability for the SDK's context-insensitive walk. It is a
   shortcut hop, and a precondition for a future HRB two-phase walk (spec §11).

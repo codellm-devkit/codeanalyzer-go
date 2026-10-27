@@ -54,7 +54,8 @@ func loadInputOpts(t *testing.T, name string, skipTests bool) Input {
 // skipped), sorted.
 var dataflowPkgs = []string{
 	"example.com/dataflow/asm", "example.com/dataflow/flow", "example.com/dataflow/generic", "example.com/dataflow/httpsql", "example.com/dataflow/initclosure", "example.com/dataflow/inits",
-	"example.com/dataflow/l1", "example.com/dataflow/linedir", "example.com/dataflow/sdg", "example.com/dataflow/variant/p", "example.com/dataflow/variant/u", "example.com/dataflow/vend",
+	"example.com/dataflow/l1", "example.com/dataflow/libstore",
+	"example.com/dataflow/linedir", "example.com/dataflow/sdg", "example.com/dataflow/variant/p", "example.com/dataflow/variant/u", "example.com/dataflow/vend",
 	"example.com/dataflow/wrap", "example.com/dataflow/xfile", "example.com/dataflow/xtest", "example.com/dataflow/xtest/user",
 }
 

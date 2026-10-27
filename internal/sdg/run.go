@@ -97,6 +97,7 @@ func dispatchRun(in Input) (Result, *dispatch) {
 		deg = append(deg, *dg)
 	}
 	d.addInvokes(j, funcs)
+	d.addCHA(newCHA(j, in), funcs)
 
 	start = time.Now()
 	cg, err := runVTA(all)
