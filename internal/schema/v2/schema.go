@@ -5,8 +5,9 @@
 //
 // The model is ONE additive containment tree
 // (application → module → type → callable → body) with typed edge overlays
-// laid over it (a Code Property Graph). This package declares the L1 tree plus
-// the L2 refinement/edge slots; L3/L4 fields (cfg/cdg/ddg/param_*) are not
+// laid over it (a Code Property Graph). This package declares the L1 tree, the
+// L2 refinement/edge slots and the L3 body completion (statement nodes, body
+// node id/parent, the callable's cfg/cdg/ddg). L4 fields (param_*) are not
 // declared here — they arrive in their own train and reuse these ids/spans
 // unchanged.
 //
@@ -19,10 +20,12 @@
 //   - open-vocabulary fields (prov, tags) are plain strings.
 package v2
 
+import "encoding/json"
+
 // SchemaVersion is the canonical schema major this package targets.
 const SchemaVersion = "2.0.0"
 
-// Language is the analyzer's language tag in the manifest and `can://<lang>/…`.
+// Language is the analyzer's language tag in the manifest and `can://<app>/<lang>/…`.
 const Language = "go"
 
 // ─── Positioning ───────────────────────────────────────────────────────────
@@ -43,11 +46,13 @@ type Span struct {
 
 // Analysis is the top-level payload written to analysis.json / stdout. Its
 // siblings of `application` carry the manifest; consumers read `max_level`
-// rather than sniffing for keys.
+// rather than sniffing for keys. k_limit (the L3 field-path depth bound) is
+// present only at max_level >= 3.
 type Analysis struct {
 	SchemaVersion string      `json:"schema_version"`
 	Language      string      `json:"language"`
 	MaxLevel      int         `json:"max_level"`
+	KLimit        int         `json:"k_limit,omitempty"`
 	Analyzer      AnalyzerTag `json:"analyzer"`
 	Application   Application `json:"application"`
 }
@@ -60,8 +65,8 @@ type AnalyzerTag struct {
 
 // Application is the root node of the containment tree.
 type Application struct {
-	// ID is `can://<lang>/<app>` — the app segment disambiguates apps in one
-	// language. <app> is the --app-name value (default: input dir base name).
+	// ID is `can://<app>` — the app segment is outermost, so a polyglot
+	// app shares one prefix across languages. <app> is the --app-name value (default: input dir base name).
 	ID   string `json:"id"`
 	Kind string `json:"kind"` // always "application"
 	// SymbolTable is the L1 named map keyed by relative file path.
@@ -69,6 +74,33 @@ type Application struct {
 	// CallGraph holds the L2 cross-function edges (callable → callable). Empty
 	// at L1.
 	CallGraph []Edge `json:"call_graph"`
+	// ExternalSymbols holds the out-of-project (library) callables the call graph
+	// reaches, keyed by their `can://<app>/@external/<import-path>/<sig>` id.
+	// Absent when the analysis saw no library call.
+	ExternalSymbols map[string]ExternalSymbol `json:"external_symbols,omitempty"`
+}
+
+// ExternalSymbol is a library callable that call-graph edges and call nodes
+// target but whose body is not in the project. It is a leaf node: identity and
+// signature only.
+type ExternalSymbol struct {
+	ID   string `json:"id"`
+	Kind string `json:"kind"` // always "external"
+	Name string `json:"name"`
+	// Module is the package import path the symbol lives in.
+	Module string `json:"module"`
+	// Signature is the id's last segment: [Type.]Name, no import-path prefix.
+	Signature  string              `json:"signature"`
+	Parameters []ExternalParameter `json:"parameters"`
+	ReturnType string              `json:"return_type,omitempty"`
+}
+
+// ExternalParameter is a library callee's formal parameter. It has no span: the
+// declaration is not in the project, so there is no location to slice.
+type ExternalParameter struct {
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	IsVariadic bool   `json:"is_variadic,omitempty"`
 }
 
 // ─── module (per-file compilation unit) ───────────────────────────────────────
@@ -142,7 +174,8 @@ type Callable struct {
 	Signature string `json:"signature"`
 	// SourceFile names the callable's declaring file (a symbol_table key) when it
 	// differs from the module this callable is nested under — the Go case where a
-	// method is declared in a different file than its receiver type. When set,
+	// method is declared in a different file than its receiver type, and every
+	// closure (nested closures included) inside such a method. When set,
 	// Span.Bytes index symbol_table[SourceFile].source, NOT the nesting module's
 	// source; text = symbol_table[SourceFile].source[Span.Bytes]. Absent (the
 	// common case) means the declaring file is the nesting module. See CLAUDE.md
@@ -159,6 +192,11 @@ type Callable struct {
 	Metrics map[string]int `json:"metrics,omitempty"`
 	// Body holds call nodes at L1 (keyed by local id), completing at L3.
 	Body map[string]BodyNode `json:"body"`
+	// Cfg, Cdg and Ddg are the L3 intra-callable edge lists; endpoints are
+	// local body keys. Absent below L3 and for a callable with no body.
+	Cfg []CfgEdge `json:"cfg,omitempty"`
+	Cdg []CdgEdge `json:"cdg,omitempty"`
+	Ddg []DdgEdge `json:"ddg,omitempty"`
 	// Callables are nested closures / function literals, each with its own
 	// can:// id (replaces v1 InnerCallables).
 	Callables map[string]Callable `json:"callables,omitempty"`
@@ -175,11 +213,22 @@ type Parameter struct {
 // ─── body nodes ────────────────────────────────────────────────────────────────
 
 // BodyNode is a node inside a callable's body, keyed by its local id
-// (line:col for real nodes). At L1 the only kind emitted is "call"; L3 adds the
-// remaining statement kinds.
+// (line:col for real nodes, "@entry"/"@exit" for the synthetic ones). At L1
+// the only kind emitted is "call"; L3 adds statement | branch | loop | switch
+// | return | entry | exit.
 type BodyNode struct {
 	Kind string `json:"kind"` // "call" at L1
-	Span Span   `json:"span"`
+	// ID is the node's global ordinal id, v2.GlobalOrdinal(callable id, key).
+	// Emitted at every level (from L1, R15 — Python parity), on every body
+	// node.
+	ID string `json:"id,omitempty"`
+	// Span is the node's source range. Absent (zero) only on the synthetic
+	// entry/exit nodes, which have no source.
+	Span Span `json:"span,omitzero"`
+	// Parent is, at L3+, the local key of the statement a satellite call
+	// node is nested in (the sanctioned parent refinement). Absent on CFG
+	// nodes.
+	Parent string `json:"parent,omitempty"`
 	// Callee is the sanctioned null→id refinement slot on a call node: null at
 	// L1, backfilled to a callable id at L2. A pointer with NO omitempty so it
 	// always serializes — as JSON null at L1 (the one place null is allowed),
@@ -191,7 +240,45 @@ type BodyNode struct {
 	IsDeferred bool `json:"is_deferred,omitempty"`
 }
 
+// MarshalJSON writes the callee key on call nodes only: it is the call
+// node's refinement slot (always present there, null until resolved), and a
+// statement / control / synthetic node has no callee fact to carry.
+func (n BodyNode) MarshalJSON() ([]byte, error) {
+	type plain BodyNode
+	if n.Kind == "call" {
+		return json.Marshal(plain(n))
+	}
+	return json.Marshal(struct {
+		plain
+		Callee *string `json:"callee,omitempty"`
+	}{plain: plain(n)})
+}
+
 // ─── edges ─────────────────────────────────────────────────────────────────────
+
+// CfgEdge is an L3 control-flow edge between two local body keys. Kind is a
+// shared CFG edge kind or the Go add "defer_resume".
+type CfgEdge struct {
+	Src  string `json:"src"`
+	Dst  string `json:"dst"`
+	Kind string `json:"kind"`
+}
+
+// CdgEdge is an L3 control-dependence edge between two local body keys.
+type CdgEdge struct {
+	Src string `json:"src"`
+	Dst string `json:"dst"`
+}
+
+// DdgEdge is a data-dependence edge between two local body keys on the
+// k-limited access path Var. Prov is ["ssa"] at L3 (syntactic reaching
+// definitions; the keystone's token, shared with the siblings).
+type DdgEdge struct {
+	Src  string   `json:"src"`
+	Dst  string   `json:"dst"`
+	Var  string   `json:"var"`
+	Prov []string `json:"prov"`
+}
 
 // Edge is a typed edge overlay record. The list it lives in IS its type (there
 // is no `type` field). src/dst are node ids; no dangling endpoints.

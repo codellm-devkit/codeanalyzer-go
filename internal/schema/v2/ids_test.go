@@ -3,7 +3,7 @@ package v2
 import "testing"
 
 func TestAppID(t *testing.T) {
-	if got, want := AppID("myapp"), "can://go/myapp"; got != want {
+	if got, want := AppID("myapp"), "can://myapp"; got != want {
 		t.Errorf("AppID = %q, want %q", got, want)
 	}
 }
@@ -16,9 +16,9 @@ func TestDurableIDChain(t *testing.T) {
 	call := CallableID(typ, "Hash(string)uint64")
 
 	cases := []struct{ got, want string }{
-		{mod, "can://go/myapp/src/util.go"},
-		{typ, "can://go/myapp/src/util.go/Hasher"},
-		{call, "can://go/myapp/src/util.go/Hasher/Hash(string)uint64"},
+		{mod, "can://myapp/go/src/util.go"},
+		{typ, "can://myapp/go/src/util.go/Hasher"},
+		{call, "can://myapp/go/src/util.go/Hasher/Hash(string)uint64"},
 	}
 	for _, c := range cases {
 		if c.got != c.want {
@@ -30,10 +30,10 @@ func TestDurableIDChain(t *testing.T) {
 func TestModuleIDNormalizesPath(t *testing.T) {
 	app := AppID("myapp")
 	// Backslashes become forward slashes; a leading slash is trimmed.
-	if got, want := ModuleID(app, "\\pkg\\a.go"), "can://go/myapp/pkg/a.go"; got != want {
+	if got, want := ModuleID(app, "\\pkg\\a.go"), "can://myapp/go/pkg/a.go"; got != want {
 		t.Errorf("ModuleID = %q, want %q", got, want)
 	}
-	if got, want := ModuleID(app, "/pkg/a.go"), "can://go/myapp/pkg/a.go"; got != want {
+	if got, want := ModuleID(app, "/pkg/a.go"), "can://myapp/go/pkg/a.go"; got != want {
 		t.Errorf("ModuleID = %q, want %q", got, want)
 	}
 }
@@ -42,13 +42,13 @@ func TestModuleLevelFunctionParent(t *testing.T) {
 	// A module-level function hangs off the module id, not a type.
 	mod := ModuleID(AppID("myapp"), "src/util.go")
 	fn := CallableID(mod, "New64()")
-	if want := "can://go/myapp/src/util.go/New64()"; fn != want {
+	if want := "can://myapp/go/src/util.go/New64()"; fn != want {
 		t.Errorf("CallableID = %q, want %q", fn, want)
 	}
 }
 
 func TestOrdinalAndTagIDs(t *testing.T) {
-	call := "can://go/myapp/src/util.go/Hasher/Hash(string)uint64"
+	call := "can://myapp/go/src/util.go/Hasher/Hash(string)uint64"
 	if got, want := OrdinalID(call, 15, 2), call+"@15:2"; got != want {
 		t.Errorf("OrdinalID = %q, want %q", got, want)
 	}
@@ -89,5 +89,37 @@ func TestItoa(t *testing.T) {
 		if got := itoa(in); got != want {
 			t.Errorf("itoa(%d) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestIDs_AppOutermost(t *testing.T) {
+	app := AppID("shop")
+	cases := []struct{ got, want string }{
+		{app, "can://shop"},
+		{ModuleID(app, "pkg/a.go"), "can://shop/go/pkg/a.go"},
+		{ExternalID(app, "database/sql", "DB.Query"), "can://shop/@external/database/sql/DB.Query"},
+		{GlobalOrdinal("X/F", "@entry"), "X/F@entry"},
+		{GlobalOrdinal("X/F", "12:3"), "X/F@12:3"},
+	}
+	for _, c := range cases {
+		if c.got != c.want {
+			t.Errorf("id = %q, want %q", c.got, c.want)
+		}
+	}
+}
+
+func TestCallBodyKeys(t *testing.T) {
+	got := CallBodyKeys([][2]int{{5, 2}, {5, 2}, {6, 1}, {5, 2}, {6, 1}})
+	want := []string{"5:2", "5:2/2", "6:1", "5:2/3", "6:1/2"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+	if len(CallBodyKeys(nil)) != 0 {
+		t.Fatal("nil input must yield no keys")
 	}
 }

@@ -278,8 +278,8 @@ func TestRootCmd_EmitsCanonicalV2(t *testing.T) {
 	if v.Language != "go" {
 		t.Errorf("language = %q, want go", v.Language)
 	}
-	if v.Application.ID != "can://go/greeter" {
-		t.Errorf("application.id = %q, want can://go/greeter", v.Application.ID)
+	if v.Application.ID != "can://greeter" {
+		t.Errorf("application.id = %q, want can://greeter", v.Application.ID)
 	}
 }
 
@@ -322,5 +322,184 @@ func TestRootCmd_TargetFilesRestrictsOutput(t *testing.T) {
 	}
 	if !strings.Contains(out, `"server/server.go"`) {
 		t.Error("--target-files: server/server.go should appear in output")
+	}
+}
+
+// ── --analysis-level 3 and --graph-field-depth ───────────────────────────────
+
+func TestRootCmd_Level3Accepted(t *testing.T) {
+	td := cliTestdataDir()
+
+	out, _, err := runCmd(
+		"--input", filepath.Join(td, "greeter"),
+		"--analysis-level", "3",
+		"--cache-dir", t.TempDir(),
+	)
+	if err != nil {
+		t.Fatalf("-a 3 should succeed; got %v", err)
+	}
+	var v struct {
+		MaxLevel int `json:"max_level"`
+		KLimit   int `json:"k_limit"`
+	}
+	if jsonErr := json.Unmarshal([]byte(out), &v); jsonErr != nil {
+		t.Fatalf("stdout is not valid JSON: %v", jsonErr)
+	}
+	if v.MaxLevel != 3 {
+		t.Errorf("max_level = %d, want 3", v.MaxLevel)
+	}
+	if v.KLimit != 3 {
+		t.Errorf("k_limit = %d, want 3 (the --graph-field-depth default)", v.KLimit)
+	}
+}
+
+func TestRootCmd_Level4RejectedInThisRelease(t *testing.T) {
+	td := cliTestdataDir()
+
+	_, _, err := runCmd(
+		"--input", filepath.Join(td, "greeter"),
+		"--analysis-level", "4",
+		"--cache-dir", t.TempDir(),
+	)
+	if err == nil {
+		t.Fatal("expected error for -a 4, got nil")
+	}
+	if err.Error() != "analysis level 4 is not implemented yet" {
+		t.Errorf("error = %q, want %q", err.Error(), "analysis level 4 is not implemented yet")
+	}
+}
+
+func TestRootCmd_UnsupportedLevelRejected(t *testing.T) {
+	td := cliTestdataDir()
+
+	for _, lvl := range []string{"0", "5", "-1"} {
+		_, _, err := runCmd(
+			"--input", filepath.Join(td, "greeter"),
+			"--analysis-level", lvl,
+			"--cache-dir", t.TempDir(),
+		)
+		if err == nil {
+			t.Errorf("-a %s: expected error, got nil", lvl)
+			continue
+		}
+		if !strings.Contains(err.Error(), "analysis level "+lvl+" is not supported") {
+			t.Errorf("-a %s: error should name the unsupported level; got %q", lvl, err.Error())
+		}
+	}
+}
+
+func TestRootCmd_FieldDepthBelowLevel3Rejected(t *testing.T) {
+	td := cliTestdataDir()
+
+	_, _, err := runCmd(
+		"--input", filepath.Join(td, "greeter"),
+		"--analysis-level", "2",
+		"--graph-field-depth", "2",
+		"--cache-dir", t.TempDir(),
+	)
+	if err == nil {
+		t.Fatal("expected error for --graph-field-depth at -a 2, got nil")
+	}
+	if !strings.Contains(err.Error(), "--graph-field-depth applies only at --analysis-level 3 or higher") {
+		t.Errorf("error should explain the level gate; got %q", err.Error())
+	}
+}
+
+func TestRootCmd_FieldDepthBelowOneRejected(t *testing.T) {
+	td := cliTestdataDir()
+
+	_, _, err := runCmd(
+		"--input", filepath.Join(td, "greeter"),
+		"--analysis-level", "3",
+		"--graph-field-depth", "0",
+		"--cache-dir", t.TempDir(),
+	)
+	if err == nil {
+		t.Fatal("expected error for --graph-field-depth 0, got nil")
+	}
+	if !strings.Contains(err.Error(), "--graph-field-depth must be >= 1") {
+		t.Errorf("error should explain the minimum; got %q", err.Error())
+	}
+}
+
+func TestRootCmd_FieldDepthWithNeo4jRejected(t *testing.T) {
+	td := cliTestdataDir()
+
+	_, _, err := runCmd(
+		"--input", filepath.Join(td, "greeter"),
+		"--emit", "neo4j",
+		"--graph-field-depth", "2",
+	)
+	if err == nil {
+		t.Fatal("expected a flag error for --emit neo4j --graph-field-depth 2, got nil")
+	}
+	if !strings.Contains(err.Error(), "does not apply to --emit neo4j") {
+		t.Errorf("error should explain the neo4j flag gate; got %q", err.Error())
+	}
+}
+
+func TestRootCmd_EmitNeo4jRunsAtLevel3(t *testing.T) {
+	td := cliTestdataDir()
+	out := t.TempDir()
+	if _, _, err := runCmd("--input", filepath.Join(td, "multipackage"), "--emit", "neo4j", "--output", out); err != nil {
+		t.Fatalf("--emit neo4j should succeed; got %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(out, "graph.cypher"))
+	if err != nil {
+		t.Fatalf("graph.cypher not written: %v", err)
+	}
+	for _, rel := range []string{"GO_CFG_NEXT", "GO_CDG", "GO_DDG"} {
+		if !strings.Contains(string(data), rel) {
+			t.Errorf("graph.cypher should carry the L3 %s relationship", rel)
+		}
+	}
+}
+
+// ── malformed source ─────────────────────────────────────────────────────────
+
+// TestRootCmd_MalformedSourceDoesNotPanic: testdata/malformed holds syntax
+// errors (`if :=`, `range {`, `case 1, :`, `case <-:`), one per file, after
+// which the parser recovers with a function node whose End is one past the
+// end of the file: it has no token.File (the last file) or lies in the next
+// one. Every level must still emit valid JSON, with the well-formed function
+// that precedes each error present.
+func TestRootCmd_MalformedSourceDoesNotPanic(t *testing.T) {
+	td := cliTestdataDir()
+	for _, level := range []string{"1", "2", "3"} {
+		t.Run("a"+level, func(t *testing.T) {
+			var out string
+			var err error
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Fatalf("-a %s panicked: %v", level, r)
+					}
+				}()
+				out, _, err = runCmd("--input", filepath.Join(td, "malformed"), "-a", level, "--cache-dir", t.TempDir())
+			}()
+			if err != nil {
+				t.Fatalf("-a %s failed: %v", level, err)
+			}
+			var v struct {
+				Application struct {
+					SymbolTable map[string]struct {
+						Functions map[string]struct {
+							Signature string `json:"signature"`
+						} `json:"functions"`
+					} `json:"symbol_table"`
+				} `json:"application"`
+			}
+			if jsonErr := json.Unmarshal([]byte(out), &v); jsonErr != nil {
+				t.Fatalf("-a %s stdout is not valid JSON: %v", level, jsonErr)
+			}
+			for file, want := range map[string]string{
+				"if.go": "GoodIf", "range.go": "GoodRange", "case.go": "GoodCase", "recv.go": "GoodRecv",
+			} {
+				fns := v.Application.SymbolTable[file].Functions
+				if _, ok := fns["example.com/malformed."+want]; !ok {
+					t.Errorf("-a %s: %s: well-formed %s not emitted; have %v", level, file, want, fns)
+				}
+			}
+		})
 	}
 }

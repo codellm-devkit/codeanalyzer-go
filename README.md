@@ -35,6 +35,7 @@ The binary is fully self-contained: a single static executable with no runtime d
   - [Install via Homebrew](#install-via-homebrew)
   - [Install via pip (PyPI)](#install-via-pip-pypi)
   - [Build from source](#build-from-source)
+  - [Toolchain](#toolchain)
 - [Usage](#usage)
   - [Command-line options](#command-line-options)
   - [Examples](#examples)
@@ -46,6 +47,7 @@ The binary is fully self-contained: a single static executable with no runtime d
   - [Load and query](#load-and-query)
   - [Query reference](#query-reference)
 - [Python SDK (CLDK) integration](#python-sdk-cldk-integration)
+- [Upgrading](#upgrading)
 - [Architecture & Tooling](#architecture--tooling)
 - [Development](#development)
 - [License](#license)
@@ -55,7 +57,9 @@ The binary is fully self-contained: a single static executable with no runtime d
 - **Symbol table** — packages, structs, interfaces, fields, methods, package-level functions,
   imports, struct tags, and generic type parameters, with precise source spans.
 - **Call graph** — a resolver-based call graph via `go/types`: each call site is resolved to its
-  full import-path signature, with project-internal edges emitted (Level 2).
+  full import-path signature. Level 2 emits edges to project callees and to library callees
+  (homed in `application.external_symbols` under `can://<app>/@external/<import-path>/<sig>`).
+  Level 3 (`-a 3`) adds per-callable `cfg`, `cdg` and `ddg`.
 - **Generics-aware** — Go 1.18+ generics (`Set[T]`, union-constraint interfaces, multi-type-param
   functions) are modeled in the unified type/callable schema.
 - **Self-contained binary** — a single static executable (`go build`, `CGO_ENABLED=0`); no runtime
@@ -72,7 +76,8 @@ The binary is fully self-contained: a single static executable with no runtime d
 
 Running a prebuilt `cango` binary requires **nothing** — it is fully self-contained. To *analyze* a
 project, that project should be a normal Go module (contain a `go.mod`) so the type checker can
-resolve imports. Building `cango` from source requires [Go 1.25+](https://go.dev/dl/).
+resolve imports. Building `cango` from source requires [Go 1.26+](https://go.dev/dl/), and the
+latest Go release is recommended — see [Toolchain](#toolchain).
 
 ### Install via shell script
 
@@ -120,6 +125,25 @@ analyzer directly from source without compiling:
 go run ./cmd/codeanalyzer -i /path/to/project -a 2
 ```
 
+### Toolchain
+
+`cango` type-checks the projects it analyzes with the `go/types` package compiled into the
+binary, so **the Go that builds `cango` must be at least as new as the newest `go` line of the
+projects it analyzes**. Build with the latest Go release (the release binaries are). `go.mod`'s
+`go 1.26.0` is only the minimum that compiles the analyzer (set by `golang.org/x/tools`, whose
+recent releases require Go 1.26).
+
+With a binary built by an older Go, every package that needs a newer Go type-checks only
+partially, yet the run still exits 0: callees go unresolved, call edges and L3 defs are lost,
+and nothing else looks wrong. `cango` prints one warning when this happens, naming the Go it was
+built with, the highest version required and the number of affected packages:
+
+```
+[codeanalyzer-go WARN] 12 packages require a newer Go version (highest go1.27) than this analyzer was built with (go1.26.4); …
+```
+
+Rebuild `cango` with that Go version or newer. (`-vv` lists the affected packages.)
+
 ## Usage
 
 ```bash
@@ -138,12 +162,13 @@ Aliases:
   cango, codeanalyzer-go
 
 Flags:
-  -a, --analysis-level int      Analysis level: 1=symbol table only, 2=+resolver call graph (default 1)
+  -a, --analysis-level int      Analysis level: 1=symbol table, 2=+call graph, 3=+intraprocedural cfg/cdg/ddg (default 1)
       --app-name string         Application anchor name for can:// ids and Neo4j :Application (default: input dir name)
   -c, --cache-dir string        Cache directory (default: ~/.cldk/go-cache)
       --eager                   Force clean rebuild (ignore cache)
       --emit string             Output projection: json|neo4j|schema (default "json")
   -f, --format string           Output format: json|msgpack (default "json")
+      --graph-field-depth int   Field-path depth bound for L3 dataflow nodes (k limit; applies at -a 3 only) (default 3)
   -h, --help                    help for cango
   -i, --input string            Project root to analyze (required)
   -j, --jobs int                Worker parallelism (default: CPU cores)
@@ -221,7 +246,7 @@ cango -i /path/to/go/app -a 2 -o /path/to/output/
 > of writing a file.
 
 **3. (Optional) name the application anchor.** `--app-name` sets the `<app>` in every
-`can://go/<app>/…` id and defaults to the input directory's base name. Set it when the
+`can://<app>/…` id and defaults to the input directory's base name. Set it when the
 directory name isn't the identity you want:
 
 ```bash
@@ -249,10 +274,22 @@ are build artifacts, not project source), so only your own declarations are emit
 |-------|------|-----------|--------|
 | 1 | `-a 1` (default) | Symbol table only — types, functions, call sites | Implemented |
 | 2 | `-a 2` | Level 1 + resolver-based call graph via `go/types` | Implemented |
+| 3 | `-a 3` | Level 2 + per-callable statement nodes and `cfg` / `cdg` / `ddg` | Implemented |
+| 4 | `-a 4` | Level 3 + interprocedural parameter edges | Not implemented (rejected) |
 
 **Level 1** loads each package with `packages.NeedSyntax | NeedTypes | NeedTypesInfo` and walks the AST file by file. Call sites are recorded with `callee_signature = null` at this stage.
 
-**Level 2** adds a resolver pass: for each call site, `go/types` resolves the callee to its full import-path signature (`pkgImportPath.TypeName.MethodName`). Only project-internal edges (both endpoints present in the symbol table) are emitted. `callee_signature` is backfilled on all successfully resolved sites.
+**Level 3** completes every callable's `body` with its statement, control (`branch`, `loop`,
+`switch`, `return`) and synthetic (`@entry`, `@exit`) nodes around the L1 call nodes, and adds
+three intra-callable edge lists: `cfg` (control flow, including the `defer` chain and panic
+`exception` edges), `cdg` (control dependence from post-dominators) and `ddg` (syntactic
+reaching definitions over k-limited access paths, `prov: ["ssa"]`). `--graph-field-depth <k>`
+(default 3, minimum 1) bounds the access paths (`x.f.g.h` → `x.f.g.*` at k = 3) and is
+recorded in the envelope as `k_limit`. It is a flag error below `-a 3` and with
+`--emit neo4j`. Callables are analyzed in parallel (`-j`), and the output is byte-identical
+for every `-j`. L3 only adds to the L2 output: every L2 fact stays as it is.
+
+**Level 2** adds a resolver pass: for each call site, `go/types` resolves the callee to its full import-path signature (`pkgImportPath.TypeName.MethodName`). A project callee becomes an edge to its callable; a **library callee** (stdlib, a dependency, or a package vendored under `vendor/`) becomes an edge to an `@external` symbol, recorded once in `application.external_symbols`. A callee that is neither (an interface method of a project type, a conversion, a builtin, a call through a function value) gets no edge. Every resolved call node's `callee` is backfilled.
 
 ## Output schema
 
@@ -262,7 +299,7 @@ and the [step-by-step section above](#generating-analysisjson-for-a-go-app) prod
 ### Canonical v2 shape
 
 The document is a manifest envelope wrapping one `application` containment tree. Every
-node carries a `can://go/<app>/…` `id`, a `kind`, and a `span`:
+node carries a `can://<app>/…` `id`, a `kind`, and a `span`:
 
 ```json
 {
@@ -271,11 +308,11 @@ node carries a `can://go/<app>/…` `id`, a `kind`, and a `span`:
   "max_level": 2,
   "analyzer": { "name": "codeanalyzer-go", "version": "0.1.0" },
   "application": {
-    "id": "can://go/myapp",
+    "id": "can://myapp",
     "kind": "application",
     "symbol_table": {
       "pkg/greeter/greeter.go": {
-        "id": "can://go/myapp/pkg/greeter/greeter.go",
+        "id": "can://myapp/go/pkg/greeter/greeter.go",
         "kind": "module",
         "package": "greeter",
         "span": { "start": [1, 1], "end": [40, 2], "bytes": [0, 812] },
@@ -284,7 +321,7 @@ node carries a `can://go/<app>/…` `id`, a `kind`, and a `span`:
         "imports": [ { "name": "fmt", "path": "fmt", "span": {…} } ],
         "types": {
           "Greeter": {
-            "id": "can://go/myapp/pkg/greeter/greeter.go/example.com/pkg/greeter.Greeter",
+            "id": "can://myapp/go/pkg/greeter/greeter.go/example.com/pkg/greeter.Greeter",
             "kind": "struct",
             "span": { "start": [5, 1], "end": [7, 2], "bytes": [17, 63] },
             "fields": {
@@ -292,7 +329,7 @@ node carries a `can://go/<app>/…` `id`, a `kind`, and a `span`:
             },
             "callables": {
               "example.com/pkg/greeter.Greeter.Greet": {
-                "id": "can://go/myapp/pkg/greeter/greeter.go/example.com/pkg/greeter.Greeter/example.com/pkg/greeter.Greeter.Greet",
+                "id": "can://myapp/go/pkg/greeter/greeter.go/example.com/pkg/greeter.Greeter/example.com/pkg/greeter.Greeter.Greet",
                 "kind": "method",
                 "signature": "example.com/pkg/greeter.Greeter.Greet",
                 "span": { "start": [9, 1], "end": [11, 2], "bytes": [65, 140] },
@@ -303,8 +340,9 @@ node carries a `can://go/<app>/…` `id`, a `kind`, and a `span`:
                 "body": {
                   "10:2": {
                     "kind": "call",
+                    "id": "can://myapp/go/pkg/greeter/greeter.go/…/example.com/pkg/greeter.Greeter.Greet@10:2",
                     "span": { "start": [10, 2], "end": [10, 30], "bytes": [90, 118] },
-                    "callee": "can://go/myapp/pkg/greeter/greeter.go/…/example.com/pkg/greeter.format"
+                    "callee": "can://myapp/go/pkg/greeter/greeter.go/…/example.com/pkg/greeter.format"
                   }
                 }
               }
@@ -318,8 +356,8 @@ node carries a `can://go/<app>/…` `id`, a `kind`, and a `span`:
     },
     "call_graph": [
       {
-        "src": "can://go/myapp/main.go/…/example.com/main.main",
-        "dst": "can://go/myapp/pkg/greeter/greeter.go/…/example.com/pkg/greeter.Greeter.Greet",
+        "src": "can://myapp/go/main.go/…/example.com/main.main",
+        "dst": "can://myapp/go/pkg/greeter/greeter.go/…/example.com/pkg/greeter.Greeter.Greet",
         "prov": ["go/types"],
         "weight": 1
       }
@@ -329,12 +367,14 @@ node carries a `can://go/<app>/…` `id`, a `kind`, and a `span`:
 ```
 
 Key v2 schema properties:
-- **Envelope** — `schema_version` (`"2.0.0"`), `language` (`"go"`), `max_level` (1 or 2),
-  and `analyzer{name,version}` wrap a single `application` node.
+- **Envelope** — `schema_version` (`"2.0.0"`), `language` (`"go"`), `max_level` (1, 2 or 3),
+  `k_limit` (L3 only: the `--graph-field-depth` value) and `analyzer{name,version}` wrap a
+  single `application` node.
 - **One containment tree** — `application → module → type → callable → body`, keyed as
   `symbol_table` (modules, by **project-relative file path**), `types`, `callables`, `body`.
-- **`id`** — every node carries a durable `can://go/<app>/<file>/<type>/<signature>` id;
-  `<app>` is the `--app-name` anchor. Body call nodes use `<callable-id>` keyed by `line:col`.
+- **`id`** — every node carries a durable `can://<app>/go/<file>/<type>/<signature>` id;
+  `<app>` is the `--app-name` anchor. A body node is keyed by `line:col` in its callable's `body`
+  map and carries `id` = `<callable-id>@<key>` at every level, from `-a 1` on.
 - **`kind`** — `module` · `type` kinds `struct | interface | alias | defined` (collapses v1's
   `is_interface`) · `callable` kinds `function | method | lambda` · body `call`.
 - **`base_types: []`** (type, optional) — embedded type ids (struct/interface embedding — the
@@ -342,20 +382,33 @@ Key v2 schema properties:
 - **`span`** — `{start:[line,col], end:[line,col], bytes:[from,to]}`; `bytes` are **UTF-8 byte
   offsets** into the owning `module.source` (source is stored once per module, every node slices it).
 - **`source_file`** (callable, optional) — set when a method is declared in a *different file*
-  than its receiver type; the method stays nested under the type, and its `span.bytes` index
+  than its receiver type, and on every closure (nested ones too) inside such a method; the
+  callable stays nested under the type, and its `span.bytes` (and its body nodes' spans) index
   `symbol_table[source_file].source` instead of the nesting module's.
 - **`error_channel: []`** — populated from `error`-typed returns (the returns also stay in
   `return_type`). **Closures** nest as `callables{}` on the enclosing callable.
-- **`body` call nodes** — `callee` is the sanctioned `null → id` slot: `null` at L1 (and for
-  external/stdlib callees), a `can://` node id once resolved at L2. `is_goroutine` / `is_deferred`
+- **`body` call nodes** — `callee` is the sanctioned `null → id` slot: `null` at L1; at L2 a
+  project callable's `can://` id, or for a library (stdlib or dependency) callee its
+  `can://<app>/@external/<import-path>/<sig>` id, a key of `external_symbols`. It stays `null`
+  for conversions, builtins, calls through function values and unresolved sites. `is_goroutine` / `is_deferred`
   are boolean flags emitted **only when true** (a plain call omits them), for `go f()` / `defer f()`.
-- **`call_graph` edges** — `{src, dst, prov, weight}`; `src`/`dst` are `can://` node ids that
-  exist in the tree (not raw signatures), `prov` is resolver provenance, e.g. `["go/types"]`.
+- **`call_graph` edges** — `{src, dst, prov, weight}`; `src` is a callable id in the tree and
+  `dst` a callable id or an `external_symbols` key (never a raw signature); `prov` is resolver
+  provenance, e.g. `["go/types"]`.
+- **`external_symbols`** (application, L2, optional) — one entry per library callee, keyed by
+  its `@external` id: `{id, kind: "external", name, module, signature, parameters[], return_type}`
+  (parameters carry no span). Absent when no library call was resolved.
+- **L3 (`-a 3`)** — `body` gains `statement` / `branch` / `loop` / `switch` / `return` nodes
+  and the synthetic `@entry` / `@exit` (which have no `span`). Every body node carries `id`
+  (`<callable-id>@<key>`).
+  A call nested in a statement carries `parent`, the statement's key. The callable gains
+  `cfg[] {src, dst, kind}`, `cdg[] {src, dst}` and `ddg[] {src, dst, var, prov}`, whose
+  endpoints are `body` keys. See `docs/design/specs/v2-schema-structure.md`.
 
 ## Neo4j projection (`--emit neo4j`)
 
 `--emit neo4j` projects the **same v2 envelope** into a Neo4j property graph. It is a *second
-projection of the identical analysis* — JSON nodes and graph nodes carry the same `can://go/<app>/…`
+projection of the identical analysis* — JSON nodes and graph nodes carry the same `can://<app>/…`
 ids, so the two join on one string and are never recomposed. The graph vocabulary is `Go`-prefixed
 labels (`:GoModule`, `:GoType`, `:GoCallable`, `:GoField`, `:GoBodyNode`, `:GoExternal`, plus the
 shared merge label `:GoSymbol` and marker `:GoCanNode`) and `GO_`-prefixed relationships
@@ -371,12 +424,25 @@ There are two output paths, chosen by whether `--neo4j-uri` is set:
 | **Use for** | Review, diffing, loading on your own schedule, CI | A DB you already have running |
 
 Both paths are **scoped to one application**: every destructive statement is anchored on
-`:GoCanNode` and the `can://go/<app>/` id prefix, so re-emitting replaces exactly that app's subgraph
-and never touches another app (or a sibling-language graph) in the same database. The projection is
-**deterministic** — a second emit is byte-identical.
+`:GoCanNode` and the `can://<app>/` id prefix, so it never touches another app (or a
+sibling-language graph) in the same database. The projection is **deterministic** — a second emit
+is byte-identical.
 
-> **`--emit neo4j` is always full depth.** The graph is projected at the max implemented level (L2
-> today — symbol table + call graph) and canonical schema v2. Do **not** pass `-a`/`--analysis-level`
+What a re-emit replaces depends on the path:
+
+- **`graph.cypher` snapshot** and **`--eager` Bolt push**: the app's subgraph is purged and
+  rebuilt, so re-emitting replaces exactly that app's subgraph.
+- **Default (lazy) Bolt push**: purely additive. Changed modules are MERGE-upserted and nothing is
+  deleted. After source edits, nodes and edges that the new analysis no longer emits stay in the
+  database. For L3 this includes `:GoBodyNode`s and their `GO_CFG_NEXT` / `GO_CDG` / `GO_DDG`
+  edges, whose ids are keyed on `line:col`: once lines shift, the old body nodes and their edges
+  remain beside the new ones. Pass `--eager` when you push an L3 graph after editing source.
+  The purge needs a full run: with `--target-files` it is skipped, because the push carries only
+  the targeted packages.
+
+> **`--emit neo4j` is always full depth.** The graph is projected at the max implemented level (L3
+> today — symbol table, call graph, and every callable's body nodes with `GO_CFG_NEXT` / `GO_CDG` /
+> `GO_DDG`) and canonical schema v2. Do **not** pass `-a`/`--analysis-level`
 > with it — an explicit level is a flag error (`--analysis-level does not apply to --emit neo4j`),
 > because there is no shallower graph to ask for.
 
@@ -451,7 +517,7 @@ MATCH (n:GoCanNode) RETURN labels(n)[0] AS label, count(*) AS n ORDER BY n DESC;
 MATCH ()-[r]->() RETURN type(r) AS rel, count(*) AS n ORDER BY n DESC;
 
 // Everything owned by one application (prefix seek).
-MATCH (n:GoCanNode) WHERE n.id STARTS WITH 'can://go/<app>/' RETURN count(n) AS app_nodes;
+MATCH (n:GoCanNode) WHERE n.id STARTS WITH 'can://<app>/' RETURN count(n) AS app_nodes;
 
 // Types ranked by method count (the "god struct" finder).
 MATCH (t:GoType) OPTIONAL MATCH (t)-[:GO_HAS_METHOD]->(m)
@@ -489,6 +555,35 @@ The SDK locates the analyzer via the `codeanalyzer-go` command on `PATH` (instal
 methods above, including `pip install codeanalyzer-go`). See
 [python-sdk](https://github.com/codellm-devkit/python-sdk) for full API documentation.
 
+## Upgrading
+
+This release changes the output contract. If you consume `analysis.json` or the Neo4j graph,
+check the following.
+
+- **Ids are app-outermost.** `can://go/<app>/<file>/…` is now `can://<app>/go/<file>/…`. Library
+  callees are `can://<app>/@external/<import-path>/<sig>`.
+- **Body nodes carry `id` at every level.** Each body node has `id` = `<callable-id>@<local-key>`,
+  from `-a 1` on, not only at `-a 3`.
+- **L2 includes library calls.** The call graph now has edges to library (stdlib and dependency)
+  callees, and `application.external_symbols` describes them. A library call's `callee` is its
+  external id instead of `null`. A type conversion is still a call node, but its `callee` stays
+  `null`; it is no longer resolved to a `<Type>.__new__` pseudo-callee.
+- **L1 records more.**
+  - A type's `kind` can now be `alias` or `defined`, not only `struct` or `interface`.
+  - Deferred calls carry `is_deferred: true`.
+  - Chained calls that start at the same position, such as `s.A().B()`, are now separate call
+    nodes keyed `l:c` and `l:c/2`. Previously the inner call was dropped. Do not parse body keys
+    as plain `line:col`.
+  - Calls inside `go` statement arguments, such as `g()` in `go f(g())`, are now call sites.
+  - Consumers that count call nodes will see more of them.
+- **Neo4j:**
+  - `--emit neo4j` projects L3, adding `GO_CFG_NEXT`, `GO_CDG` and `GO_DDG`.
+  - `:GoBodyNode.call_node` is the enclosing statement's local key (the JSON `parent`), not a
+    global id.
+  - `--eager` now works on Neo4j 5.x.
+- **Build.** Building from source needs Go 1.26 or newer. Release binaries are built with the
+  latest Go (see [Toolchain](#toolchain)).
+
 ## Architecture & Tooling
 
 | Slot | Choice | Rationale |
@@ -498,8 +593,10 @@ methods above, including `pip install codeanalyzer-go`). See
 | Type resolver | `golang.org/x/tools/go/packages` | Single API for both AST + full type resolution; handles modules natively |
 | Build/dep materialization | `go mod download` | Required before `packages.Load` so the module cache is warm; result cached by `go.sum` hash |
 | Packaging | Native binary (`go build`) | Zero-runtime-dep distribution; matches Rust/C++ analyzers |
-| Analysis depth | Level 1 (rapid) | Symbol table + resolver call graph |
+| Analysis depth | Levels 1–3 | Symbol table, resolver call graph, intraprocedural cfg/cdg/ddg |
 | Call-graph dispatch | Declared-type resolution via `go/types.Selections` | CHA-equivalent; sufficient for cross-package reachability at Level 1 |
+| CFG (L3) | Hand-built from `go/ast` (`internal/dataflow`) | Adds what `go/cfg` does not model as edges: panic `exception` edges and the `defer` chain (`defer_resume`). A differential test checks reachability against `golang.org/x/tools/go/cfg` on every fixture body |
+| Def-use / DDG (L3) | Syntactic reaching definitions over k-limited access paths | `go/types` objects as bases (shadowing-safe); weak defs through reference arguments; `prov: ["ssa"]` for parity with the Java and Python L3 |
 
 ### Package structure
 
@@ -512,6 +609,7 @@ codeanalyzer-go/
 │   ├── options/              # AnalysisOptions + AnalysisLevel constants
 │   ├── syntactic_analysis/   # SymbolTableBuilder (packages.Load → AST walk)
 │   ├── semantic_analysis/    # CallGraphBuilder (go/types resolver)
+│   ├── dataflow/             # L3: body nodes, CFG, CDG, def-use, DDG; Run fans out per callable
 │   ├── analysis/             # Pluggable pass interface + registry (topo-ordered pipeline)
 │   ├── frameworks/           # BaseEntrypointFinder — extension seam for framework passes
 │   └── utils/                # DiscoverGoFiles, IsVendored, IsTestFile, logging

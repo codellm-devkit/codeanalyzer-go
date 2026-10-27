@@ -25,11 +25,13 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/codellm-devkit/codeanalyzer-go/internal/schema"
 	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
+	"github.com/codellm-devkit/codeanalyzer-go/internal/semantic_analysis"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/syntactic_analysis"
 )
 
@@ -56,7 +58,7 @@ func buildMultipackageV2(t *testing.T) *v2.Analysis {
 		t.Fatalf("symbol table build failed: %v", err)
 	}
 	app := &schema.GoApplication{SymbolTable: st, CallGraph: []schema.GoCallEdge{}}
-	return Emit(app, "multipackage", dir, 1, "gate-test")
+	return Emit(app, "multipackage", dir, 1, "gate-test", 0, nil)
 }
 
 // mustModule fetches a module by relative path or fails.
@@ -85,7 +87,7 @@ func TestGateL1_ModuleSet(t *testing.T) {
 		if mod.Kind != "module" {
 			t.Errorf("%s: kind = %q, want module", rel, mod.Kind)
 		}
-		wantID := "can://go/multipackage/" + rel
+		wantID := "can://multipackage/go/" + rel
 		if mod.ID != wantID {
 			t.Errorf("%s: id = %q, want %q", rel, mod.ID, wantID)
 		}
@@ -299,8 +301,8 @@ func TestGateL1_Envelope(t *testing.T) {
 	if out.MaxLevel != 1 {
 		t.Errorf("max_level = %d, want 1", out.MaxLevel)
 	}
-	if out.Application.ID != "can://go/multipackage" {
-		t.Errorf("application.id = %q, want can://go/multipackage", out.Application.ID)
+	if out.Application.ID != "can://multipackage" {
+		t.Errorf("application.id = %q, want can://multipackage", out.Application.ID)
 	}
 	// L1: no call_graph edges yet.
 	if len(out.Application.CallGraph) != 0 {
@@ -320,7 +322,7 @@ func TestGateL1_SupersetOfV1(t *testing.T) {
 		t.Fatalf("symbol table build failed: %v", err)
 	}
 	app := &schema.GoApplication{SymbolTable: st, CallGraph: []schema.GoCallEdge{}}
-	out := Emit(app, "multipackage", dir, 1, "gate-test")
+	out := Emit(app, "multipackage", dir, 1, "gate-test", 0, nil)
 
 	// Every v1 file, type, method and function reappears in v2.
 	for rel, v1file := range st {
@@ -363,6 +365,256 @@ func TestGateL1_SupersetOfV1(t *testing.T) {
 func contains(ss []string, want string) bool {
 	for _, s := range ss {
 		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+// ─── L1 fixes: type kinds, defer marker, co-positioned calls ─────────────────
+
+// buildDataflowL1V2 emits the L1 payload for the testdata/dataflow fixture.
+func buildDataflowL1V2(t *testing.T) *v2.Analysis {
+	t.Helper()
+	_, thisFile, _, _ := runtime.Caller(0)
+	dir, err := filepath.Abs(filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "testdata", "dataflow"))
+	if err != nil {
+		t.Fatalf("resolving fixture dir: %v", err)
+	}
+	b := syntactic_analysis.NewSymbolTableBuilder(dir)
+	st, err := b.Build(nil, true)
+	if err != nil {
+		t.Fatalf("symbol table build failed: %v", err)
+	}
+	app := &schema.GoApplication{SymbolTable: st, CallGraph: []schema.GoCallEdge{}}
+	return Emit(app, "dataflow", dir, 1, "gate-test", 0, nil)
+}
+
+func TestGateL1_TypeKindsAliasAndDefined(t *testing.T) {
+	mod := mustModule(t, buildDataflowL1V2(t), "l1/l1.go")
+	want := map[string]string{"Celsius": "defined", "Alias": "alias", "S": "struct",
+		"Base": "struct", "MyErr": "struct", "I1": "interface", "I2": "interface"}
+	for name, kind := range want {
+		ty, ok := mod.Types[name]
+		if !ok {
+			t.Errorf("type %s missing from l1/l1.go; have %v", name, keys(mod.Types))
+			continue
+		}
+		if ty.Kind != kind {
+			t.Errorf("type %s: kind=%q, want %q", name, ty.Kind, kind)
+		}
+	}
+}
+
+// functionByName finds a package-level function node by name.
+func functionByName(t *testing.T, mod v2.Module, name string) v2.Callable {
+	t.Helper()
+	for sig, c := range mod.Functions {
+		if strings.HasSuffix(sig, "."+name) {
+			return c
+		}
+	}
+	t.Fatalf("function %q missing; have %v", name, keys(mod.Functions))
+	return v2.Callable{}
+}
+
+func TestGateL1_DeferredCallNode(t *testing.T) {
+	d := functionByName(t, mustModule(t, buildDataflowL1V2(t), "l1/l1.go"), "D")
+	var deferred, goroutine int
+	for _, n := range d.Body {
+		if n.Kind != "call" {
+			continue
+		}
+		if n.IsDeferred {
+			deferred++
+			if n.IsGoroutine {
+				t.Error("deferred call must not be a goroutine")
+			}
+		}
+		if n.IsGoroutine {
+			goroutine++
+		}
+	}
+	if deferred != 1 || goroutine != 1 {
+		t.Errorf("D body: deferred=%d goroutine=%d, want 1 and 1 (body=%v)", deferred, goroutine, d.Body)
+	}
+}
+
+func TestGateL1_CoPositionedCallsBothKept(t *testing.T) {
+	c := functionByName(t, mustModule(t, buildDataflowL1V2(t), "l1/l1.go"), "Chain")
+	if len(c.Body) != 2 {
+		t.Fatalf("Chain body has %d nodes, want 2: %v", len(c.Body), c.Body)
+	}
+	var bare, second string
+	for k := range c.Body {
+		if strings.HasSuffix(k, "/2") {
+			second = k
+		} else {
+			bare = k
+		}
+	}
+	if bare == "" || second != bare+"/2" {
+		t.Fatalf("want keys L:C and L:C/2, got %v", keys(c.Body))
+	}
+	// The bare key is the outermost call (s.A().B()), which spans further.
+	if c.Body[bare].Span.End[1] <= c.Body[second].Span.End[1] {
+		t.Errorf("bare key should hold the outermost (longer) call: %+v vs %+v", c.Body[bare].Span, c.Body[second].Span)
+	}
+}
+
+// buildDataflowL2V2 emits the L2 payload (resolver run) for the dataflow fixture.
+func buildDataflowL2V2(t *testing.T) *v2.Analysis {
+	t.Helper()
+	_, thisFile, _, _ := runtime.Caller(0)
+	dir, err := filepath.Abs(filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "testdata", "dataflow"))
+	if err != nil {
+		t.Fatalf("resolving fixture dir: %v", err)
+	}
+	b := syntactic_analysis.NewSymbolTableBuilder(dir)
+	st, err := b.Build(nil, true)
+	if err != nil {
+		t.Fatalf("symbol table build failed: %v", err)
+	}
+	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
+	edges := cg.Build(st)
+	app := &schema.GoApplication{SymbolTable: st, CallGraph: edges}
+	return Emit(app, "dataflow", dir, 2, "gate-test", 0, nil)
+}
+
+// TestGateL2_CoPositionedCallsResolveSeparately: in s.A().B() the outer call
+// (bare key) resolves to B and the inner s.A() (key /2) resolves to A; the call
+// graph has exactly the edges Chain->A and Chain->B.
+func TestGateL2_CoPositionedCallsResolveSeparately(t *testing.T) {
+	out := buildDataflowL2V2(t)
+	mod := mustModule(t, out, "l1/l1.go")
+	chain := functionByName(t, mod, "Chain")
+	s := mod.Types["S"]
+	var aID, bID string
+	for sig, m := range s.Callables {
+		switch {
+		case strings.HasSuffix(sig, ".A"):
+			aID = m.ID
+		case strings.HasSuffix(sig, ".B"):
+			bID = m.ID
+		}
+	}
+	if aID == "" || bID == "" {
+		t.Fatalf("methods A/B not found on S: %v", keys(s.Callables))
+	}
+	var bare, second string
+	for k := range chain.Body {
+		if strings.HasSuffix(k, "/2") {
+			second = k
+		} else {
+			bare = k
+		}
+	}
+	got := func(k string) string {
+		if c := chain.Body[k].Callee; c != nil {
+			return *c
+		}
+		return "<nil>"
+	}
+	if got(bare) != bID {
+		t.Errorf("outer call %s callee=%s, want B %s", bare, got(bare), bID)
+	}
+	if got(second) != aID {
+		t.Errorf("inner call %s callee=%s, want A %s", second, got(second), aID)
+	}
+	var dsts []string
+	for _, e := range out.Application.CallGraph {
+		if e.Src == chain.ID {
+			dsts = append(dsts, e.Dst)
+		}
+	}
+	sort.Strings(dsts)
+	want := []string{aID, bID}
+	sort.Strings(want)
+	if strings.Join(dsts, ",") != strings.Join(want, ",") {
+		t.Errorf("Chain edges = %v, want {A, B} = %v", dsts, want)
+	}
+}
+
+// TestGateL1_BodyNodeIDs (R15): from L1 on, every body node carries its global
+// id, v2.GlobalOrdinal(callable id, local key) — Python parity (its
+// stamp_body_ids runs at L1) — and no parent (an L3 refinement).
+func TestGateL1_BodyNodeIDs(t *testing.T) {
+	out := buildDataflowL1V2(t)
+	checked := 0
+	var walk func(c v2.Callable)
+	walk = func(c v2.Callable) {
+		for k, n := range c.Body {
+			if want := v2.GlobalOrdinal(c.ID, k); n.ID != want {
+				t.Errorf("%s body %s id = %q, want %q", c.ID, k, n.ID, want)
+			}
+			if n.Parent != "" {
+				t.Errorf("%s body %s carries parent %q at L1", c.ID, k, n.Parent)
+			}
+			checked++
+		}
+		for _, in := range c.Callables {
+			walk(in)
+		}
+	}
+	for _, m := range out.Application.SymbolTable {
+		for _, f := range m.Functions {
+			walk(f)
+		}
+		for _, ty := range m.Types {
+			for _, c := range ty.Callables {
+				walk(c)
+			}
+		}
+	}
+	if checked < 30 {
+		t.Errorf("only %d L1 body nodes checked", checked)
+	}
+}
+
+// TestGateL2_GoStatementArgumentCalls: calls in a `go` statement's arguments
+// (`go f(g(x))`, `go func(y int){…}(h())`) are call sites of their own —
+// call nodes with resolved callees and call_graph edges — evaluated in the
+// launching goroutine, so only the launched call carries is_goroutine.
+func TestGateL2_GoStatementArgumentCalls(t *testing.T) {
+	out := buildDataflowL2V2(t)
+	fn := functionByName(t, mustModule(t, out, "flow/flow.go"), "GoArgs")
+	const pkg = "example.com/dataflow/flow."
+	for _, w := range []struct {
+		key, callee string
+		goroutine   bool
+	}{
+		{"534:5", "f", true},
+		{"534:7", "g", false},
+		{"535:5", "", true}, // the launched func literal: no named callee
+		{"535:27", "h", false},
+	} {
+		n, ok := fn.Body[w.key]
+		if !ok {
+			t.Errorf("GoArgs: no call node %s; have %v", w.key, keys(fn.Body))
+			continue
+		}
+		if n.IsGoroutine != w.goroutine {
+			t.Errorf("GoArgs %s is_goroutine = %v, want %v", w.key, n.IsGoroutine, w.goroutine)
+		}
+		if w.callee == "" {
+			continue
+		}
+		want := "can://dataflow/go/flow/flow.go/" + pkg + w.callee
+		if n.Callee == nil || *n.Callee != want {
+			t.Errorf("GoArgs %s callee = %v, want %s", w.key, n.Callee, want)
+		}
+		if !anyEdgeFromTo(out.Application.CallGraph, fn.ID, want) {
+			t.Errorf("no call_graph edge %s -> %s", fn.ID, want)
+		}
+	}
+	if len(fn.Body) != 4 {
+		t.Errorf("GoArgs body has %d nodes, want 4: %v", len(fn.Body), keys(fn.Body))
+	}
+}
+
+func anyEdgeFromTo(edges []v2.Edge, src, dst string) bool {
+	for _, e := range edges {
+		if e.Src == src && e.Dst == dst {
 			return true
 		}
 	}

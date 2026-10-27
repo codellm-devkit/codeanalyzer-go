@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/codellm-devkit/codeanalyzer-go/internal/dataflow"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/schema"
 	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
 )
@@ -13,18 +14,24 @@ import (
 // Emit transforms the v1 GoApplication into the v2 Analysis payload. appName is
 // the application anchor (--app-name); projectDir is the absolute input root,
 // used to read each module's source for span slicing. maxLevel records how
-// deeply the tree was populated (1 = symbol table, 2 = + call_graph);
-// analyzerVersion is stamped into the manifest's analyzer{} tag.
+// deeply the tree was populated (1 = symbol table, 2 = + call_graph, 3 = +
+// cfg/cdg/ddg); analyzerVersion is stamped into the manifest's analyzer{} tag.
 //
-// This is a pure re-serialization: every fact comes from the v1 model, except
-// span byte offsets, which are derived from source via lineIndex.
-func Emit(app *schema.GoApplication, appName, projectDir string, maxLevel int, analyzerVersion string) *v2.Analysis {
+// kLimit is the L3 access-path bound (--graph-field-depth), written as the
+// envelope's k_limit at maxLevel >= 3 only. l3 is dataflow.Run's side table,
+// nil below L3; see emit_l3.go for how it merges into each callable.
+//
+// This is a pure re-serialization: every fact comes from the v1 model and the
+// L3 side table, except span byte offsets, which are derived from source via
+// lineIndex.
+func Emit(app *schema.GoApplication, appName, projectDir string, maxLevel int, analyzerVersion string, kLimit int, l3 map[dataflow.L3Key]dataflow.Result) *v2.Analysis {
 	appID := v2.AppID(appName)
 
 	// The signature→can:// id index translates v1 identity (signature strings)
 	// into v2 node ids. It is what the L2 refinement uses to backfill body
 	// callees and to map call_graph edge endpoints onto real callable ids.
 	idx := buildSigIndex(appID, app.SymbolTable)
+	idx.externals = externalIDs(appID, app.Externals)
 
 	// One lineIndex per source file, read once and shared. A method whose
 	// receiver type lives in a different file is nested under that type's module
@@ -32,6 +39,7 @@ func Emit(app *schema.GoApplication, appName, projectDir string, maxLevel int, a
 	// decisions → callable.source_file); the cache lets emitCallable reach any
 	// file's index without re-reading it per callable.
 	srcs := newSourceCache(projectDir)
+	flow := newL3Overlay(maxLevel, l3)
 
 	out := &v2.Analysis{
 		SchemaVersion: v2.SchemaVersion,
@@ -45,12 +53,16 @@ func Emit(app *schema.GoApplication, appName, projectDir string, maxLevel int, a
 			CallGraph:   emitCallGraph(app.CallGraph, idx),
 		},
 	}
+	out.Application.ExternalSymbols = emitExternalSymbols(appID, app.Externals)
+	if flow.on {
+		out.KLimit = kLimit
+	}
 
 	// Deterministic module order does not affect the JSON map, but iterating
 	// sorted keeps any incidental ordering (and logs) stable across runs.
 	for _, relPath := range sortedFileKeys(app.SymbolTable) {
 		file := app.SymbolTable[relPath]
-		out.Application.SymbolTable[relPath] = emitModule(appID, relPath, file, idx, srcs)
+		out.Application.SymbolTable[relPath] = emitModule(appID, relPath, file, idx, srcs, flow)
 	}
 	return out
 }
@@ -62,7 +74,7 @@ func Emit(app *schema.GoApplication, appName, projectDir string, maxLevel int, a
 // modRel is this module's own file path (a symbol_table key). It is threaded to
 // callables so a method declared in another file can be detected and given a
 // span against its own source plus a source_file pointer.
-func emitModule(appID, modRel string, file schema.GoFile, idx sigIndex, srcs *sourceCache) v2.Module {
+func emitModule(appID, modRel string, file schema.GoFile, idx sigIndex, srcs *sourceCache, flow l3Overlay) v2.Module {
 	li := srcs.index(modRel)
 	source := li.source
 	modID := v2.ModuleID(appID, modRel)
@@ -82,10 +94,10 @@ func emitModule(appID, modRel string, file schema.GoFile, idx sigIndex, srcs *so
 	}
 
 	for name, t := range file.Types {
-		mod.Types[name] = emitType(modID, modRel, t, idx, srcs)
+		mod.Types[name] = emitType(modID, modRel, t, idx, srcs, flow)
 	}
 	for sig, fn := range file.Functions {
-		mod.Functions[sig] = emitCallable(modID, modRel, li, fn, idx, srcs)
+		mod.Functions[sig] = emitCallable(modID, modRel, modRel, li, fn, idx, srcs, flow)
 	}
 	return mod
 }
@@ -94,7 +106,7 @@ func emitModule(appID, modRel string, file schema.GoFile, idx sigIndex, srcs *so
 // kind and splitting embedding (base_types) from computed satisfaction. Methods
 // resolve into the type's callables{}. modRel is the module the type lives in;
 // its methods may be declared in other files (handled in emitCallable).
-func emitType(modID, modRel string, t schema.GoType, idx sigIndex, srcs *sourceCache) v2.Type {
+func emitType(modID, modRel string, t schema.GoType, idx sigIndex, srcs *sourceCache, flow l3Overlay) v2.Type {
 	li := srcs.index(modRel)
 	typeID := v2.TypeID(modID, t.Signature)
 	out := v2.Type{
@@ -116,7 +128,7 @@ func emitType(modID, modRel string, t schema.GoType, idx sigIndex, srcs *sourceC
 		}
 	}
 	for sig, m := range t.Methods {
-		out.Callables[sig] = emitCallable(typeID, modRel, li, m, idx, srcs)
+		out.Callables[sig] = emitCallable(typeID, modRel, modRel, li, m, idx, srcs, flow)
 	}
 	return out
 }
@@ -124,21 +136,37 @@ func emitType(modID, modRel string, t schema.GoType, idx sigIndex, srcs *sourceC
 // emitCallable maps a v1 GoCallable to a v2 callable node, including its body
 // (call nodes) and nested closures.
 //
-// modRel and modLI are the nesting module's path and lineIndex. When the
-// callable's declaring file (c.Path) differs — a method whose receiver type is
-// in another file — its span is computed against its OWN file's lineIndex and
-// source_file records that file, per CLAUDE.md § Schema decisions. Nested
-// closures share their enclosing callable's file (Go has no cross-file
-// closures), so they carry the resolved file down unchanged.
-func emitCallable(parentID, modRel string, modLI *lineIndex, c schema.GoCallable, idx sigIndex, srcs *sourceCache) v2.Callable {
+// modRel is the CONTAINING module's path: the module this callable nests
+// under by containment (a method's receiver-type module, and for a closure the
+// module its outermost enclosing callable nests under). declRel and declLI are
+// the file the callable's positions are relative to and its lineIndex: the
+// nesting file for a top-level callable, the enclosing callable's declaring
+// file for a closure (Go has no cross-file closures; v1 closures carry no
+// Path). A callable's own c.Path, when set, is its declaring file.
+//
+// When the declaring file differs from the containing module — a method whose
+// receiver type is in another file, and every closure (nested ones included)
+// inside such a method — the callable records it as source_file, per CLAUDE.md
+// § Schema decisions, and its spans index that file's source. Under the SDK's
+// text-recovery rule (symbol_table[source_file].source when present, else the
+// containing module's source) each of these nodes then slices the right file.
+//
+// At L3 the callable's dataflow result, looked up by (declaring file,
+// signature), completes its body and adds cfg/cdg/ddg (emit_l3.go). Its spans
+// use the same declaring-file lineIndex, so a cross-file callable's statement
+// spans index its declaring file's source, like its own span.
+func emitCallable(parentID, modRel, declRel string, declLI *lineIndex, c schema.GoCallable, idx sigIndex, srcs *sourceCache, flow l3Overlay) v2.Callable {
 	callID := v2.CallableID(parentID, c.Signature)
 
 	// Resolve the file this callable's positions are relative to.
-	li := modLI
-	sourceFile := ""
-	if c.Path != "" && c.Path != modRel {
+	li := declLI
+	if c.Path != "" && c.Path != declRel {
 		li = srcs.index(c.Path)
-		sourceFile = c.Path
+		declRel = c.Path
+	}
+	sourceFile := ""
+	if declRel != modRel {
+		sourceFile = declRel
 	}
 
 	out := v2.Callable{
@@ -159,55 +187,99 @@ func emitCallable(parentID, modRel string, modLI *lineIndex, c schema.GoCallable
 	}
 	if len(c.InnerCallables) > 0 {
 		out.Callables = make(map[string]v2.Callable, len(c.InnerCallables))
-		// Closures live in the same file as their enclosing callable, so the
-		// resolved file (modRel-or-c.Path) becomes their nesting file.
-		enclRel := modRel
-		if sourceFile != "" {
-			enclRel = sourceFile
-		}
+		// Closures nest in the same containing module and are declared in the
+		// same file as their enclosing callable.
 		for sig, inner := range c.InnerCallables {
-			out.Callables[sig] = emitCallable(callID, enclRel, li, inner, idx, srcs)
+			out.Callables[sig] = emitCallable(callID, modRel, declRel, li, inner, idx, srcs, flow)
 		}
 	}
+	flow.apply(&out, li, dataflow.L3Key{Path: declRel, Signature: c.Signature})
 	return out
 }
 
 // emitBody builds the body map: one `call` node per call site, keyed by its
 // line:col local id, carrying the sanctioned callee null->id refinement slot.
+// Every node carries its global id, v2.GlobalOrdinal(callable id, key), from L1
+// on (R15; Python parity: codeanalyzer-python stamps body ids at L1).
 //
 // callee resolution:
 //   - L1: the v1 site has no backfilled signature, so callee stays null.
 //   - L2: the resolver backfilled the site's callee signature. When that
 //     signature names an in-tree callable, callee becomes its can:// id; when
-//     it names an external/stdlib callee (no in-tree node), callee stays null —
-//     the honest-unresolved fallback the L2 gate expects.
+//     it names a library callee, callee becomes its @external id (a key of
+//     application.external_symbols); otherwise (conversions, builtins, calls
+//     through function values) callee stays null.
 func emitBody(callableID string, li *lineIndex, sites []schema.GoCallsite, idx sigIndex) map[string]v2.BodyNode {
+	keys := callBodyKeys(sites)
 	body := make(map[string]v2.BodyNode, len(sites))
-	for _, cs := range sites {
-		local := v2.LocalID(cs.StartLine, cs.StartColumn)
+	for i, cs := range sites {
+		local := keys[i]
 		body[local] = v2.BodyNode{
 			Kind:        "call",
+			ID:          v2.GlobalOrdinal(callableID, local),
 			Span:        colSpan(li, cs.StartLine, cs.StartColumn, cs.EndLine, cs.EndColumn),
 			Callee:      calleeID(cs.CalleeSignature, idx),
 			IsGoroutine: cs.IsGoroutine,
+			IsDeferred:  cs.IsDeferred,
 		}
 	}
 	return body
 }
 
+// callBodyKeys maps each call site to its body-map key. It is a thin wrapper:
+// the co-positioned-call keying (l:c, l:c/2, …) lives in v2.CallBodyKeys so the
+// L3 body builder shares it.
+func callBodyKeys(sites []schema.GoCallsite) []string {
+	pos := make([][2]int, len(sites))
+	for i, cs := range sites {
+		pos[i] = [2]int{cs.StartLine, cs.StartColumn}
+	}
+	return v2.CallBodyKeys(pos)
+}
+
 // calleeID translates a v1 backfilled callee signature into the v2 can:// id
-// refinement slot: nil (JSON null) when unresolved or external, a pointer to the
-// in-tree callable id when resolved. Never returns the raw v1 signature — a
-// call node's callee is always a node id or null.
+// refinement slot: nil (JSON null) when unresolved, a pointer to the in-tree
+// callable id or the library callee's @external id when resolved. Never returns
+// the raw v1 signature — a call node's callee is always a node id or null.
 func calleeID(sig *string, idx sigIndex) *string {
 	if sig == nil {
 		return nil
 	}
-	id, ok := idx.idFor(*sig)
+	id, ok := idx.resolve(*sig)
 	if !ok {
 		return nil
 	}
 	return &id
+}
+
+// externalIDs maps each library callee's full signature to its @external id.
+func externalIDs(appID string, externals map[string]schema.GoExternalCallee) map[string]string {
+	ids := make(map[string]string, len(externals))
+	for fullSig, ext := range externals {
+		ids[fullSig] = v2.ExternalID(appID, ext.ImportPath, ext.Sig)
+	}
+	return ids
+}
+
+// emitExternalSymbols builds application.external_symbols, keyed by @external
+// id. Nil (omitted from JSON) when no library callee was recorded.
+func emitExternalSymbols(appID string, externals map[string]schema.GoExternalCallee) map[string]v2.ExternalSymbol {
+	if len(externals) == 0 {
+		return nil
+	}
+	out := make(map[string]v2.ExternalSymbol, len(externals))
+	for _, ext := range externals {
+		id := v2.ExternalID(appID, ext.ImportPath, ext.Sig)
+		params := make([]v2.ExternalParameter, 0, len(ext.Params))
+		for _, p := range ext.Params {
+			params = append(params, v2.ExternalParameter{Name: p.Name, Type: p.Type, IsVariadic: p.IsVariadic})
+		}
+		out[id] = v2.ExternalSymbol{
+			ID: id, Kind: "external", Name: ext.Name, Module: ext.ImportPath,
+			Signature: ext.Sig, Parameters: params, ReturnType: ext.ReturnType,
+		}
+	}
+	return out
 }
 
 func emitParams(li *lineIndex, params []schema.GoParameter) []v2.Parameter {
@@ -238,10 +310,10 @@ func emitImports(li *lineIndex, imports []schema.GoImport) []v2.Import {
 
 // emitCallGraph maps v1 identity-only edges to the v2 {src,dst,prov,weight}
 // shape: the source/target/provenance rename, PLUS the endpoint translation from
-// v1 signatures to can:// callable ids. An edge whose src or dst does not resolve
-// to an in-tree node is dropped rather than emitted with a dangling endpoint —
-// the L2 gate requires every endpoint to be a real callable id. (The v1 resolver
-// only emits edges to in-project targets, so this drop is defensive.)
+// v1 signatures to can:// ids. A dst may be an in-tree callable or a library
+// callee's @external id (a key of external_symbols). An edge whose src or dst
+// does not resolve is dropped rather than emitted with a dangling endpoint —
+// the L2 gate requires every endpoint to be a real node id.
 func emitCallGraph(edges []schema.GoCallEdge, idx sigIndex) []v2.Edge {
 	out := make([]v2.Edge, 0, len(edges))
 	for _, e := range edges {
@@ -251,7 +323,7 @@ func emitCallGraph(edges []schema.GoCallEdge, idx sigIndex) []v2.Edge {
 		// The target stays signature-only — a call target is never an init
 		// (Go forbids calling init), and every other signature is unique.
 		src, srcOK := idx.idForWithPath(e.Source, e.SourcePath)
-		dst, dstOK := idx.idFor(e.Target)
+		dst, dstOK := idx.resolve(e.Target)
 		if !srcOK || !dstOK {
 			continue
 		}
@@ -289,10 +361,13 @@ func emitCallGraph(edges []schema.GoCallEdge, idx sigIndex) []v2.Edge {
 
 // ─── kind mapping ────────────────────────────────────────────────────────────
 
-// typeKind collapses the v1 is_interface boolean into the v2 kind vocabulary.
-// v1 only distinguishes struct vs interface; alias/defined await richer v1
-// facts, so a non-interface type maps to struct for now.
+// typeKind reports the v2 kind (struct | interface | alias | defined), recorded
+// by the symbol-table builder from the type declaration. The IsInterface
+// fallback covers hand-built v1 types that carry no TypeKind.
 func typeKind(t schema.GoType) string {
+	if t.TypeKind != "" {
+		return t.TypeKind
+	}
 	if t.IsInterface {
 		return "interface"
 	}

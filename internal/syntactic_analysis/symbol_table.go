@@ -73,16 +73,22 @@ func (b *SymbolTableBuilder) Build(targetFiles []string, skipTests bool) (map[st
 	}
 
 	// Collect packages, warn on errors but don't abort (graceful partial analysis).
+	var tooNew toolchainGap
 	for _, pkg := range pkgList {
-		if len(pkg.Errors) > 0 {
-			for _, e := range pkg.Errors {
-				utils.Warn("package %s: %v", pkg.PkgPath, e)
+		for _, e := range pkg.Errors {
+			if tooNew.record(pkg.PkgPath, e.Msg) {
+				// Summarized once below; one line per package is noise on a
+				// large module and hides the cause.
+				utils.Debug("package %s: %v", pkg.PkgPath, e)
+				continue
 			}
+			utils.Warn("package %s: %v", pkg.PkgPath, e)
 		}
 		if pkg.Types != nil {
 			b.pkgs[pkg.PkgPath] = pkg
 		}
 	}
+	tooNew.warn()
 
 	symbolTable := map[string]schema.GoFile{}
 
@@ -360,17 +366,19 @@ func (b *SymbolTableBuilder) buildType(
 	end := b.fset.Position(spec.End())
 
 	gt := &schema.GoType{
-		Name:        typeName,
-		Signature:   typSig,
-		Comments:    b.docComments(decl.Doc),
-		IsExported:  isExported,
-		Fields:      []schema.GoField{},
-		Methods:     map[string]schema.GoCallable{},
-		BaseTypes:   []string{},
-		InnerTypes:  map[string]schema.GoType{},
-		StartLine:   pos.Line,
-		EndLine:     end.Line,
+		Name:       typeName,
+		Signature:  typSig,
+		Comments:   b.docComments(decl.Doc),
+		IsExported: isExported,
+		Fields:     []schema.GoField{},
+		Methods:    map[string]schema.GoCallable{},
+		BaseTypes:  []string{},
+		InnerTypes: map[string]schema.GoType{},
+		StartLine:  pos.Line,
+		EndLine:    end.Line,
 	}
+
+	gt.TypeKind = b.typeKindOf(pkg, spec)
 
 	switch t := spec.Type.(type) {
 	case *ast.StructType:
@@ -385,6 +393,37 @@ func (b *SymbolTableBuilder) buildType(
 	}
 
 	return gt
+}
+
+// typeKindOf classifies a type declaration: alias for `type X = Y`; otherwise
+// by the UNDERLYING type (so `type E S` over a struct is struct and `type J I`
+// over an interface is interface); defined for any other underlying type. It
+// falls back to the AST shape of the right-hand side when type info is missing.
+func (b *SymbolTableBuilder) typeKindOf(pkg *packages.Package, spec *ast.TypeSpec) string {
+	if spec.Assign.IsValid() {
+		return "alias"
+	}
+	if pkg.TypesInfo != nil {
+		if obj := pkg.TypesInfo.Defs[spec.Name]; obj != nil {
+			if named, ok := obj.Type().(*types.Named); ok {
+				switch named.Underlying().(type) {
+				case *types.Struct:
+					return "struct"
+				case *types.Interface:
+					return "interface"
+				default:
+					return "defined"
+				}
+			}
+		}
+	}
+	switch spec.Type.(type) {
+	case *ast.StructType:
+		return "struct"
+	case *ast.InterfaceType:
+		return "interface"
+	}
+	return "defined"
 }
 
 func (b *SymbolTableBuilder) buildStructFields(pkg *packages.Package, st *ast.StructType) []schema.GoField {
@@ -466,18 +505,18 @@ func (b *SymbolTableBuilder) collectInterfaceMethods(pkg *packages.Package, it *
 
 			sig := pkg.Types.Path() + "." + gt.Name + "." + name.Name
 			callable := schema.GoCallable{
-				Name:          name.Name,
-				Path:          "",
-				Signature:     sig,
-				Parameters:    b.buildFuncTypeParams(pkg, method.Type),
-				ReturnType:    retType,
-				ReturnTypes:   retTypes,
-				IsExported:    unicode.IsUpper(rune(name.Name[0])),
-				ReceiverType:  gt.Signature,
-				CallSites:     []schema.GoCallsite{},
+				Name:           name.Name,
+				Path:           "",
+				Signature:      sig,
+				Parameters:     b.buildFuncTypeParams(pkg, method.Type),
+				ReturnType:     retType,
+				ReturnTypes:    retTypes,
+				IsExported:     unicode.IsUpper(rune(name.Name[0])),
+				ReceiverType:   gt.Signature,
+				CallSites:      []schema.GoCallsite{},
 				InnerCallables: map[string]schema.GoCallable{},
-				StartLine:     pos.Line,
-				EndLine:       end.Line,
+				StartLine:      pos.Line,
+				EndLine:        end.Line,
 			}
 			gt.Methods[sig] = callable
 		}
@@ -499,8 +538,8 @@ func (b *SymbolTableBuilder) buildCallable(
 	// They are toolchain artifacts, not project source — emitting them yields
 	// callables whose span cannot be sliced against any project module. Drop
 	// them here, at the point their (cache) file is first known.
-	if declFile := b.fset.File(decl.Pos()); declFile == nil ||
-		!utils.IsWithin(b.projectDir, declFile.Name()) {
+	declFile := b.fset.File(decl.Pos())
+	if declFile == nil || !utils.IsWithin(b.projectDir, declFile.Name()) {
 		return nil
 	}
 
@@ -508,22 +547,7 @@ func (b *SymbolTableBuilder) buildCallable(
 	pos := b.fset.Position(decl.Pos())
 	end := b.fset.Position(decl.End())
 
-	var sig string
-	if pkg.TypesInfo != nil {
-		if obj, ok := pkg.TypesInfo.Defs[decl.Name]; ok && obj != nil {
-			sig = signatureOf(obj)
-		}
-	}
-	if sig == "" {
-		if decl.Recv != nil {
-			if recvName := b.receiverTypeName(decl.Recv); recvName != "" {
-				sig = pkg.Types.Path() + "." + recvName + "." + name
-			}
-		}
-		if sig == "" {
-			sig = pkg.Types.Path() + "." + name
-		}
-	}
+	sig := b.declSignature(pkg, decl)
 
 	var recvType, recvName string
 	if decl.Recv != nil && len(decl.Recv.List) > 0 {
@@ -541,23 +565,23 @@ func (b *SymbolTableBuilder) buildCallable(
 	}
 
 	callable := &schema.GoCallable{
-		Name:               name,
-		Path:               utils.RelativePath(b.projectDir, b.fset.File(decl.Pos()).Name()),
-		Signature:          sig,
-		Comments:           b.docComments(decl.Doc),
-		Parameters:         b.buildParams(pkg, decl.Type),
-		ReturnType:         retType,
-		ReturnTypes:        retTypes,
-		IsExported:         isExported,
-		ReceiverType:       recvType,
-		ReceiverName:       recvName,
-		CallSites:          []schema.GoCallsite{},
-		InnerCallables:     map[string]schema.GoCallable{},
-		LocalVariables:     []schema.GoVariableDeclaration{},
-		AccessedSymbols:    []schema.GoSymbol{},
-		StartLine:          pos.Line,
-		EndLine:            end.Line,
-		CodeStartLine:      bodyStart,
+		Name:                 name,
+		Path:                 utils.RelativePath(b.projectDir, declFile.Name()),
+		Signature:            sig,
+		Comments:             b.docComments(decl.Doc),
+		Parameters:           b.buildParams(pkg, decl.Type),
+		ReturnType:           retType,
+		ReturnTypes:          retTypes,
+		IsExported:           isExported,
+		ReceiverType:         recvType,
+		ReceiverName:         recvName,
+		CallSites:            []schema.GoCallsite{},
+		InnerCallables:       map[string]schema.GoCallable{},
+		LocalVariables:       []schema.GoVariableDeclaration{},
+		AccessedSymbols:      []schema.GoSymbol{},
+		StartLine:            pos.Line,
+		EndLine:              end.Line,
+		CodeStartLine:        bodyStart,
 		CyclomaticComplexity: b.cyclomaticComplexity(decl),
 	}
 
@@ -569,6 +593,24 @@ func (b *SymbolTableBuilder) buildCallable(
 	}
 
 	return callable
+}
+
+// declSignature is a FuncDecl's callable signature: signatureOf its object,
+// or, without type info, <pkgpath>[.<Recv>].<Name>.
+func (b *SymbolTableBuilder) declSignature(pkg *packages.Package, decl *ast.FuncDecl) string {
+	if pkg.TypesInfo != nil {
+		if obj, ok := pkg.TypesInfo.Defs[decl.Name]; ok && obj != nil {
+			if sig := signatureOf(obj); sig != "" {
+				return sig
+			}
+		}
+	}
+	if decl.Recv != nil {
+		if recvName := b.receiverTypeName(decl.Recv); recvName != "" {
+			return pkg.Types.Path() + "." + recvName + "." + decl.Name.Name
+		}
+	}
+	return pkg.Types.Path() + "." + decl.Name.Name
 }
 
 // ─── Parameters ───────────────────────────────────────────────────────────────
@@ -646,24 +688,27 @@ func (b *SymbolTableBuilder) joinReturnTypes(parts []string) string {
 // callee_signature is left nil here — the resolver backfills it in the call-graph stage.
 func (b *SymbolTableBuilder) buildCallSites(pkg *packages.Package, body *ast.BlockStmt) []schema.GoCallsite {
 	var sites []schema.GoCallsite
+	// goroutine / deferred hold the call of each `go` / `defer` statement seen
+	// so far. Pre-order traversal visits the statement before its call, so the
+	// CallExpr case can tag it, and continues into the call so calls in its
+	// function value and arguments (evaluated by the launching goroutine, at
+	// the statement) are recorded as ordinary sites. The L3 walk
+	// (dataflow.recordedCalls) must record the same calls in the same order.
+	goroutine := map[*ast.CallExpr]bool{}
+	deferred := map[*ast.CallExpr]bool{}
 	ast.Inspect(body, func(n ast.Node) bool {
 		switch node := n.(type) {
 		case *ast.GoStmt:
-			// Goroutine launch — record with is_goroutine=true.
-			if call, ok := node.Call.Fun.(*ast.CallExpr); ok {
-				_ = call
-			}
-			site := b.callExprToSite(pkg, node.Call, true)
-			if site != nil {
-				sites = append(sites, *site)
-			}
-			return false
+			goroutine[node.Call] = true
+		case *ast.DeferStmt:
+			deferred[node.Call] = true
 		case *ast.FuncLit:
 			// Closure bodies are handled by buildInnerCallables; don't double-count.
 			return false
 		case *ast.CallExpr:
-			site := b.callExprToSite(pkg, node, false)
+			site := b.callExprToSite(pkg, node, goroutine[node])
 			if site != nil {
+				site.IsDeferred = deferred[node]
 				sites = append(sites, *site)
 			}
 		}
@@ -957,8 +1002,16 @@ func (b *SymbolTableBuilder) exprString(expr ast.Expr) string {
 	}
 }
 
-// nodeSource extracts the raw source text of a node (best effort).
+// nodeSource extracts the raw source text of a node (best effort). It returns
+// "" when the text cannot be recovered: an unreadable file, or a node from a
+// malformed file whose Pos or End has no token.File (or ends outside the file
+// it starts in), which the parser produces when it recovers from a syntax
+// error.
 func (b *SymbolTableBuilder) nodeSource(node ast.Node) string {
+	tf := b.fset.File(node.Pos())
+	if tf == nil || b.fset.File(node.End()) != tf {
+		return ""
+	}
 	pos := b.fset.Position(node.Pos())
 	if pos.Filename == "" {
 		return ""
@@ -967,8 +1020,8 @@ func (b *SymbolTableBuilder) nodeSource(node ast.Node) string {
 	if err != nil {
 		return ""
 	}
-	startOff := b.fset.File(node.Pos()).Offset(node.Pos())
-	endOff := b.fset.File(node.End()).Offset(node.End())
+	startOff := tf.Offset(node.Pos())
+	endOff := tf.Offset(node.End())
 	if startOff < 0 || endOff > len(data) || startOff >= endOff {
 		return ""
 	}

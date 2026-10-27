@@ -45,10 +45,13 @@ jobs:
           echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
           echo ">>> Releasing version $version (prerelease=$prerelease)"
 
+      # Build with the latest Go, not the go.mod minimum: the analyzer
+      # type-checks targets with the go/types compiled into it, so a binary
+      # built with an older Go degrades on modules with a newer go line.
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: stable
           check-latest: true
 
       # ----- test gate: a broken build must not produce a release -----

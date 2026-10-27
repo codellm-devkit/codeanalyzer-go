@@ -24,6 +24,26 @@ jobs:
       - name: Test
         run: go test ./... -count=1
 
+  # The release binary is built with the latest Go (release.yml), so test on
+  # it too; the job above tests the go.mod minimum.
+  test-stable:
+    name: Test (Go stable)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          check-latest: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test ./... -count=1
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

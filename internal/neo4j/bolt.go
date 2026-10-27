@@ -89,7 +89,7 @@ func (w *boltWriter) run() error {
 	}
 
 	root, scoped := applicationPrefix(w.appID)
-	if w.cfg.Eager && scoped {
+	if w.shouldEagerPurge(scoped) {
 		if err := w.eagerPurge(root); err != nil {
 			return err
 		}
@@ -198,12 +198,20 @@ func (w *boltWriter) schemaVersionMismatch() (bool, error) {
 
 // ─── destructive steps (--eager only) ─────────────────────────────────────────
 
+// eagerPurge runs as an implicit (auto-commit) transaction: Neo4j rejects
+// CALL { ... } IN TRANSACTIONS inside an explicit one, which is what
+// ExecuteWrite opens.
+// shouldEagerPurge reports whether to delete the app's whole subgraph before
+// pushing. The purge is app-wide, so it runs only on a full run: with
+// --target-files the push carries only the targeted packages, and purging
+// first would leave the rest of the app missing from the graph.
+func (w *boltWriter) shouldEagerPurge(scoped bool) bool {
+	return w.cfg.Eager && w.cfg.FullRun && scoped
+}
+
 func (w *boltWriter) eagerPurge(root string) error {
 	q, params := eagerPurgeQuery(root)
-	return w.write(func(tx neo4j.ManagedTransaction) error {
-		_, err := tx.Run(w.ctx, q, params)
-		return err
-	})
+	return w.autoCommit(q, params)
 }
 
 // purgeModule deletes the edges and declarations a module owned, scoped to its
@@ -352,6 +360,17 @@ func (w *boltWriter) write(fn func(neo4j.ManagedTransaction) error) error {
 	_, err := w.session.ExecuteWrite(w.ctx, func(tx neo4j.ManagedTransaction) (any, error) {
 		return nil, fn(tx)
 	})
+	return err
+}
+
+// autoCommit runs one statement as an implicit transaction and consumes its
+// result, so a server-side failure is returned here rather than dropped.
+func (w *boltWriter) autoCommit(q string, params map[string]any) error {
+	res, err := w.session.Run(w.ctx, q, params)
+	if err != nil {
+		return err
+	}
+	_, err = res.Consume(w.ctx)
 	return err
 }
 

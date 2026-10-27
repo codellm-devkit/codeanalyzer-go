@@ -12,9 +12,11 @@ v2 vocabulary (parity clause: add at the leaves, never rename shared names). The
 committed spec is the full transcript: `docs/design/specs/v2-l1-emission.md`.
 
 ### Identity & positioning (Group A — reused verbatim by L3/L4)
-- **`application.id`** = `can://go/<app>`, where `<app>` is the **`--app-name`** value,
-  defaulting to the input directory's base name (per the CLI contract; the SDK's Neo4j
-  backend must use the same anchor). L3/L4 build ids on this unchanged.
+- **`application.id`** = `can://<app>` (app outermost, so a polyglot app shares one prefix),
+  where `<app>` is the **`--app-name`** value, defaulting to the input directory's base name
+  (per the CLI contract; the SDK's Neo4j backend must use the same anchor). Module ids are
+  `can://<app>/go/<file>`; externals are language-neutral `can://<app>/@external/<import-path>/<sig>`.
+  L3/L4 build ids on this unchanged.
 - **Callable signature** = existing `signatureOf()` output as the last `can://` path
   segment; receiver folded in for methods. One canonicalizer, unchanged from v1.
 - **`span.bytes`** = **UTF-8 byte offsets** into `module.source` (Go strings are
@@ -43,7 +45,10 @@ committed spec is the full transcript: `docs/design/specs/v2-l1-emission.md`.
   the declaring file ≠ the nesting module, the callable carries `source_file` = that
   file's path (a `symbol_table` key). **Text recovery:** a node's text =
   `symbol_table[source_file].source[span.bytes]` if `source_file` present, else the
-  nesting module's `source`. Emitted only when it differs (absent = same file). This is
+  nesting module's `source`. Emitted only when it differs (absent = same file). It applies
+  to **every callable** whose declaring file differs from its containing module, so
+  **closures and nested closures** inside a cross-file method carry `source_file` too (no
+  implicit inheritance; text recovery holds as written for them and their body nodes). This is
   the leaf-level fix for the cross-file-method empty-span collision the real-app eval
   surfaced. Cross-language parity (C# partial classes, Rust `impl`, Ruby reopened
   classes, TS declaration merging) is **deferred** — promote `source_file` into the
@@ -54,10 +59,46 @@ committed spec is the full transcript: `docs/design/specs/v2-l1-emission.md`.
   v1). `is_constructor_call` **dropped** — Go has no constructors.
 - `callee` is the sanctioned `null → id` refinement slot (null at L1, backfilled at L2).
 
+### `external_symbols` (L2 library calls)
+- **L2 keeps library call edges.** A call to a function outside the project (`fmt.Println`,
+  `(*strings.Builder).WriteString`) is no longer dropped: the call node's `callee` and the
+  `call_graph` edge `dst` are the callee's `@external` id. Builtins, type conversions
+  (no longer minted as `<Type>.__new__`) and calls through function values stay `null`.
+- **Id** = `can://<app>/@external/<import-path>/<sig>` where `<sig>` is the callee signature
+  minus the `<import-path>.` prefix (`Println`, `Builder.WriteString`); it may also name a
+  library *interface* method (`@external/io/Writer.Write`). Methods on generic library types
+  record the declared (origin) signature, not the instance. `@external` is
+  language-neutral (not `go/`), so a polyglot app shares one external namespace.
+- **Home:** `application.external_symbols{<id>: {id, kind:"external", name, module,
+  signature, parameters, return_type}}`, omitempty; parameters come from the callee's
+  `*types.Signature` (receiver excluded, unnamed params `_<i>`).
+- Mirrors the Python/Java precedent (library callees are leaf nodes at application scope);
+  on by default at L2, no flag.
+
+### L3 body and edges (`-a 3`; spec `docs/design/specs/v2-l3-l4-dataflow.md`)
+- **Body node `id`** = `<callable-id>@<key>` (`v2.GlobalOrdinal`) on **every** body node,
+  **from `-a 1` on** (not L3+ only) — Python parity (codeanalyzer-python stamps body ids at
+  L1). **`parent`** (L3 only) = the local key of the statement a satellite call sits in.
+- **Body kinds: shared vocabulary only, no Go-specific kinds** — `if` → `branch`;
+  `for`/`range` → `loop`; `switch`/type switch/`select` → `switch`; `return`; every other
+  statement and each case/comm-clause head → `statement`; L1 `call`; synthetic `entry`/`exit`.
+  `go`/`defer`/`select` facts ride `is_goroutine`/`is_deferred` and the `switch` kind.
+- **`@entry` / `@exit` are span-less** (keystone: synthetic CFG endpoints have no span) and
+  carry no `callee` (a call-node field).
+- **Defer two-node rule:** `defer f(x)` is a registration `statement` node (at the `defer`
+  keyword; evaluates `f`, `x` and weak-defines `<defer>:<call-key>`) **plus** the L1 deferred
+  `call` node (`is_deferred`), placed only in the exit chain (reverse source order before
+  `@exit`; every defer assumed registered). `go f(x)` is NOT split — the statement is its call
+  node.
+- **`cfg` kind `defer_resume`** — the one Go add to the shared `cfg` kinds: chain-internal
+  edges and the chain tail → `@exit`. The edge into the chain keeps its own kind.
+- **`k_limit`** (envelope, L3+ only) = `--graph-field-depth` (default 3), the access-path
+  bound of the syntactic `ddg` (`x.f.g.h` → `x.f.g.*`); `ddg.prov` is `["ssa"]` (parity).
+
 ### Deferred (not this train)
-- L3 (CFG/CDG/DDG) and L4 (SDG param edges) — reuse Group A ids/spans unchanged.
-- Go-specific `cfg` edge kinds (e.g. `defer_resume`, `select`) are recorded when L3
-  is designed, not now.
+- L4 (SDG param edges) — reuses Group A ids/spans and the L3 vocabulary unchanged. Designed in
+  `docs/design/specs/v2-l3-l4-dataflow.md`. A Go-specific `select` cfg kind was not added
+  (`select` is a `switch` with `switch_case` edges).
 
 ## Neo4j-projection decisions
 
@@ -107,6 +148,13 @@ shared neutral vocabulary verbatim; never rename a sibling's shared name). Spec:
 - **`is_goroutine` / `is_deferred`** → boolean props on the call `:GoBodyNode` (pruned when
   false, matching JSON `omitempty`), not labels, not edge discriminants (the fact lives on
   the call site even when the callee is unresolved and no edge exists).
+- **`:GoBodyNode.id`** = the JSON body node's `id` (`<callable-id>@<key>`), which the JSON
+  carries **from `-a 1` on** (not L3+ only) — Python parity: codeanalyzer-python stamps body
+  ids at L1 (`stamp_body_ids`), so JSON and graph join on the same id at every level.
+- **`call_node`** on a satellite call `:GoBodyNode` = the enclosing statement's **local** key
+  (JSON `parent` verbatim), resolved against the owning callable (the `GO_HAS_BODY_NODE`
+  source) — not a global id. Python parity: codeanalyzer-python projects `node.parent`
+  unchanged and python-sdk's `reconstruct` maps `call_node` back to `parent`.
 - **`source_file`** (cross-file method, § callable above) → scalar prop on `:GoCallable`;
   text recovery joins to the declaring `:GoModule` by that path. Present only when it
   differs from the nesting module.
@@ -123,16 +171,25 @@ shared neutral vocabulary verbatim; never rename a sibling's shared name). Spec:
   own resolution claims).
 
 ### `_k` relationship discriminants (parallel edges survive MERGE)
-- `GO_CFG_NEXT` per `kind`; `GO_DDG` per `(var, prov)`; `DECLARES_DEPENDENCY` per `kind`
-  — same discriminant mechanism as the siblings.
+- `GO_CFG_NEXT` per `kind`; `GO_DDG` per `(var, prov)` as the composite
+  `_k = var + "|" + join(prov, ",")` (declared as `Discriminant: "var|prov"`);
+  `DECLARES_DEPENDENCY` per `kind` — same discriminant mechanism as the siblings.
 
-### Reserved L3/L4 overlay (declared now, emits nothing until the levels land)
-- `schema.go` declares the full overlay vocabulary **now** — `GO_HAS_BODY_NODE`,
-  `GO_CFG_NEXT`, `GO_CDG`, `GO_DDG`, `GO_PARAM_IN`, `GO_PARAM_OUT`, `GO_SUMMARY`, and the
-  body-node statement kinds — with parity-correct names and `_k` discriminants. The
-  analyzer caps at L2, so the projector walks these sections and emits **zero rows**;
-  when L3/L4 land they fill with **no schema-contract change**. (`--emit neo4j` is
-  "full-depth = max implemented" — L2 today; the graph grows additively.)
+### L3 overlay (live at `-a 3`)
+- `GO_CFG_NEXT {kind}`, `GO_CDG`, `GO_DDG {var, prov}` are no longer reserved; the projector
+  emits one row per JSON `cfg[]`/`cdg[]`/`ddg[]` entry (cross-projection count gate).
+  Endpoints are `:GoBodyNode` **global ids** (`v2.GlobalOrdinal(callable-id, local-key)`),
+  never recomposed by hand. `prov` is a string-array prop.
+- `:GoBodyNode` covers every body node incl. synthetic `@entry`/`@exit` (id
+  `<callable-id>@entry`, no `span_json`), each with `GO_HAS_BODY_NODE` from its callable.
+  It carries `call_node` (JSON `parent` verbatim — the **local** key, see § Flattened
+  properties) and `var` (JSON `of`; L4 — absent at L3). `GO_HAS_BODY_NODE` may originate at `:GoExternal` (L4 stand-ins).
+
+### Reserved L4 overlay (declared now, emits nothing until L4 lands)
+- `schema.go` still declares `GO_PARAM_IN`, `GO_PARAM_OUT`, `GO_SUMMARY` (`Reserved`) with
+  parity-correct names; the projector emits **zero rows** for them. When L4 lands they fill
+  with **no schema-contract change**. (`--emit neo4j` is "full-depth = max implemented" —
+  L3 today; the graph grows additively.)
 
 ### SDK facade (`GoAnalysisBackend`, on the `python-sdk` fork — frontend rung)
 - **Type-centric surface** (Go is the SDK's first class-less facade; no C precedent exists
@@ -143,9 +200,12 @@ shared neutral vocabulary verbatim; never rename a sibling's shared name). Spec:
   take the callable, not class+method strings).
 - **Scope this train:** Tier-A lifecycle + L1/L2 leaf accessors + repository-artifact
   getters + `get_source`. Slicing / CFG / CDG / DDG / reachability are **omitted** (they
-  need L3/L4 the analyzer does not produce) per the ABC contract.
+  need L3/L4 the analyzer does not produce) per the ABC contract. (2026-10-24: L3 is now
+  emitted at `-a 3` — per-callable `cfg`/`cdg`/`ddg` and `GO_CFG_NEXT`/`GO_CDG`/`GO_DDG` —
+  so L3 accessors are supportable now; interprocedural slicing and taint still need L4:
+  `param_in`/`param_out`/`summary` and the points-to `ddg`.)
 
 ### Deferred (not this train)
 - SDK consumer slicing/taint surface and L3/L4 facade methods — arrive with the L3/L4
   analyzer train, reusing this graph vocabulary unchanged.
-- Struct-tag modeling; Go-specific `cfg` edge kinds (`defer_resume`, `select`) — with L3.
+- Struct-tag modeling. (`defer_resume` landed with L3; see § L3 body and edges.)

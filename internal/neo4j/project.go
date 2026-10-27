@@ -2,6 +2,7 @@ package neo4j
 
 import (
 	"encoding/json"
+	"strings"
 
 	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
 )
@@ -22,7 +23,7 @@ import (
 // resolves to a declared node or an id-keyed :GoExternal ghost — nothing dangles.
 
 // Project is the pure (tree) → GraphRows function. appID is analysis.Application.ID
-// (the can://<lang>/<app> root); it is read from the envelope, never recomposed.
+// (the can://<app> root); it is read from the envelope, never recomposed.
 func Project(a *v2.Analysis) GraphRows {
 	p := &projector{
 		b:        NewRowBuilder(),
@@ -163,6 +164,7 @@ func (p *projector) projectCallable(parentRef NodeRef, module string, c v2.Calla
 	for local, bn := range c.Body {
 		p.projectBodyNode(cRef, module, c.ID, local, bn)
 	}
+	p.projectFlow(c)
 
 	// Nested closures → GO_DECLARES (callable → closure).
 	for _, inner := range c.Callables {
@@ -173,7 +175,17 @@ func (p *projector) projectCallable(parentRef NodeRef, module string, c v2.Calla
 }
 
 func (p *projector) projectBodyNode(callableRef NodeRef, module, callableID, local string, bn v2.BodyNode) {
-	id := callableID + "@" + local
+	// GlobalOrdinal, not callableID+"@"+local: synthetic keys ("@entry") already
+	// carry the "@", and the JSON body node id uses the same rule.
+	id := v2.GlobalOrdinal(callableID, local)
+	// call_node is the parent statement's LOCAL key (JSON `parent` verbatim),
+	// resolved against the owning callable — Python parity: codeanalyzer-python
+	// projects node.parent unchanged and python-sdk's reconstruct maps call_node
+	// straight back to parent (I6).
+	var callNode Value
+	if bn.Parent != "" {
+		callNode = bn.Parent
+	}
 	bRef := p.b.Node(
 		[]string{LabelBodyNode, MarkerLabel},
 		"id", id,
@@ -181,19 +193,46 @@ func (p *projector) projectBodyNode(callableRef NodeRef, module, callableID, loc
 			"kind":         bn.Kind,
 			"is_goroutine": boolOrNil(bn.IsGoroutine),
 			"is_deferred":  boolOrNil(bn.IsDeferred),
-			"span_json":    spanJSON(bn.Span),
+			"span_json":    bodySpanJSON(bn.Span),
+			"call_node":    callNode,
+			// "var" (JSON `of`) is L4: the v2 BodyNode carries no such field yet,
+			// and a nil prop is pruned, so L3 emits none.
 		},
 		module,
 	)
 	p.b.Edge(RelHasBodyNode, callableRef, bRef, nil, "")
 
 	// A resolved callee (backfilled at L2) → GO_RESOLVES_TO. The callee is
-	// already a resolved can:// id; route through the plain edge only when it
-	// names a declared callable (an external callee stays null in JSON and
-	// emits no edge here).
-	if bn.Callee != nil && p.declared[*bn.Callee] {
-		p.b.Edge(RelResolvesTo, bRef,
-			NodeRef{Label: SymbolLabel, KeyProp: "id", Value: *bn.Callee}, nil, "")
+	// already a resolved can:// id: a declared callable, or a library callee's
+	// @external id, which routes to its ghost via callEndpoint.
+	if bn.Callee != nil {
+		_, external := p.analysis.Application.ExternalSymbols[*bn.Callee]
+		if p.declared[*bn.Callee] || external {
+			p.b.Edge(RelResolvesTo, bRef, p.callEndpoint(*bn.Callee), nil, "")
+		}
+	}
+}
+
+// projectFlow emits a callable's L3 intra-callable overlay. JSON edge endpoints
+// are LOCAL body keys; the graph addresses :GoBodyNode by its global id, so each
+// endpoint goes through v2.GlobalOrdinal. Parallel edges survive via _k:
+// GO_CFG_NEXT per kind, GO_DDG per (var, prov).
+func (p *projector) projectFlow(c v2.Callable) {
+	ref := func(local string) NodeRef {
+		return NodeRef{Label: LabelBodyNode, KeyProp: "id", Value: v2.GlobalOrdinal(c.ID, local)}
+	}
+	for _, e := range c.Cfg {
+		p.b.Edge(RelCFGNext, ref(e.Src), ref(e.Dst), Props{"kind": e.Kind}, e.Kind)
+	}
+	for _, e := range c.Cdg {
+		p.b.Edge(RelCDG, ref(e.Src), ref(e.Dst), nil, "")
+	}
+	for _, e := range c.Ddg {
+		// Own the slice: the JSON tree stays untouched by later prop mutation.
+		prov := append([]string(nil), e.Prov...)
+		p.b.Edge(RelDDG, ref(e.Src), ref(e.Dst),
+			Props{"var": e.Var, "prov": stringsOrNil(prov)},
+			e.Var+"|"+strings.Join(prov, ","))
 	}
 }
 
@@ -217,7 +256,7 @@ func (p *projector) projectImports(modRef NodeRef, m v2.Module) {
 			continue
 		}
 		// External/stdlib → :GoExternal ghost keyed by import path.
-		ghostID := appID + "/@external/" + imp.Path
+		ghostID := v2.ExternalID(appID, imp.Path, "")
 		ghostRef := p.b.Node(
 			[]string{SymbolLabel, LabelExternal, MarkerLabel},
 			"id", ghostID,
@@ -253,9 +292,15 @@ func (p *projector) callEndpoint(id string) NodeRef {
 	if p.declared[id] {
 		return ref
 	}
-	// Emit the ghost so the endpoint is a real node, not a dangling MATCH.
-	p.b.Node([]string{SymbolLabel, LabelExternal, MarkerLabel}, "id", id,
-		Props{"name": lastSegment(id)}, "")
+	// Emit the ghost so the endpoint is a real node, not a dangling MATCH. A
+	// library callee recorded in external_symbols carries its signature/module.
+	props := Props{"name": lastSegment(id)}
+	if ext, ok := p.analysis.Application.ExternalSymbols[id]; ok {
+		props["name"] = ext.Name
+		props["signature"] = ext.Signature
+		props["module"] = ext.Module
+	}
+	p.b.Node([]string{SymbolLabel, LabelExternal, MarkerLabel}, "id", id, props, "")
 	return ref
 }
 
@@ -353,4 +398,13 @@ func lastSegment(id string) string {
 		}
 	}
 	return last
+}
+
+// bodySpanJSON is spanJSON for a body node, nil for the span-less synthetic
+// @entry / @exit (L3), whose JSON node has no span either.
+func bodySpanJSON(s v2.Span) Value {
+	if s == (v2.Span{}) {
+		return nil
+	}
+	return spanJSON(s)
 }

@@ -19,8 +19,8 @@ var (
 	sharedGreeterL2      *schema.GoApplication // greeter, full call-graph
 	sharedMultipackageL1 *schema.GoApplication // multipackage, symbol-table only
 	sharedMultipackageL2 *schema.GoApplication // multipackage, full call-graph
-	sharedGenericsL1  *schema.GoApplication // generics, symbol-table only
-	sharedChiL2       *schema.GoApplication // chi (external dep), full call-graph
+	sharedGenericsL1     *schema.GoApplication // generics, symbol-table only
+	sharedChiL2          *schema.GoApplication // chi (external dep), full call-graph
 )
 
 func TestMain(m *testing.M) {
@@ -76,7 +76,7 @@ func runTestMain(m *testing.M) int {
 			fmt.Fprintf(os.Stderr, "testsetup %s: Analyze: %v\n", f.name, err)
 			return 1
 		}
-		if err := core.WriteOutput(app, opts); err != nil {
+		if err := core.WriteOutput(app, nil, opts); err != nil {
 			fmt.Fprintf(os.Stderr, "testsetup %s: WriteOutput: %v\n", f.name, err)
 			return 1
 		}
@@ -97,4 +97,3 @@ func testdataDir() string {
 	abs, _ := filepath.Abs(filepath.Join(filepath.Dir(thisFile), "..", "..", "testdata"))
 	return abs
 }
-

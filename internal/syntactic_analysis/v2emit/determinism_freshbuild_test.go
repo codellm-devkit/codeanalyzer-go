@@ -63,8 +63,8 @@ func buildChiL2Fresh(t *testing.T, dir string) *v2.Analysis {
 	}
 	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 	edges := cg.Build(st)
-	app := &schema.GoApplication{SymbolTable: st, CallGraph: edges}
-	return Emit(app, "chi", dir, 2, "gate-test")
+	app := &schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}
+	return Emit(app, "chi", dir, 2, "gate-test", 0, nil)
 }
 
 // TestDeterminism_FreshBuildsByteIdentical locks that independent from-disk
@@ -150,4 +150,35 @@ func keysOf(m map[string]bool) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// TestDeterminism_ExternalsByteIdentical locks that the WHOLE L2 payload of chi,
+// including application.external_symbols, is byte-identical across fresh builds,
+// and that library edges are actually present (so the comparison is not vacuous).
+func TestDeterminism_ExternalsByteIdentical(t *testing.T) {
+	dir := chiDir(t)
+	var first []byte
+	for i := 0; i < 4; i++ {
+		out := buildChiL2Fresh(t, dir)
+		raw, err := json.Marshal(out)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if i == 0 {
+			first = raw
+			ext := 0
+			for _, e := range out.Application.CallGraph {
+				if _, ok := out.Application.ExternalSymbols[e.Dst]; ok {
+					ext++
+				}
+			}
+			if ext == 0 || len(out.Application.ExternalSymbols) == 0 {
+				t.Fatalf("chi L2 has %d external edges / %d external symbols; want >0", ext, len(out.Application.ExternalSymbols))
+			}
+			continue
+		}
+		if string(raw) != string(first) {
+			t.Fatalf("build %d differs from build 0 (output not byte-identical)", i)
+		}
+	}
 }

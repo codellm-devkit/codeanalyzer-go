@@ -9,6 +9,7 @@
 //  2. Symbol table construction  (syntactic_analysis)
 //  3. Resolver-based call graph  (semantic_analysis) — if level >= 2
 //  4. Pass pipeline              (analysis/registry)
+//  5. Intraprocedural dataflow   (dataflow) — if level >= 3
 package core
 
 import (
@@ -19,6 +20,7 @@ import (
 	"path/filepath"
 
 	"github.com/codellm-devkit/codeanalyzer-go/internal/analysis"
+	"github.com/codellm-devkit/codeanalyzer-go/internal/dataflow"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/options"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/schema"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/semantic_analysis"
@@ -30,6 +32,24 @@ import (
 // Analyzer is the top-level analysis driver. Construct with New() and call Analyze().
 type Analyzer struct {
 	opts options.AnalysisOptions
+	// l3 is the Phase 5 side table (nil below L3). It stays off
+	// schema.GoApplication: schema must not depend on dataflow, and the
+	// cached v1 model has no L3 facts.
+	l3 map[dataflow.L3Key]dataflow.Result
+}
+
+// L3 returns the dataflow side table of the last Analyze run: one result per
+// callable with a body, keyed by (declaring file, signature). Nil below
+// level 3. Pass it to RenderJSON / WriteOutput / v2emit.Emit.
+func (a *Analyzer) L3() map[dataflow.L3Key]dataflow.Result { return a.l3 }
+
+// KLimit is the access-path bound used at L3: opts.FieldDepth, or the
+// --graph-field-depth default of 3 when a non-CLI caller left it 0.
+func KLimit(opts options.AnalysisOptions) int {
+	if opts.FieldDepth > 0 {
+		return opts.FieldDepth
+	}
+	return 3
 }
 
 // New creates an Analyzer for the given options.
@@ -78,6 +98,7 @@ func (a *Analyzer) Analyze() (*schema.GoApplication, error) {
 	)
 	edges := cgBuilder.Build(symbolTable)
 	app.CallGraph = edges
+	app.Externals = cgBuilder.Externals()
 	utils.Info("call graph: %d edges", len(edges))
 
 	// ── Phase 4: Pass pipeline ────────────────────────────────────────────────
@@ -87,6 +108,12 @@ func (a *Analyzer) Analyze() (*schema.GoApplication, error) {
 	}
 	if err := analysis.RunPipeline(app, ctx); err != nil {
 		utils.Warn("pass pipeline error: %v", err)
+	}
+
+	// ── Phase 5: Intraprocedural dataflow (L3) ────────────────────────────────
+	if a.opts.Level >= options.LevelDataflow {
+		a.l3 = dataflow.Run(builder.Fset(), builder.L3Units(symbolTable), KLimit(a.opts), a.opts.Jobs)
+		utils.Info("dataflow: %d callables", len(a.l3))
 	}
 
 	return a.finalizeAndCache(app)
@@ -153,7 +180,10 @@ func (a *Analyzer) saveCache(app *schema.GoApplication) error {
 // tree via the v2emit emitter. This is the single serialization point, so both
 // the stdout and file output paths agree. Only "json" is supported; other
 // formats return an explicit error rather than silently falling back.
-func RenderJSON(app *schema.GoApplication, opts options.AnalysisOptions) ([]byte, error) {
+//
+// l3 is the Analyzer's L3() side table (nil below level 3). At level 3 the
+// envelope carries k_limit = KLimit(opts) whether or not l3 is set.
+func RenderJSON(app *schema.GoApplication, l3 map[dataflow.L3Key]dataflow.Result, opts options.AnalysisOptions) ([]byte, error) {
 	format := opts.Format
 	if format == "" {
 		format = "json"
@@ -167,14 +197,14 @@ func RenderJSON(app *schema.GoApplication, opts options.AnalysisOptions) ([]byte
 		return nil, fmt.Errorf("unsupported output format %q; supported: json", format)
 	}
 
-	payload := v2emit.Emit(app, opts.AppName, opts.InputPath, int(opts.Level), opts.AnalyzerVersion)
+	payload := v2emit.Emit(app, opts.AppName, opts.InputPath, int(opts.Level), opts.AnalyzerVersion, KLimit(opts), l3)
 	return json.Marshal(payload)
 }
 
 // WriteOutput serializes the analysis (in the selected schema) and writes it to
 // outputDir/analysis.json, or to stdout when outputDir is empty.
-func WriteOutput(app *schema.GoApplication, opts options.AnalysisOptions) error {
-	data, err := RenderJSON(app, opts)
+func WriteOutput(app *schema.GoApplication, l3 map[dataflow.L3Key]dataflow.Result, opts options.AnalysisOptions) error {
+	data, err := RenderJSON(app, l3, opts)
 	if err != nil {
 		return err
 	}

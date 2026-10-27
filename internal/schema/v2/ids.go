@@ -7,11 +7,15 @@ import "strings"
 // helpers are pure so they can be tested in isolation and reused verbatim by
 // the deferred L3/L4 train (which must not re-decide id or span shape).
 //
-// Durable id grammar (a containment path with an app segment so multiple apps
-// in one language don't collide):
+// Durable id grammar (the app segment is outermost so a polyglot app shares one
+// `can://<app>` prefix across languages; the language follows it):
 //
-//	can://<lang>/<app>/<file>/<type>/<callable-signature>
-//	can://go/myapp/src/util.go/Hasher/Hash(string)uint64
+//	can://<app>/<lang>/<file>/<type>/<callable-signature>
+//	can://myapp/go/src/util.go/Hasher/Hash(string)uint64
+//
+// External (out-of-project) symbols are language-neutral:
+//
+//	can://<app>/@external/<import-path>/<sig>
 //
 // Ordinal id grammar (statements and synthetic vertices, addressed WITHIN their
 // callable):
@@ -28,16 +32,38 @@ const (
 	ordinalSep = "@"
 )
 
-// AppID builds the application id: can://<lang>/<app>. lang is fixed to the
-// package Language constant so callers cannot drift it.
+// AppID builds the application id: can://<app>. The language is not part of it
+// (it follows the app in module ids) so sibling analyzers share the prefix.
 func AppID(app string) string {
-	return scheme + Language + idSep + app
+	return scheme + app
 }
 
 // ModuleID builds a module id from the application id and the module's file
 // path relative to the input root (forward-slashed, no leading slash, no "..").
+// The language segment is fixed to the package Language constant so callers
+// cannot drift it.
 func ModuleID(appID, relPath string) string {
-	return appID + idSep + normalizePath(relPath)
+	return appID + idSep + Language + idSep + normalizePath(relPath)
+}
+
+// ExternalID builds the id of an out-of-project symbol:
+// <app-id>/@external/<import-path>/<sig>. It is language-neutral. An empty sig
+// (an import-level ghost, no symbol) yields <app-id>/@external/<import-path>.
+func ExternalID(appID, importPath, sig string) string {
+	if sig == "" {
+		return appID + idSep + "@external" + idSep + importPath
+	}
+	return appID + idSep + "@external" + idSep + importPath + idSep + sig
+}
+
+// GlobalOrdinal joins a callable id and a local ordinal: callableID + local
+// when local already starts with "@" (a tag), else callableID + "@" + local
+// (a "<line>:<col>" position).
+func GlobalOrdinal(callableID, local string) string {
+	if strings.HasPrefix(local, ordinalSep) {
+		return callableID + local
+	}
+	return callableID + ordinalSep + local
 }
 
 // TypeID builds a type id under its module. sig is the type's signatureOf()
@@ -70,6 +96,26 @@ func TagID(callableID, tag string) string {
 // "<line>:<col>" ordinal (the id relative to the enclosing callable).
 func LocalID(line, col int) string {
 	return itoa(line) + ":" + itoa(col)
+}
+
+// CallBodyKeys returns the body-map key of each call site, given every site's
+// [line, col] in recording order (ast.Inspect pre-order, so a call precedes the
+// calls nested in it). The first site at a position gets the bare LocalID
+// "l:c"; later sites at the same position (a chained call such as s.A().B()
+// starts where s.A() does) get "l:c/2", "l:c/3", … This is the single source of
+// call-node keys, shared by the L1 emitter and the L3 body builder so both
+// produce byte-identical keys.
+func CallBodyKeys(positions [][2]int) []string {
+	keys := make([]string, len(positions))
+	seen := make(map[[2]int]int, len(positions))
+	for i, p := range positions {
+		seen[p]++
+		keys[i] = LocalID(p[0], p[1])
+		if n := seen[p]; n > 1 {
+			keys[i] += "/" + itoa(n)
+		}
+	}
+	return keys
 }
 
 // NewSpan builds a Span from 1-based line/col positions and the [from, to) UTF-8

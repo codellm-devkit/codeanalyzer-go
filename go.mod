@@ -1,16 +1,16 @@
 module github.com/codellm-devkit/codeanalyzer-go
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/neo4j/neo4j-go-driver/v5 v5.28.5
 	github.com/spf13/cobra v1.8.0
-	golang.org/x/tools v0.46.0
+	golang.org/x/tools v0.52.0
 )
 
 require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
-	golang.org/x/mod v0.37.0 // indirect
-	golang.org/x/sync v0.21.0 // indirect
+	golang.org/x/mod v0.42.0 // indirect
+	golang.org/x/sync v0.24.0 // indirect
 )
