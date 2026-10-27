@@ -739,7 +739,6 @@ func newFormalIndex(in Input, d *dispatch) *formalIndex {
 			}
 		}
 	}
-	j := &join{fset: in.Fset, projectDir: in.ProjectDir} // declKey reads only these two
 	for _, p := range projectPackages(in) {
 		if p.Types == nil {
 			continue
@@ -748,18 +747,18 @@ func newFormalIndex(in Input, d *dispatch) *formalIndex {
 		for _, name := range scope.Names() {
 			switch obj := scope.Lookup(name).(type) {
 			case *types.Func:
-				x.addDecl(j, obj)
+				x.addDecl(obj)
 			case *types.TypeName:
 				named, ok := obj.Type().(*types.Named)
 				if !ok {
 					continue
 				}
 				for i := 0; i < named.NumMethods(); i++ {
-					x.addDecl(j, named.Method(i))
+					x.addDecl(named.Method(i))
 				}
 				if it, ok := named.Underlying().(*types.Interface); ok {
 					for i := 0; i < it.NumExplicitMethods(); i++ {
-						x.addDecl(j, it.ExplicitMethod(i))
+						x.addDecl(it.ExplicitMethod(i))
 					}
 				}
 			}
@@ -781,8 +780,8 @@ func newFormalIndex(in Input, d *dispatch) *formalIndex {
 	return x
 }
 
-func (x *formalIndex) addDecl(j *join, fn *types.Func) {
-	if k, ok := j.declKey(fn); ok {
+func (x *formalIndex) addDecl(fn *types.Func) {
+	if k, ok := declKey(x.in.Fset, x.in.ProjectDir, fn); ok {
 		x.decls[k] = fn
 	}
 }

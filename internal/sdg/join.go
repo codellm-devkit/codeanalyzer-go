@@ -118,7 +118,7 @@ func newJoin(in Input) *join {
 					continue
 				}
 				if obj, ok := p.TypesInfo.Defs[fd.Name].(*types.Func); ok {
-					if k, ok := j.declKey(obj); ok && declared[k] {
+					if k, ok := declKey(j.fset, j.projectDir, obj); ok && declared[k] {
 						j.bodiless[k] = true
 					}
 				}
@@ -223,7 +223,7 @@ func (j *join) resolve(fn *ssa.Function) (dataflow.L3Key, joinKind) {
 		return dataflow.L3Key{}, joinNone
 	}
 	if obj, ok := fn.Object().(*types.Func); ok {
-		if k, ok := j.declKey(obj.Origin()); ok {
+		if k, ok := declKey(j.fset, j.projectDir, obj.Origin()); ok {
 			switch {
 			case j.units[k].Fn != nil:
 				return k, joinWrapper
@@ -238,13 +238,13 @@ func (j *join) resolve(fn *ssa.Function) (dataflow.L3Key, joinKind) {
 }
 
 // declKey is obj's (declaring file, signature) when it is declared in a
-// project file.
-func (j *join) declKey(obj *types.Func) (dataflow.L3Key, bool) {
-	tf := j.fset.File(obj.Pos())
-	if tf == nil || !utils.IsWithin(j.projectDir, tf.Name()) {
+// project file of projectDir.
+func declKey(fset *token.FileSet, projectDir string, obj *types.Func) (dataflow.L3Key, bool) {
+	tf := fset.File(obj.Pos())
+	if tf == nil || !utils.IsWithin(projectDir, tf.Name()) {
 		return dataflow.L3Key{}, false
 	}
-	rel := utils.RelativePath(j.projectDir, tf.Name())
+	rel := utils.RelativePath(projectDir, tf.Name())
 	if utils.IsVendored(rel) {
 		return dataflow.L3Key{}, false
 	}

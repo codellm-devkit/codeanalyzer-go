@@ -183,7 +183,7 @@ func (d *dispatch) methodTarget(j *join, m *types.Func) (Target, bool) {
 		d.external(m, sig)
 		return Target{External: sig}, true
 	}
-	if k, ok := j.declKey(m.Origin()); ok && j.iface[k] {
+	if k, ok := declKey(j.fset, j.projectDir, m.Origin()); ok && j.iface[k] {
 		return Target{Callable: k}, true
 	}
 	return Target{}, false
