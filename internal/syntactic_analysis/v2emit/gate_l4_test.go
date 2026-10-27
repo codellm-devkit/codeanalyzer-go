@@ -41,7 +41,8 @@ var (
 )
 
 // buildL4 runs the -a 4 pipeline over testdata/<name> once and emits both the
-// L3 and the L4 payload from the same resolved symbol table.
+// L3 and the L4 payload from the same resolved symbol table. The app name is
+// name's last element (cango's default: the input directory's base name).
 func buildL4(t *testing.T, name string) *l4Fixture {
 	t.Helper()
 	l4Mu.Lock()
@@ -64,7 +65,8 @@ func buildL4(t *testing.T, name string) *l4Fixture {
 	app := &schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}
 	units := b.L3Units(st)
 	res := dataflow.RunWithSideTables(b.Fset(), units, 3, 4)
-	fx := &l4Fixture{st: st, l3: Emit(app, name, dir, 3, "gate-test", 3, res, nil), res: res, dir: dir}
+	appName := filepath.Base(dir)
+	fx := &l4Fixture{st: st, l3: Emit(app, appName, dir, 3, "gate-test", 3, res, nil), res: res, dir: dir}
 	l4 := sdg.Run(sdg.Input{
 		Fset: b.Fset(), Pkgs: b.Pkgs(), ProjectDir: dir, SymbolTable: st,
 		Externals: app.Externals, CallGraph: app.CallGraph,
@@ -72,7 +74,7 @@ func buildL4(t *testing.T, name string) *l4Fixture {
 	})
 	l4.ApplyTo(app)
 	fx.sdg = &l4
-	fx.l4 = Emit(app, name, dir, 4, "gate-test", 3, res, &l4)
+	fx.l4 = Emit(app, appName, dir, 4, "gate-test", 3, res, &l4)
 	l4Cache[name] = fx
 	return fx
 }

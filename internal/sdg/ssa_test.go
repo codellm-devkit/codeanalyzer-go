@@ -64,7 +64,7 @@ func TestSSA_BuildsProjectPackagesOnly(t *testing.T) {
 		built = append(built, p.Pkg.Path())
 	}
 	want := []string{
-		"example.com/dataflow/asm", "example.com/dataflow/flow", "example.com/dataflow/generic", "example.com/dataflow/initclosure", "example.com/dataflow/inits",
+		"example.com/dataflow/asm", "example.com/dataflow/flow", "example.com/dataflow/generic", "example.com/dataflow/httpsql", "example.com/dataflow/initclosure", "example.com/dataflow/inits",
 		"example.com/dataflow/l1", "example.com/dataflow/linedir", "example.com/dataflow/sdg", "example.com/dataflow/vend",
 		"example.com/dataflow/xfile", "example.com/dataflow/xtest", "example.com/dataflow/xtest/user",
 	}
@@ -137,8 +137,8 @@ func TestSSA_PanicDegradesPackage(t *testing.T) {
 			t.Error("the panicked package is still returned as built")
 		}
 	}
-	if len(pkgs) != 11 {
-		t.Errorf("built %d packages, want the other 11", len(pkgs))
+	if len(pkgs) != 12 {
+		t.Errorf("built %d packages, want the other 12", len(pkgs))
 	}
 	if fn := prog.ImportedPackage("example.com/dataflow/l1"); fn == nil || len(fn.Members) == 0 {
 		t.Error("l1 was not built after flow panicked")
@@ -156,8 +156,8 @@ func TestSSA_PanicDegradesPackage(t *testing.T) {
 	if !slices.Equal(codes, []string{"partial_ssa", "no_ssa"}) {
 		t.Fatalf("codes = %v, want [partial_ssa no_ssa]", codes)
 	}
-	if len(deg[0].Packages) != 12 {
-		t.Errorf("partial_ssa lists %v, want all 12 packages", deg[0].Packages)
+	if len(deg[0].Packages) != 13 {
+		t.Errorf("partial_ssa lists %v, want all 13 packages", deg[0].Packages)
 	}
 	if res := Run(in); len(res.Degraded) != 2 || res.Degraded[1].Code != "no_ssa" {
 		t.Errorf("Run degraded = %+v, want partial_ssa + no_ssa and no VTA", res.Degraded)
