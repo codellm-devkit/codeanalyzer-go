@@ -1,6 +1,23 @@
+example.com/dataflow/sdg.AliasArrPtr
+	491:2 -> @formal_out:0 <return> reaching-defs
+	@formal_in:0 -> 489:2 pa reaching-defs
+	@formal_in:0 -> 491:2 pa[*] reaching-defs
+	@formal_in:0 -> @formal_out:1 pa reaching-defs
 example.com/dataflow/sdg.AliasArraySlice
 	399:2 -> @formal_out <return> reaching-defs
 	@formal_in:0 -> 398:2 v reaching-defs
+example.com/dataflow/sdg.AliasEntryGlobal
+	469:2 -> @formal_out:0 <return> reaching-defs
+	@formal_in:0 -> 469:2 q.UserID reaching-defs
+	@formal_in:0 -> @formal_out:1 q reaching-defs
+	@formal_in:1 -> 468:2 example.com/dataflow/sdg::GReq.UserID reaching-defs
+example.com/dataflow/sdg.AliasEntryValue
+	455:3 -> @formal_out:1 q reaching-defs
+	457:2 -> @formal_out:0 <return> reaching-defs
+	@formal_in:0 -> 455:3 req reaching-defs
+	@formal_in:1 -> 457:2 q.UserID reaching-defs
+	@formal_in:1 -> @formal_out:1 q reaching-defs
+	@formal_in:2 -> 454:2 c reaching-defs
 example.com/dataflow/sdg.AliasFieldAddr
 	408:2 -> @formal_out <return> reaching-defs
 	@formal_in:0 -> 407:2 v reaching-defs
@@ -38,6 +55,12 @@ example.com/dataflow/sdg.AliasPtrField
 	@formal_in:0 -> 437:2 r.ptr.n reaching-defs
 	@formal_in:0 -> @formal_out:1 r reaching-defs
 	@formal_in:1 -> 436:2 v reaching-defs
+example.com/dataflow/sdg.AliasPtrPtr
+	477:2 -> @formal_out:0 <return> reaching-defs
+	@formal_in:0 -> 474:2 a reaching-defs
+	@formal_in:0 -> @formal_out:1 a reaching-defs
+	@formal_in:1 -> 476:2 b reaching-defs
+	@formal_in:1 -> @formal_out:2 b reaching-defs
 example.com/dataflow/sdg.AliasPtrValue
 	391:2 -> @formal_out <return> reaching-defs
 	@formal_in:0 -> 390:2 id reaching-defs
@@ -55,6 +78,13 @@ example.com/dataflow/sdg.AliasRefField
 	@formal_in:1 -> 424:2 k reaching-defs
 	@formal_in:1 -> 425:2 k reaching-defs
 	@formal_in:2 -> 424:2 v reaching-defs
+example.com/dataflow/sdg.AliasSlicePtr
+	484:2 -> @formal_out:0 <return> reaching-defs
+	@formal_in:0 -> 482:2 s reaching-defs
+	@formal_in:0 -> 484:2 s[*] reaching-defs
+	@formal_in:0 -> @formal_out:1 s reaching-defs
+	@formal_in:1 -> 483:2 b reaching-defs
+	@formal_in:1 -> @formal_out:2 b reaching-defs
 example.com/dataflow/sdg.AliasValue
 	376:2 -> @formal_out <return> reaching-defs
 	@formal_in:0 -> 374:2 req reaching-defs
@@ -377,6 +407,10 @@ example.com/dataflow/sdg.sumT.Sum
 	282:34 -> @formal_out:0 <return> reaching-defs
 	@formal_in:1 -> 282:34 xs reaching-defs
 	@formal_in:1 -> @formal_out:1 xs reaching-defs
+example.com/dataflow/sdg.takeGReq
+	463:24 -> @formal_out:0 <return> reaching-defs
+	@formal_in:0 -> 463:24 example.com/dataflow/sdg::GReq reaching-defs
+	@formal_in:0 -> @formal_out:1 <global>:example.com/dataflow/sdg::GReq reaching-defs
 example.com/dataflow/sdg.takeInner
 example.com/dataflow/sdg.takeTwo
 	190:30 -> @formal_out <return> reaching-defs

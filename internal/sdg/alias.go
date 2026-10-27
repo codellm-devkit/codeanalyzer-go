@@ -45,9 +45,10 @@ var newAliasOracle func(u dataflow.Unit, root ast.Node) AliasOracle = newTypeOra
 //     points to. A write reaches the object only through a step after the
 //     prefix: a bare def `p = …` (or `x.f = …` at offset 1) rebinds the
 //     reference and writes nothing another base observes;
-//   - a storage anchor: the prefix is an addressable value whose address may
-//     be taken (taken below); the object is its own storage, so a bare def
-//     `x = …` overwrites it.
+//   - a storage anchor: the prefix is an addressable variable whose address
+//     may be taken (taken below); the object is its own storage, so a bare
+//     def `x = …` overwrites it. A reference-typed variable whose address is
+//     taken has both anchors.
 //
 // At offset 1 the first step is a field (".f") or element ("[*]") whose
 // declared type decides the anchor: a reference-typed field or element is a
@@ -65,8 +66,9 @@ var newAliasOracle func(u dataflow.Unit, root ast.Node) AliasOracle = newTypeOra
 //     (or type-parameter) types; an interface and a type that implements it
 //     (a type parameter: that satisfies its constraint); else, on the
 //     underlying types, pointers with identical elements, slices with
-//     identical elements, maps with identical keys and elements, chans with
-//     identical elements whatever their directions, identical signatures;
+//     identical elements, a pointer to an array [N]E and a slice []E, maps
+//     with identical keys and elements, chans with identical elements
+//     whatever their directions, identical signatures;
 //   - a reference and a storage of type T (I3): a pointer to T, an
 //     interface *T implements, or (T an array [N]E) a slice []E;
 //   - never two storages: distinct variables never share storage.
@@ -225,10 +227,13 @@ func (o *typeOracle) anchorsOf(p dataflow.Path) []anchor {
 	steps := dataflow.PathSteps(p.Spell)
 	global := dataflow.IsPkgVar(p.Base)
 	baseRef := refType(bt)
-	switch {
-	case baseRef:
+	// A reference-typed base whose address is taken has both anchors: what
+	// it points to, and its own storage (`pp := &p; *pp = b` rewrites p, so
+	// p.n then reads b.n: fix round 2, N2).
+	if baseRef {
 		as = append(as, anchor{ref: true, t: bt, rem: steps, write: len(steps) > 0})
-	case global || o.taken[p.Base]:
+	}
+	if global || o.taken[p.Base] {
 		as = append(as, anchor{t: bt, rem: steps, write: true})
 	}
 	var firsts []string
@@ -349,6 +354,9 @@ func refsMayAlias(a, b types.Type) bool {
 	case ib:
 		return implementsIface(a, b)
 	}
+	if arrayPtrSlice(a, b) || arrayPtrSlice(b, a) {
+		return true
+	}
 	switch ua := a.Underlying().(type) {
 	case *types.Pointer:
 		ub, ok := b.Underlying().(*types.Pointer)
@@ -366,6 +374,21 @@ func refsMayAlias(a, b types.Type) bool {
 		return types.Identical(ua, b.Underlying())
 	}
 	return false
+}
+
+// arrayPtrSlice reports whether a is a pointer to an array [N]E and b a
+// slice []E: pa[:] shares the array (fix round 2, O1).
+func arrayPtrSlice(a, b types.Type) bool {
+	pa, ok := a.Underlying().(*types.Pointer)
+	if !ok {
+		return false
+	}
+	arr, ok := pa.Elem().Underlying().(*types.Array)
+	if !ok {
+		return false
+	}
+	sl, ok := b.Underlying().(*types.Slice)
+	return ok && types.Identical(arr.Elem(), sl.Elem())
 }
 
 // refToStorage reports whether a reference of type r may point to the

@@ -91,8 +91,11 @@ type AliasEdge struct {
 }
 
 // BuildDDGSplit is BuildDDGAlias split in two: BuildDDG's edges, sorted by
-// (Src, Dst, Var), and the edges only the alias rule yields, none of whose
-// DdgEdge is in the first list, sorted by (Src, Dst, Var, Def). One fixpoint
+// (Src, Dst, Var), and the edges the alias rule yields, sorted by (Src, Dst,
+// Var, Def). An alias edge's DdgEdge is in the first list only when it
+// leaves @entry from a def whose base is not the use's (Def ≠ the var's
+// base): it then stands for another def than the base edge on that triple
+// (fix round 2, N1). One fixpoint
 // serves both: the L4 port wiring (package sdg) maps the first to
 // reaching-defs port edges and the second to its points-to delta.
 func BuildDDGSplit(nodes []Node, cfg []CfgEdge, du map[string]DefUse, mayAlias func(a, b Path) bool) (ddg []DdgEdge, alias []AliasEdge) {
@@ -274,7 +277,11 @@ func aliasEdges(keys []string, du map[string]DefUse, in [][]uint64, pathOf func(
 					if u.path.Base == d.Base || !inWindow(ds, u.steps) || !mayAlias(d, u.path) {
 						continue
 					}
-					if e := (AliasEdge{DdgEdge{Src: src, Dst: k, Var: u.path.Spell}, def}); !base[e.DdgEdge] {
+					// An edge from @entry whose def base is not the use's maps
+					// to another formal_in than the base edge on its triple:
+					// it is kept, and the wiring dedupes after mapping.
+					e := AliasEdge{DdgEdge{Src: src, Dst: k, Var: u.path.Spell}, def}
+					if !base[e.DdgEdge] || def != "" && def != SpellBase(u.path.Spell) {
 						edges[e] = true
 					}
 				}

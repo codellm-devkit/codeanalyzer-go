@@ -853,3 +853,27 @@ func TestDDGAlias_Rule(t *testing.T) {
 		t.Errorf("nil oracle: got %v, want BuildDDG %v", nilA, base)
 	}
 }
+
+// TestDDGAlias_EntryDefKept (fix round 2, N1): @entry defines both r (a
+// value whose address may be taken) and q (a pointer); 1:1 reads q.f. The
+// base edge @entry → 1:1 (q.f) is q's own; the alias edge from r's def on
+// the same triple is a different def (another formal_in at L4), so it is
+// kept with Def "r". An oracle aliasing q with itself adds nothing.
+func TestDDGAlias_EntryDefKept(t *testing.T) {
+	r := types.NewVar(token.NoPos, nil, "r", types.NewStruct(nil, nil))
+	q := types.NewVar(token.NoPos, nil, "q", types.NewPointer(r.Type()))
+	nodes := []dataflow.Node{{Key: entry}, {Key: "1:1"}, {Key: exit}}
+	cfg := []dataflow.CfgEdge{{Src: entry, Dst: "1:1", Kind: "fallthrough"}, {Src: "1:1", Dst: exit, Kind: "fallthrough"}}
+	du := map[string]dataflow.DefUse{
+		entry: {Defs: []dataflow.Path{{Base: r, Spell: "r"}, {Base: q, Spell: "q"}}},
+		"1:1": {Uses: []dataflow.Path{{Base: q, Spell: "q.f"}}},
+	}
+	ddg, alias := dataflow.BuildDDGSplit(nodes, cfg, du, func(a, b dataflow.Path) bool { return true })
+	if want := []dataflow.DdgEdge{dd(entry, "1:1", "q.f")}; !reflect.DeepEqual(ddg, want) {
+		t.Errorf("ddg = %v, want %v", ddg, want)
+	}
+	want := []dataflow.AliasEdge{{DdgEdge: dd(entry, "1:1", "q.f"), Def: "r"}}
+	if !reflect.DeepEqual(alias, want) {
+		t.Errorf("alias = %+v, want %+v", alias, want)
+	}
+}

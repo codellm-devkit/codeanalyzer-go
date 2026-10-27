@@ -76,6 +76,18 @@ func TestAlias_PointerCopyLinks(t *testing.T) {
 		{"AliasPtrField", []PortEdge{pt("436:2", "437:2", "r.ptr.n"), pt("436:2", "@formal_out:1", "r")}},
 		// I2: an io.Writer and an io.Reader holding one *bytes.Buffer.
 		{"AliasIfaces", []PortEdge{pt("445:2", "446:2", "r"), pt("445:2", "@formal_out:1", "f"), pt("446:2", "@formal_out:1", "f")}},
+		// Fix round 2, N1: alias edges from @entry whose def is another base
+		// than the use's start at the def's formal_in, though @entry → the
+		// use is also the use base's own edge: req (a value param whose
+		// address is taken) and the value global GReq (&GReq in takeGReq)
+		// reach q.UserID.
+		{"AliasEntryValue", []PortEdge{pt("@formal_in:0", "457:2", "q.UserID"), pt("@formal_in:0", "@formal_out:1", "q")}},
+		{"AliasEntryGlobal", []PortEdge{pt("@formal_in:1", "469:2", "q.UserID"), pt("@formal_in:1", "@formal_out:1", "q")}},
+		// N2: an address-taken reference has its storage anchor too.
+		{"AliasPtrPtr", []PortEdge{pt("474:2", "476:2", "pp"), pt("476:2", "477:2", "p.n")}},
+		{"AliasSlicePtr", []PortEdge{pt("483:2", "484:2", "s[*]"), pt("483:2", "@formal_out:1", "s"), pt("@formal_in:0", "483:2", "ps")}},
+		// O1: a slice of an array pointer aliases it.
+		{"AliasArrPtr", []PortEdge{pt("490:2", "491:2", "pa[*]"), pt("490:2", "@formal_out:1", "pa")}},
 	} {
 		if got := pointsTo(res.Callables[sdgKey(c.fn)].Ddg); !slices.Equal(got, c.want) {
 			t.Errorf("%s points-to edges:\n got  %+v\n want %+v", c.fn, got, c.want)
@@ -135,6 +147,7 @@ func TestAlias_ValueCopiesNeverAlias(t *testing.T) {
 	tarr := P("arr", arr, "arr[*]")
 	o.taken[tarr.Base] = true
 	o.takenSub[subKey{tarr.Base, "[*]"}] = true
+	o.taken[P("tp", types.NewPointer(S), "tp").Base] = true
 	to := P("o", Outer, "o.Inner.n")
 	o.taken[to.Base] = true
 	o.takenSub[subKey{to.Base, ".Inner"}] = true
@@ -161,6 +174,10 @@ func TestAlias_ValueCopiesNeverAlias(t *testing.T) {
 		{"I1: chan<- int vs chan int", P("c3", ch(types.SendOnly), "c3[*]"), P("c1", nil, "c1[*]"), true},
 		{"I1: []int vs []string", P("s3", types.NewSlice(types.Typ[types.Int]), "s3[*]"), P("s4", types.NewSlice(types.Typ[types.String]), "s4[*]"), false},
 		{"I1: identical funcs", P("f1", fn, "f1.*"), P("f2", fn, "f2.*"), true},
+		{"O1: *[4]int vs []int", P("pa", types.NewPointer(arr), "pa[*]"), P("s3", nil, "s3[*]"), true},
+		{"O1: []int vs *[4]int", P("s3", nil, "s3[*]"), P("pa", nil, "pa[*]"), true},
+		{"O1: *[4]int vs []string", P("pa", nil, "pa[*]"), P("s4", nil, "s4[*]"), false},
+		{"N2: taken pointer's storage, bare def", P("tp", types.NewPointer(S), "tp"), P("pp", types.NewPointer(types.NewPointer(S)), "pp.*"), true},
 		{"global and local pointer", dataflow.Path{Base: gv, Spell: "example.com/p::G.f"}, P("a3", nil, "a3.f"), true},
 		{"I3: *S write, taken S read", P("a3", nil, "a3.f"), taken, true},
 		{"I3: taken S write, *S read", P("x", nil, "x.f"), P("a3", nil, "a3.f"), true},

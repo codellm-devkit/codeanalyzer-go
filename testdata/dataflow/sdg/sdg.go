@@ -446,3 +446,47 @@ func AliasIfaces(f *bytes.Buffer, p []byte) int {
 	n, _ := r.Read(p)
 	return n
 }
+
+// AliasEntryValue: q may point to the value param req, so req's input
+// reaches the read q.UserID through q (an alias edge from @entry whose def
+// is req, not q).
+func AliasEntryValue(req Req, q *Req, c bool) string {
+	if c {
+		q = &req
+	}
+	return q.UserID
+}
+
+// GReq is a value global whose address is taken (takeGReq).
+var GReq Req
+
+func takeGReq() *Req { return &GReq }
+
+// AliasEntryGlobal reads GReq and q, which may point to GReq: GReq's input
+// reaches the read q.UserID.
+func AliasEntryGlobal(q *Req) string {
+	s := GReq.UserID
+	return s + q.UserID
+}
+
+// AliasPtrPtr rewrites p through its address pp: p.n then reads b.n.
+func AliasPtrPtr(a, b *Inner) int {
+	p := a
+	pp := &p
+	*pp = b
+	return p.n
+}
+
+// AliasSlicePtr rewrites the slice s through its address ps.
+func AliasSlicePtr(s, b []int) int {
+	ps := &s
+	*ps = b
+	return s[0]
+}
+
+// AliasArrPtr writes the array pa points to through its slice s.
+func AliasArrPtr(pa *[4]int) int {
+	s := pa[:]
+	s[0] = 1
+	return pa[0]
+}
