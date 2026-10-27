@@ -21,6 +21,8 @@ import (
 	"testing"
 
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
+
+	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
 )
 
 func itConfig(t *testing.T) BoltConfig {
@@ -204,4 +206,47 @@ func l4Counts(t *testing.T, ctx context.Context, cfg BoltConfig, appID string) m
 		out[k] = int(res.Records[0].Values[0].(int64))
 	}
 	return out
+}
+
+// TestIntegration_LazyL4PushOverLowerLevelGraph: a graph first pushed at a
+// lower level (L2, L3), then pushed lazily at L4 with every module's source
+// unchanged, ends equal to an eager L4 push. The stored max_level below 4
+// forces the full upsert; without it the content_hash diff skips the
+// unchanged modules, and an L2 graph lacks the L3 statement nodes the L4
+// port and cfg/ddg rows end at, so their MATCH drops them silently.
+func TestIntegration_LazyL4PushOverLowerLevelGraph(t *testing.T) {
+	ctx := context.Background()
+	cfg := itConfig(t)
+	eager := cfg
+	eager.Eager, eager.FullRun = true, true
+	l4 := buildDataflowL4(t)
+	id := l4.Application.ID
+	rows4 := Project(l4)
+	if err := WriteBolt(ctx, rows4, id, eager); err != nil {
+		t.Fatalf("eager L4: %v", err)
+	}
+	wantN, wantE := countSubgraph(t, ctx, cfg, id)
+	want := l4Counts(t, ctx, cfg, id)
+
+	for _, seed := range []*v2.Analysis{buildDataflowAt(t, 2), buildDataflowL3(t)} {
+		if seed.Application.ID != id {
+			t.Fatalf("app ids differ: %s, %s", seed.Application.ID, id)
+		}
+		if err := WriteBolt(ctx, Project(seed), id, eager); err != nil {
+			t.Fatalf("eager L%d: %v", seed.MaxLevel, err)
+		}
+		if got := l4Counts(t, ctx, cfg, id); got["GO_PARAM_IN"] != 0 {
+			t.Fatalf("L%d graph has L4 rows: %v", seed.MaxLevel, got)
+		}
+		if err := WriteBolt(ctx, rows4, id, cfg); err != nil {
+			t.Fatalf("lazy L4: %v", err)
+		}
+		gotN, gotE := countSubgraph(t, ctx, cfg, id)
+		if got := l4Counts(t, ctx, cfg, id); fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("lazy L4 over L%d: L4 rows %v, want %v", seed.MaxLevel, got, want)
+		}
+		if gotN != wantN || gotE != wantE {
+			t.Errorf("lazy L4 over L%d: %d nodes, %d edges; eager L4 %d, %d", seed.MaxLevel, gotN, gotE, wantN, wantE)
+		}
+	}
 }

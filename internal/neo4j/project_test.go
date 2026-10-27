@@ -220,6 +220,12 @@ func TestProject_ExternalGhostCarriesSignature(t *testing.T) {
 // table, resolver, dataflow driver) and emits the v2 L3 analysis.
 func buildDataflowL3(t *testing.T) *v2.Analysis {
 	t.Helper()
+	return buildDataflowAt(t, 3)
+}
+
+// buildDataflowAt is buildDataflowL3 at level 2 or 3 (no dataflow below 3).
+func buildDataflowAt(t *testing.T, level int) *v2.Analysis {
+	t.Helper()
 	_, thisFile, _, _ := runtime.Caller(0)
 	dir, err := filepath.Abs(filepath.Join(filepath.Dir(thisFile), "..", "..", "testdata", "dataflow"))
 	if err != nil {
@@ -233,8 +239,11 @@ func buildDataflowL3(t *testing.T) *v2.Analysis {
 	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 	edges := cg.Build(st)
 	app := &schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}
+	if level < 3 {
+		return v2emit.Emit(app, "dataflow", dir, level, "neo4j-gate", 3, nil, nil)
+	}
 	res := dataflow.Run(b.Fset(), b.L3Units(st), 3, 4)
-	return v2emit.Emit(app, "dataflow", dir, 3, "neo4j-gate", 3, res, nil)
+	return v2emit.Emit(app, "dataflow", dir, level, "neo4j-gate", 3, res, nil)
 }
 
 // walkCallables visits every callable (methods and nested closures included).
