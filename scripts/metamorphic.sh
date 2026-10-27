@@ -35,8 +35,14 @@ REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
 DEFAULT_APPS="memos"
 ALL_APPS="memos nats-server"
+for a in "$@"; do
+  case $a in
+    -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 0 ;;
+    --all) [ $# -eq 1 ] || { echo "--all takes no other arguments" >&2; exit 2; } ;;
+    -*) echo "unknown flag: $a" >&2; exit 2 ;;
+  esac
+done
 case "${1:-}" in
-  -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 0 ;;
   --all) set -- $ALL_APPS ;;
   "") set -- $DEFAULT_APPS ;;
 esac

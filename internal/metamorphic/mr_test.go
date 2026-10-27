@@ -728,33 +728,54 @@ func copyOf(t *testing.T, dir string) string {
 
 const exPkg = "example.com/metamorphic."
 
-// stmtKey is the body key of the statement of examples file rel that starts
-// with text, in function fn (the first such statement).
+// stmtKey is the body key of the one statement of function fn in examples
+// file rel whose text is text, or starts with text followed by a token
+// boundary (so "x := a + 1" never matches "x := a + 10"). Zero or several
+// matches fail the test.
 func stmtKey(t *testing.T, rel, fn, text string) string {
 	t.Helper()
 	f := examples.ws.Files[rel]
 	if f == nil {
 		t.Fatalf("no file %s", rel)
 	}
+	var keys []string
 	for _, fd := range funcDecls(f) {
 		if fd.Name.Name != fn {
 			continue
 		}
-		var key string
 		ast.Inspect(fd.Body, func(n ast.Node) bool {
-			if st, ok := n.(ast.Stmt); ok && key == "" {
-				if _, block := st.(*ast.BlockStmt); !block && strings.HasPrefix(string(f.Src[f.off(st.Pos()):f.off(st.End())]), text) {
-					key = f.key(st.Pos())
-				}
+			st, ok := n.(ast.Stmt)
+			if !ok {
+				return true
 			}
-			return key == ""
+			if _, block := st.(*ast.BlockStmt); block {
+				return true
+			}
+			if src := string(f.Src[f.off(st.Pos()):f.off(st.End())]); textMatch(src, text) {
+				keys = append(keys, f.key(st.Pos()))
+			}
+			return true
 		})
-		if key != "" {
-			return key
-		}
 	}
-	t.Fatalf("%s: no statement %q in %s", rel, text, fn)
-	return ""
+	if len(keys) != 1 {
+		t.Fatalf("%s: %d statements %q in %s (%v), want exactly one", rel, len(keys), text, fn, keys)
+	}
+	return keys[0]
+}
+
+// textMatch reports whether src is text, or text then a token boundary: a
+// character that cannot continue text's last token.
+func textMatch(src, text string) bool {
+	if !strings.HasPrefix(src, text) {
+		return false
+	}
+	if len(src) == len(text) {
+		return true
+	}
+	word := func(c byte) bool {
+		return c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+	}
+	return !(word(text[len(text)-1]) && word(src[len(text)]))
 }
 
 // siteIn is the site of res in callable id.
@@ -863,11 +884,22 @@ func TestMR5_IntroduceAlias_Reach(t *testing.T) {
 // ─── the examples module ──────────────────────────────────────────────────────
 
 // TestExamples_EveryRelationHasASite: every relation MR1-MR15 transforms at
-// least one site of testdata/metamorphic (a relation whose sites all
-// vanished would pass vacuously).
+// least one site of testdata/metamorphic, and the relations with a file of
+// their own land on the functions written for them: MR13 on mr13_*, each
+// MR14 form (a interface, b closure, c defer) on mr14_*, MR7 exact on a
+// named file, MR15 byte-identical on the MR6 example.
 func TestExamples_EveryRelationHasASite(t *testing.T) {
 	tg := examples
 	tg.load(t)
+	sitesIn := func(res *Result, file string) []Site {
+		var out []Site
+		for _, s := range res.Sites {
+			if strings.HasPrefix(s.Desc, file+":") {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
 	for _, r := range relations {
 		res, err := tg.ws.Apply(r.t, tg.files(), filepath.Join(t.TempDir(), r.name), seed, tg.pre.view)
 		if err != nil {
@@ -877,16 +909,76 @@ func TestExamples_EveryRelationHasASite(t *testing.T) {
 		if len(res.Sites) == 0 {
 			t.Errorf("%s has no site on the examples module (skipped: %v)", r.name, res.Skipped)
 		}
+		switch r.name {
+		case "MR13":
+			want := []string{"ConstScalar", "ConstTwoArgs", "ConstInLoop"}
+			for _, fn := range want {
+				if !slices.ContainsFunc(sitesIn(res, "mr13_const_sink.go"), func(s Site) bool { return s.Callable == exPkg+fn }) {
+					t.Errorf("MR13 has no site in %s (mr13_const_sink.go)", fn)
+				}
+			}
+		case "MR14":
+			forms := map[string]string{ // the function written for each form → its Desc
+				"RouteIface":   "call sinkInt through mr14i",
+				"RouteClosure": "call through a closure",
+				"RouteDefer":   "defer the call",
+			}
+			for fn, form := range forms {
+				if !slices.ContainsFunc(sitesIn(res, "mr14_route.go"), func(s Site) bool {
+					return s.Callable == exPkg+fn && strings.Contains(s.Desc, form)
+				}) {
+					t.Errorf("MR14 form %q has no site in %s (mr14_route.go)", form, fn)
+				}
+			}
+		}
 	}
-	if fs := Sample(tg.files(), 2, seed); len(fs) == 0 {
-		t.Error("MR7 has no file on the examples module")
-	}
-	ext, err := tg.ws.Apply(MR6, tg.files(), filepath.Join(t.TempDir(), "mr15"), seed, nil)
+
+	// MR7: --target-files on mr09_kill.go at -a 3 is exact on its callables.
+	full := tg.level3(t)
+	const rel7 = "mr09_kill.go"
+	part, err := analyze(tg.ws.Dir, 3, []string{filepath.Join(tg.ws.Dir, rel7)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ext.Files) == 0 {
-		t.Error("MR15 has no site on the examples module")
+	only := map[string]bool{}
+	for id, c := range full.view.Calls {
+		if c.File == rel7 {
+			only[id] = true
+		}
+	}
+	if len(only) < 3 {
+		t.Fatalf("MR7: only %d callables in %s", len(only), rel7)
+	}
+	if d := Diff(full.view, part.view, Scope{Only: only}, 20); len(d) > 0 {
+		t.Errorf("MR7 on %s:\n%s", rel7, strings.Join(d, "\n"))
+	}
+
+	// MR15: MR6 extracts a helper from Extract, and Inline6 gives
+	// mr06_extract.go back byte for byte.
+	const rel15 = "mr06_extract.go"
+	ext, err := tg.ws.Apply(MR6, []string{rel15}, filepath.Join(t.TempDir(), "mr15x"), seed, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(ext.Sites, func(s Site) bool { return s.Callable == exPkg+"Extract" }) {
+		t.Fatalf("MR15: MR6 extracted nothing from Extract: %v", ext.Skipped)
+	}
+	mid, _ := os.ReadFile(filepath.Join(ext.Dir, rel15))
+	if !strings.Contains(string(mid), "func "+Prefix6) {
+		t.Fatalf("MR15: %s has no MR6 helper after the extraction", rel15)
+	}
+	ws2, err := LoadWorkspace(ext.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inl, err := ws2.Apply(Inline6, []string{rel15}, filepath.Join(t.TempDir(), "mr15i"), seed, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig, _ := os.ReadFile(filepath.Join(tg.ws.Dir, rel15))
+	back, _ := os.ReadFile(filepath.Join(inl.Dir, rel15))
+	if string(orig) != string(back) {
+		t.Errorf("MR15: inlining does not restore %s byte for byte:\n--- original\n%s\n--- inlined\n%s", rel15, orig, back)
 	}
 }
 
@@ -954,13 +1046,56 @@ func TestConvention_GuardSelfLoopOnlyInLoops(t *testing.T) {
 				guard = append(guard, e)
 			}
 		}
+		// The guard exists: B is a branch node, its source text is the
+		// `if <c> := true; <c> {` header MR8 wrote, and B → the wrapped
+		// statement is its true edge. Its variable is read from that text,
+		// so the no-edge check below cannot pass for a renamed guard.
+		if a := post.view.Calls[id].Body[b]; !strings.HasPrefix(a, "branch|") {
+			t.Fatalf("%s: %s: node %s is %q, want the guard branch", rule, fn, b, a)
+		}
+		g := guardVar(t, res, "conventions.go", b)
+		var on []string
+		for e := range post.view.Calls[id].Edges {
+			if f := strings.Split(e, "|"); f[0] == "ddg" && f[3] == g {
+				on = append(on, e)
+			}
+		}
+		if len(guard) != len(on) {
+			t.Errorf("%s: %s: guard edges %v are not the edges on %s, %v", rule, fn, guard, g, on)
+		}
 		switch {
-		case wantLoop && (len(guard) != 1 || !strings.HasPrefix(guard[0], "ddg|"+b+"|"+b+"|")):
-			t.Errorf("%s: %s: guard edges %v, want the one self-loop on %s", rule, fn, guard, b)
-		case !wantLoop && len(guard) != 0:
-			t.Errorf("%s: %s: guard edges %v, want none", rule, fn, guard)
+		case wantLoop && (len(on) != 1 || on[0] != "ddg|"+b+"|"+b+"|"+g+"|ssa"):
+			t.Errorf("%s: %s: edges on %s are %v, want the one self-loop on %s", rule, fn, g, on, b)
+		case !wantLoop && len(on) != 0:
+			t.Errorf("%s: %s: edges on %s are %v, want none", rule, fn, g, on)
 		}
 	}
+}
+
+// guardVar is the variable of the `if <c> := true; <c> {` header MR8 wrote
+// at body key b of file rel in the transformed module res.
+func guardVar(t *testing.T, res *Result, rel, b string) string {
+	t.Helper()
+	var p Pos
+	for _, m := range res.Marks {
+		if m.File == rel && m.Key() == b {
+			p = m
+		}
+	}
+	src, err := os.ReadFile(filepath.Join(res.Dir, p.File))
+	if err != nil {
+		t.Fatal(err)
+	}
+	off, ok := newLineTable(src).offset(p.Line, p.Col)
+	if !ok {
+		t.Fatalf("no position %v", p)
+	}
+	head := string(src[off:])
+	var c string
+	if _, err := fmt.Sscanf(head, "if %s := true;", &c); err != nil || !strings.HasPrefix(head, "if "+c+" := true; "+c+" {") {
+		t.Fatalf("no guard header at %v: %.40q", p, head)
+	}
+	return c
 }
 
 // TestConvention_DiscardedResultReachesOnlyViaHost pins rule (iii), MR14(b)'s
@@ -1018,5 +1153,27 @@ func TestConvention_NamedResultPortMovesToKill(t *testing.T) {
 	}
 	if !edges["ddg|"+k+"|@formal_out|<return>|reaching-defs"] {
 		t.Errorf("%s: the kill %s has no port edge to @formal_out", rule, k)
+	}
+}
+
+// TestStmtKey_TokenBoundary: stmtKey's text match needs the whole text or a
+// token boundary after it, so one statement prefix never matches a longer
+// literal or identifier.
+func TestStmtKey_TokenBoundary(t *testing.T) {
+	for _, c := range []struct {
+		src, text string
+		want      bool
+	}{
+		{"x := a + 1", "x := a + 1", true},
+		{"x := a + 10", "x := a + 1", false},
+		{"x := a + 1 // c", "x := a + 1", true},
+		{"sinkInt(x)", "sinkInt(x)", true},
+		{"sinkInt(x)", "sinkInt(", true},
+		{"return xy", "return x", false},
+		{"return x * x", "return x", true},
+	} {
+		if got := textMatch(c.src, c.text); got != c.want {
+			t.Errorf("textMatch(%q, %q) = %v, want %v", c.src, c.text, got, c.want)
+		}
 	}
 }
