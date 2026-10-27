@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"runtime/debug"
 	"testing"
+
+	"github.com/codellm-devkit/codeanalyzer-go/internal/dataflow"
 )
 
 // TestSDG_OutputUnchangedByMemoryLevers: the memory levers (early cache
@@ -45,5 +47,45 @@ func TestRun_RestoresGCPercent(t *testing.T) {
 		if got != pct {
 			t.Errorf("GC percent after Run = %d, want the caller's %d", got, pct)
 		}
+	}
+}
+
+// TestSDG_ReleasedCachesAreNotRebuilt (Task 15b): with the memory levers on,
+// a unit's flow graph, call sites and wiring are each built at most once —
+// a cache released before its last reader is rebuilt silently, which costs
+// time and memory but changes no fact, so only a miss count catches it —
+// and fill leaves the per-unit caches empty.
+func TestSDG_ReleasedCachesAreNotRebuilt(t *testing.T) {
+	for _, name := range []string{"dataflow", "chi"} {
+		t.Run(name, func(t *testing.T) {
+			defer func(v bool) { memLevers = v }(memLevers)
+			memLevers = true
+			builds := map[string]map[dataflow.L3Key]int{}
+			defer func(f func(string, dataflow.L3Key)) { onCacheMiss = f }(onCacheMiss)
+			onCacheMiss = func(cache string, k dataflow.L3Key) {
+				if builds[cache] == nil {
+					builds[cache] = map[dataflow.L3Key]int{}
+				}
+				builds[cache][k]++
+			}
+			in := loadInput(t, name)
+			res, d := dispatchRun(in)
+			b := newSDGBuilder(in, d)
+			b.fill(&res)
+			for _, cache := range []string{"graph", "sites", "wired"} {
+				if len(builds[cache]) == 0 {
+					t.Errorf("no %s cache built", cache)
+				}
+				for k, n := range builds[cache] {
+					if n > 1 {
+						t.Errorf("%s of %s built %d times: released before its last reader", cache, k.Signature, n)
+					}
+				}
+			}
+			if len(b.graph)+len(b.sites)+len(b.wired)+len(b.summ) != 0 {
+				t.Errorf("after fill: %d graphs, %d sites, %d wirings, %d summaries still cached",
+					len(b.graph), len(b.sites), len(b.wired), len(b.summ))
+			}
+		})
 	}
 }

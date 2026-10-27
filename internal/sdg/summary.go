@@ -27,6 +27,13 @@ type sdgBuilder struct {
 	done     bool
 }
 
+// onCacheMiss, when set, is called each time the builder builds unit k's
+// entry of a per-unit cache ("graph", "sites" or "wired"). A test seam:
+// TestSDG_ReleasedCachesAreNotRebuilt checks that, with the memory levers
+// on, no entry is built twice — a cache released before its last reader
+// (releaseSCC, releaseUnit) is rebuilt silently, costing time, not facts.
+var onCacheMiss func(cache string, k dataflow.L3Key)
+
 func newSDGBuilder(in Input, d *dispatch) *sdgBuilder {
 	return &sdgBuilder{
 		in:       in,
@@ -140,6 +147,9 @@ type bindPos struct{ actual, formal int }
 func (b *sdgBuilder) sitesOf(k dataflow.L3Key) []siteFlow {
 	if s, ok := b.sites[k]; ok {
 		return s
+	}
+	if onCacheMiss != nil {
+		onCacheMiss("sites", k)
 	}
 	var out []siteFlow
 	for _, c := range b.p.units[k].Calls {
@@ -270,6 +280,9 @@ func (b *sdgBuilder) portEdges(k dataflow.L3Key) []PortEdge {
 	if e, ok := b.wired[k]; ok {
 		return e
 	}
+	if onCacheMiss != nil {
+		onCacheMiss("wired", k)
+	}
 	e := b.p.wire(k)
 	b.wired[k] = e
 	return e
@@ -278,6 +291,9 @@ func (b *sdgBuilder) portEdges(k dataflow.L3Key) []PortEdge {
 func (b *sdgBuilder) graphOf(k dataflow.L3Key) *unitGraph {
 	if g, ok := b.graph[k]; ok {
 		return g
+	}
+	if onCacheMiss != nil {
+		onCacheMiss("graph", k)
 	}
 	g := &unitGraph{idx: map[string]int{}}
 	node := func(key string) int {
