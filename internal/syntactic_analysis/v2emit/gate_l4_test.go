@@ -300,7 +300,9 @@ func bodyIndex(a *v2.Analysis) map[string]ownedNode {
 // the way: the tree carries every vertex, port edge, summary edge, param
 // edge and stand-in formal of the sdg.Result.
 func TestGateL4_NoDanglingEndpoints(t *testing.T) {
-	for _, name := range l4Fixtures {
+	// rangefunc: the one fixture with degraded callables, so a dropped one
+	// fails the degraded rows of the table below.
+	for _, name := range append(slices.Clone(l4Fixtures), "rangefunc") {
 		fx := buildL4(t, name)
 		a := fx.l4
 		idx := bodyIndex(a)
@@ -353,7 +355,15 @@ func TestGateL4_NoDanglingEndpoints(t *testing.T) {
 			}
 		}
 
-		var wantV, wantP, wantS, wantX int
+		var wantV, wantP, wantS, wantX, wantD, gotD int
+		for _, d := range fx.sdg.Degraded {
+			ks := slices.Clone(d.Callables)
+			slices.SortFunc(ks, func(a, b dataflow.L3Key) int { return cmpStrings(a.Path, b.Path, a.Signature, b.Signature) })
+			wantD += len(slices.Compact(ks))
+		}
+		for _, d := range a.Degraded {
+			gotD += len(d.Callables)
+		}
 		for _, c := range fx.sdg.Callables {
 			wantV, wantP, wantS = wantV+len(c.Vertices), wantP+len(c.Ddg), wantS+len(c.Summary)
 		}
@@ -374,16 +384,21 @@ func TestGateL4_NoDanglingEndpoints(t *testing.T) {
 			{"param_in", len(a.Application.ParamIn), len(fx.sdg.ParamIn)},
 			{"param_out", len(a.Application.ParamOut), len(fx.sdg.ParamOut)},
 			{"stand-in formals", gotX, wantX},
+			{"degraded entries", len(a.Degraded), len(fx.sdg.Degraded)},
+			{"degraded callables", gotD, wantD},
 		} {
 			if c.got != c.want {
 				t.Errorf("%s: tree has %d %s, sdg.Result %d", name, c.got, c.what, c.want)
 			}
 		}
-		if name != "storedlit" && (wantV == 0 || len(fx.sdg.ParamIn) == 0 || wantS == 0) {
+		if name != "storedlit" && name != "rangefunc" && (wantV == 0 || len(fx.sdg.ParamIn) == 0 || wantS == 0) {
 			t.Errorf("%s: empty overlay (vertices %d, param_in %d, summary %d)", name, wantV, len(fx.sdg.ParamIn), wantS)
 		}
-		t.Logf("%s: %d vertices, %d port ddg, %d summary, %d param_in, %d param_out, %d stand-in formals",
-			name, vertices, port, summary, len(a.Application.ParamIn), len(a.Application.ParamOut), gotX)
+		if name == "rangefunc" && wantD == 0 {
+			t.Errorf("rangefunc: no degraded callable")
+		}
+		t.Logf("%s: %d vertices, %d port ddg, %d summary, %d param_in, %d param_out, %d stand-in formals, %d degraded callables",
+			name, vertices, port, summary, len(a.Application.ParamIn), len(a.Application.ParamOut), gotX, gotD)
 	}
 }
 

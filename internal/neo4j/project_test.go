@@ -43,21 +43,36 @@ func buildMultipackageL2(t *testing.T) *v2.Analysis {
 }
 
 func TestProject_NoDanglingEndpoints(t *testing.T) {
-	rows := Project(buildMultipackageL2(t))
+	for _, c := range []struct {
+		name string
+		a    func(*testing.T) *v2.Analysis
+	}{
+		{"multipackage L2", buildMultipackageL2},
+		{"dataflow L4", buildDataflowL4},
+	} {
+		rows := Project(c.a(t))
 
-	// Every (label, value) that was emitted as a node.
-	emitted := make(map[string]bool, len(rows.Nodes))
-	for _, n := range rows.Nodes {
-		for _, l := range n.Labels {
-			emitted[l+"\x00"+n.Value] = true
+		// Every (label, value) that was emitted as a node.
+		emitted := make(map[string]bool, len(rows.Nodes))
+		for _, n := range rows.Nodes {
+			for _, l := range n.Labels {
+				emitted[l+"\x00"+n.Value] = true
+			}
 		}
-	}
-	for _, e := range rows.Edges {
-		if !emitted[e.From.Label+"\x00"+e.From.Value] {
-			t.Errorf("%s edge FROM a non-emitted node: %s %s", e.Type, e.From.Label, e.From.Value)
+		for _, e := range rows.Edges {
+			if !emitted[e.From.Label+"\x00"+e.From.Value] {
+				t.Errorf("%s: %s edge FROM a non-emitted node: %s %s", c.name, e.Type, e.From.Label, e.From.Value)
+			}
+			if !emitted[e.To.Label+"\x00"+e.To.Value] {
+				t.Errorf("%s: %s edge TO a non-emitted node: %s %s", c.name, e.Type, e.To.Label, e.To.Value)
+			}
 		}
-		if !emitted[e.To.Label+"\x00"+e.To.Value] {
-			t.Errorf("%s edge TO a non-emitted node: %s %s", e.Type, e.To.Label, e.To.Value)
+		if c.name == "dataflow L4" {
+			for _, rel := range []string{RelParamIn, RelParamOut, RelSummary} {
+				if countEdges(rows, rel) == 0 {
+					t.Errorf("%s: no %s row checked", c.name, rel)
+				}
+			}
 		}
 	}
 }
