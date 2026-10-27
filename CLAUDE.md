@@ -95,10 +95,37 @@ committed spec is the full transcript: `docs/design/specs/v2-l1-emission.md`.
 - **`k_limit`** (envelope, L3+ only) = `--graph-field-depth` (default 3), the access-path
   bound of the syntactic `ddg` (`x.f.g.h` → `x.f.g.*`); `ddg.prov` is `["ssa"]` (parity).
 
-### Deferred (not this train)
-- L4 (SDG param edges) — reuses Group A ids/spans and the L3 vocabulary unchanged. Designed in
-  `docs/design/specs/v2-l3-l4-dataflow.md`. A Go-specific `select` cfg kind was not added
-  (`select` is a `switch` with `switch_case` edges).
+### L4 SDG (`-a 4`; spec `docs/design/specs/v2-l3-l4-dataflow.md` §4.6–§4.16, §6)
+Reuses Group A ids/spans and the L3 vocabulary unchanged; every L4 fact is an addition
+(`-a 3` ⊆ `-a 4`, gated). Leaves:
+- **Vertices** (body nodes, span-less, no `callee`): `@formal_in:<i>`, `@formal_out[:<i>]`,
+  `<call-key>/actual_in:<i>`, `<call-key>/actual_out[:<i>]` (Python's `IdentityMap` indexing:
+  `formal_in`/`actual_in` always indexed; an out is bare iff its group has one vertex). Actuals
+  carry `parent` = the call key (a non-call capture site: the literal's host). **`of`** (D6,
+  Python spelling, which the SDK's resolver reads): the param/receiver name; unnamed or `_` param
+  `_<i>` (declared index, receiver excluded); unnamed or `_` receiver **`_recv`**; results
+  `<return>` / **`<return>:<i>`** (never user result names; `:<i>` is a Go leaf);
+  `<capture>:<name>`; `<global>:<pkgpath>::<Name>`. The SDK reads `of`, never
+  `parameters[]` (`formal_in:0` is a method's receiver).
+- **Edges:** application `param_in[]` / `param_out[]` `{src, dst, var}` (global ids, `var` = the
+  callee formal's `of`); callable `summary[] {src, dst}` (local keys, actual_in → actual_out);
+  port wiring in `ddg` with `prov: ["reaching-defs"]` (Python precedent; coarse host wiring:
+  host → every actual_in, every actual_out → host); may-alias `ddg` with `prov: ["points-to"]`.
+- **Dispatch:** VTA over the project's functions (library targets in the set); `call_graph`
+  gains VTA-only edges `prov: ["vta"]`, weight 1 (an L2 edge is never changed). **D7:** an
+  interface call binds the interface method (pass-through summary) *and* every VTA target.
+- **Stand-ins:** `external_symbols[].receiver {name, type}` and `.body` (formal vertices only,
+  ids `<external-id>@formal_in:<i>`); summary all-to-all unless `--library-models` overrides it
+  (keys `<import-path>/<sig>`, values `[in, out]` `of` pairs).
+- **`degraded[]`** envelope leaf `{code, detail?, packages[]?, callables[]?}`, absent when
+  nothing degraded; codes `no_ssa | no_vta | partial_ssa | partial_types | unmapped_ssa |
+  l3_skipped | range_func` (open vocabulary). `--strict` exits non-zero on any.
+- **Rulings:** global → global summary edges are omitted [user, 2026-10-26; #30]; memory is
+  measured and reported per app, not gated (D3) [user, 2026-10-26]; range-over-func is not
+  modelled, degraded `range_func` (D8); `-a 4 -t` is an error and `--emit neo4j -t` projects
+  at L3 with a warning (D9).
+- A Go-specific `select` cfg kind was not added (`select` is a `switch` with `switch_case`
+  edges).
 
 ## Neo4j-projection decisions
 
@@ -185,11 +212,17 @@ shared neutral vocabulary verbatim; never rename a sibling's shared name). Spec:
   It carries `call_node` (JSON `parent` verbatim — the **local** key, see § Flattened
   properties) and `var` (JSON `of`; L4 — absent at L3). `GO_HAS_BODY_NODE` may originate at `:GoExternal` (L4 stand-ins).
 
-### Reserved L4 overlay (declared now, emits nothing until L4 lands)
-- `schema.go` still declares `GO_PARAM_IN`, `GO_PARAM_OUT`, `GO_SUMMARY` (`Reserved`) with
-  parity-correct names; the projector emits **zero rows** for them. When L4 lands they fill
-  with **no schema-contract change**. (`--emit neo4j` is "full-depth = max implemented" —
-  L3 today; the graph grows additively.)
+### L4 overlay (live; `--emit neo4j` runs at L4, D4)
+- `GO_PARAM_IN {var}`, `GO_PARAM_OUT {var}` and `GO_SUMMARY` are live (no longer `Reserved`;
+  same names as declared, no contract change). One row per JSON `param_in[]` / `param_out[]` /
+  `summary[]` entry; endpoints are `:GoBodyNode` global ids. Port and points-to ddg ride
+  `GO_DDG {var, prov}` (`_k = var|prov`).
+- Vertices are `:GoBodyNode`s with `var` (= JSON `of`) and `call_node` (actuals); stand-in
+  vertices hang off their `:GoExternal` via `GO_HAS_BODY_NODE`. `:GoApplication.degraded_json`
+  carries the envelope's `degraded[]`.
+- **Lazy push (D5):** every L4 row is upserted on every push (L4 facts are non-local); stale L4
+  rows need `--eager`. A stored `max_level` below the push's (or unreadable) forces a full
+  upsert; a lower-level push leaves old L4 rows. `--emit neo4j -t` projects at L3 (D9).
 
 ### SDK facade (`GoAnalysisBackend`, on the `python-sdk` fork — frontend rung)
 - **Type-centric surface** (Go is the SDK's first class-less facade; no C precedent exists
@@ -202,10 +235,13 @@ shared neutral vocabulary verbatim; never rename a sibling's shared name). Spec:
   getters + `get_source`. Slicing / CFG / CDG / DDG / reachability are **omitted** (they
   need L3/L4 the analyzer does not produce) per the ABC contract. (2026-10-24: L3 is now
   emitted at `-a 3` — per-callable `cfg`/`cdg`/`ddg` and `GO_CFG_NEXT`/`GO_CDG`/`GO_DDG` —
-  so L3 accessors are supportable now; interprocedural slicing and taint still need L4:
-  `param_in`/`param_out`/`summary` and the points-to `ddg`.)
+  so L3 accessors are supportable now. 2026-10-27: L4 is emitted at `-a 4` and by
+  `--emit neo4j` — `param_in`/`param_out`/`summary` and the points-to `ddg` — so
+  interprocedural slicing and taint are supportable too.)
 
 ### Deferred (not this train)
-- SDK consumer slicing/taint surface and L3/L4 facade methods — arrive with the L3/L4
-  analyzer train, reusing this graph vocabulary unchanged.
+- SDK consumer slicing/taint surface and L3/L4 facade methods — the analyzer now emits L4;
+  the SDK side reuses this graph vocabulary unchanged.
 - Struct-tag modeling. (`defer_resume` landed with L3; see § L3 body and edges.)
+- `GO_EMBEDS` / `GO_SATISFIES` resolution: `base_types[]` holds raw type strings and
+  `interfaces[]` is never computed (#31, pre-existing).

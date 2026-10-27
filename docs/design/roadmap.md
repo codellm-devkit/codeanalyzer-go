@@ -10,7 +10,7 @@ A schema **major**: move the Go analyzer off the v1 keystone
 booleans, `signature` as id) onto the v2 canonical schema (additive tree, `can://` ids,
 `span` with byte offsets, `source` per module, typed edge lists). The SDK moves in
 lockstep as a coordinated major release. **Reach for this train: L1 + L2 to parity.**
-L3 shipped in release A (below); L4 remains deferred (see Not now).
+L3 shipped in release A (below); L4 is implemented on `feat/l4-sdg` (release B, below).
 
 Golden rule carried from `schema-migration.md`: keep everything that *computes* facts
 (parser, resolver, call-graph builder); replace only what *serializes* them.
@@ -51,7 +51,7 @@ C (edge shape)      ─┴─► L2 emission (call_graph rename @ application sc
                           │
 A/B/C ─► D (Neo4j relabel) ─► SDK v2 model remap ─► pin SDK→analyzer (once BOTH cut)
                                                        │
-                          L3 (release A) ─► L4 (deferred) ┘   reuse A & C unchanged
+                          L3 (release A) ─► L4 (release B) ┘   reuse A & C unchanged
 ```
 
 ## Release trains
@@ -70,15 +70,33 @@ A/B/C ─► D (Neo4j relabel) ─► SDK v2 model remap ─► pin SDK→analyz
   found two issues, both fixed before release: L2 call-graph dedup on repeated `<pkg>.init`
   signatures (nondeterministic, dropped edges) and the Neo4j `--eager` purge failing on
   Neo4j 5.x. The release tag is the user's decision.
-- **Later (deferred).** L4 (SDG `param_in`/`param_out`/`summary`, needs a points-to oracle).
-  Reuses group A & C vocabulary; no new schema-major coordination beyond what Train 1
-  establishes.
+- **Release B — L4 (`-a 4`, SDG).** Implemented on `feat/l4-sdg`
+  (spec `docs/design/specs/v2-l3-l4-dataflow.md` Phase 2). It adds:
+  - VTA dispatch over `go/ssa`;
+  - formal/actual vertices, `param_in`/`param_out`, call-site `summary` edges and port-wiring
+    `ddg`;
+  - library stand-ins with `--library-models`;
+  - a type-based may-alias oracle (`points-to` `ddg`);
+  - the `degraded` envelope marker and `--strict`;
+  - the Neo4j `GO_PARAM_IN`/`GO_PARAM_OUT`/`GO_SUMMARY` overlay, with `--emit neo4j` at L4.
+
+  It reuses the group A and C vocabulary; every L4 fact is additive (`-a 3` ⊆ `-a 4`). The
+  real-app evaluation is in `docs/design/notes/l3-dataflow-metrics.md` § L4 and
+  `l3-eval-2026-10.md`. Kubernetes `-a 4` completes deterministically, and memory is reported
+  per app, not gated (D3). Follow-ups:
+  - #30: global → global summaries for an HRB walk;
+  - #31: `GO_EMBEDS`/`GO_SATISFIES`;
+  - range-over-func (D8);
+  - library callbacks;
+  - Andersen points-to;
+  - export-data loading.
+
+  The python-sdk Go L3/L4 surface (spec §7) is the next rung.
 
 ## Not now (considered, deliberately excluded)
 
-- **L4 dataflow (SDG)** — deferred; needs a points-to oracle and interprocedural
-  construction. (L3 is in release A.)
-- **Points-to oracle** — L4 prerequisite; parked with L4.
+- **Andersen points-to over `go/ssa`** — a precision upgrade replacing L4's type-based may-alias
+  oracle behind the same interface (`prov` stays `points-to`); not this train.
 - **`--materialize-expressions` / `--materialize-basic-blocks`** — optional body node kinds;
   out of scope for the parity migration.
 - **New framework detection** — orthogonal enrichment axis

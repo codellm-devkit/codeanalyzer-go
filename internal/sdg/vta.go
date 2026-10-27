@@ -282,9 +282,11 @@ func (d *dispatch) result(deg []Degraded) Result {
 }
 
 // ApplyTo merges the L4 call-graph additions into app (spec §4.8): the VTA
-// edges into app.CallGraph (semantic_analysis.MergeEdges: union prov, sum
-// weight per edge identity) and the VTA-only externals into app.Externals, so
+// edges into app.CallGraph and the VTA-only externals into app.Externals, so
 // every new edge's target resolves. Both are additions: -a 3 ⊆ -a 4.
+// CallEdges holds only pairs the L2 resolver did not find (result skips
+// every d.l2 edge), so MergeEdges never meets an existing identity and
+// appends: an L2 edge VTA also finds keeps its L2 prov and weight.
 func (r *Result) ApplyTo(app *schema.GoApplication) {
 	if len(r.CallEdges) > 0 {
 		app.CallGraph = semantic_analysis.MergeEdges(app.CallGraph, r.CallEdges)
