@@ -502,3 +502,26 @@ func TestSummary_OmitsGlobalToGlobal(t *testing.T) {
 		}
 	}
 }
+
+// TestSummary_CaptureWrittenThroughAlias: a literal that writes through a
+// local alias of a captured pointer (`q := p; q.n = x`) writes no path of p,
+// yet the write reaches p's pointee. p may hold a reference, so the literal
+// has a capture formal_out for p (the shared by-ref predicate, A10, as a
+// param in mutatedFormals): the closure has the flow x → p, and its capture
+// site has an actual_out for p that reaches CaptureAlias's formal_out of p.
+// Found by the metamorphic relation MR5 (introduce an alias), which turned
+// CaptureParam's flow from x into a false "no flow".
+func TestSummary_CaptureWrittenThroughAlias(t *testing.T) {
+	in, _, p := runPorts(t)
+	lit := Target{Callable: dataflow.L3Key{Path: sdgFile, Signature: sdgPkg + ".CaptureAlias.closure_1"}}
+	ins, outs := p.formals(lit)
+	if len(ins) != 2 || len(outs) != 1 || outs[0].Of != "<capture>:p" {
+		t.Fatalf("CaptureAlias.closure_1 formals = %+v / %+v, want 2 in, one out <capture>:p", ins, outs)
+	}
+	b := newSDGBuilder(in, p.d)
+	flows := b.summarize()
+	// closure_1: formal_in 0 = <capture>:p, 1 = <capture>:x; formal_out 0 = <capture>:p.
+	checkFlows(t, flows, lit, [][2]int{{0, 0}, {1, 0}})
+	got := p.wire(sdgKey("CaptureAlias"))
+	checkHas(t, "wire(CaptureAlias)", got, pe("499:7/actual_out", "@formal_out", "p"))
+}

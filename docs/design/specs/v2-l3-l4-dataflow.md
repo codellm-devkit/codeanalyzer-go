@@ -363,7 +363,7 @@ Per callable (formals), all with `kind` + `of`, no span:
 | `@formal_in:<i>` | `<global>:<pkgpath>::<Name>` | each package-level variable the callable (transitively, via summary) reads |
 | `@formal_out` / `@formal_out:<i>` | `<return>` / `<return>:<i>` | **one per result position** — `<return>` for a single result; `<return>:<i>` for each position of a multi-result, **never the user's result names** (D6) |
 | `@formal_out:<i>` | parameter name | each parameter (incl. the receiver, pointer or value) satisfying the **shared by-ref predicate** the callable may write through (by-ref out) |
-| `@formal_out:<i>` | `<capture>:<name>` | each captured variable a closure writes (strong or weak def) |
+| `@formal_out:<i>` | `<capture>:<name>` | each captured variable a closure writes (strong or weak def), or that satisfies the by-ref predicate (a write through a local alias, `q := p; q.n = v`, is no def of `p`) |
 | `@formal_out:<i>` | `<global>:<pkgpath>::<Name>` | each package-level variable written (transitively, via summary) |
 
 **Indexing and order (amended, A9) [call].** Python's `IdentityMap` rule verbatim
@@ -420,7 +420,9 @@ miss later assignments (false refutation). Rule:
 
 - The closure callable gets `@formal_in:<i>` `of:"<capture>:<name>"` per captured variable and
   `@formal_out:<i>` `of:"<capture>:<name>"` per captured variable it **writes** (strong or weak
-  def).
+  def) **or that satisfies the shared by-ref predicate** (amended 2026-10-27, from metamorphic
+  relation MR5): as for a by-ref param, a write through a local alias (`q := p; q.n = v`) is no
+  def of the capture at L3, so a reference-holding capture always gets its `formal_out`.
 - In the enclosing callable, the `FuncLit` has a **capture site** (amended, A6 — a call's key is
   `call.Pos()` = `Fun.Pos()` = `FuncLit.Pos()`, so keying the site at the `func` keyword collides
   with the call node of `func(x){…}(v)`, `defer func(){…}()`, `go func(){…}()`):

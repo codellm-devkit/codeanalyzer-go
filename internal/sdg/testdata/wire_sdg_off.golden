@@ -145,6 +145,18 @@ example.com/dataflow/sdg.CallVariadic
 	197:2 -> 197:7/actual_in:1 b reaching-defs
 	197:7/actual_out -> 197:2 <return> reaching-defs
 	198:2 -> @formal_out <return> reaching-defs
+example.com/dataflow/sdg.CaptureAlias
+	499:7/actual_out -> 499:2 <capture>:p reaching-defs
+	499:7/actual_out -> @formal_out p reaching-defs
+	@formal_in:0 -> 499:2 p reaching-defs
+	@formal_in:0 -> 499:7/actual_in:0 <capture>:p reaching-defs
+	@formal_in:0 -> @formal_out p reaching-defs
+	@formal_in:1 -> 499:2 x reaching-defs
+	@formal_in:1 -> 499:7/actual_in:1 <capture>:x reaching-defs
+example.com/dataflow/sdg.CaptureAlias.closure_1
+	@formal_in:0 -> 499:16 p reaching-defs
+	@formal_in:0 -> @formal_out <capture>:p reaching-defs
+	@formal_in:1 -> 499:24 x reaching-defs
 example.com/dataflow/sdg.CaptureArg
 	267:2 -> 267:7/actual_in:0 f reaching-defs
 	267:7/actual_out:0 -> 267:2 <return> reaching-defs

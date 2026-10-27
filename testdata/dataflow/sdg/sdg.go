@@ -490,3 +490,12 @@ func AliasArrPtr(pa *[4]int) int {
 	s[0] = 1
 	return pa[0]
 }
+
+// CaptureAlias stores a literal that writes through a local alias of the
+// captured pointer p: the write is no def of p, but p may hold a reference,
+// so the literal has a capture formal_out for p (the by-ref predicate) and
+// x reaches p's formal_out (found by metamorphic relation MR5).
+func CaptureAlias(p *Inner, x int) {
+	f := func() { q := p; q.n = x }
+	f()
+}

@@ -213,14 +213,11 @@ func resultOf(i, n int) string {
 }
 
 // captureOfs returns the `of` of every variable lit captures (dataflow.FreeVars
-// order) and of those it writes (dataflow.CaptureWrites bases), in that order.
-// A capture's name is unique: every variable a literal names from outside it
+// order) and of those it writes (writtenCaptures), in that order. A
+// capture's name is unique: every variable a literal names from outside it
 // resolves in the one scope chain the literal sits in.
 func captureOfs(lit *ast.FuncLit, info *types.Info, k int) (all, written []string) {
-	w := map[types.Object]bool{}
-	for _, path := range dataflow.CaptureWrites(lit, info, k) {
-		w[path.Base] = true
-	}
+	w := writtenCaptures(lit, info, k)
 	for _, v := range dataflow.FreeVars(lit, info) {
 		all = append(all, ofCapture+v.Name())
 		if w[v] {
@@ -228,6 +225,26 @@ func captureOfs(lit *ast.FuncLit, info *types.Info, k int) (all, written []strin
 		}
 	}
 	return all, written
+}
+
+// writtenCaptures is the set of captures of lit that get a capture
+// formal_out (spec §4.6): the bases lit writes (dataflow.CaptureWrites), and,
+// by the shared by-ref predicate (A10, fix I1, as for a param in
+// mutatedFormals), every capture whose type may hold a reference
+// (dataflow.MayHoldRef). A capture is used by definition, and a write
+// through a local alias (`q := p; q.n = v`) or passing it on is no def of
+// the capture at L3, so a use is enough.
+func writtenCaptures(lit *ast.FuncLit, info *types.Info, k int) map[types.Object]bool {
+	w := map[types.Object]bool{}
+	for _, path := range dataflow.CaptureWrites(lit, info, k) {
+		w[path.Base] = true
+	}
+	for _, v := range dataflow.FreeVars(lit, info) {
+		if dataflow.MayHoldRef(v.Type()) {
+			w[v] = true
+		}
+	}
+	return w
 }
 
 // resultCount is the number of results of t: from its go/types signature
@@ -704,10 +721,7 @@ func (p *ports) capSites(u dataflow.Unit, taken map[string]bool) []capSite {
 		} else {
 			host = p.skippedHost(u, l.Lit)
 		}
-		written := map[types.Object]bool{}
-		for _, path := range dataflow.CaptureWrites(l.Lit, u.Info, p.in.K) {
-			written[path.Base] = true
-		}
+		written := writtenCaptures(l.Lit, u.Info, p.in.K)
 		nOut := 0
 		for _, v := range caps {
 			if written[v] {
