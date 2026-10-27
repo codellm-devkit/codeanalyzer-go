@@ -1,8 +1,8 @@
 # Spec: Go L3/L4 dataflow (CFG/CDG/DDG + SDG) with SDK taint (codeanalyzer-go)
 
-**Status:** Phases 0–1 implemented (PR #16, open, not yet merged); Phase 2 (L4) implemented on
+**Status:** Phases 0–1 merged (PR #16, merge commit `f9a39bb`); Phase 2 (L4) live on
 `feat/l4-sdg` and evaluated (`docs/design/notes/l3-dataflow-metrics.md` § L4); L4 design amended by
-the 2026-10-25 re-check (§4.16) and the 2026-10-26/27 rulings ·
+the 2026-10-25 re-check (§4.16), the 2026-10-26/27 rulings and the final-review fixes (§4.8) ·
 **Date:** 2026-10-23, amended 2026-10-25, 2026-10-27 · **Repos:** `codeanalyzer-go`, `python-sdk` ·
 **Supersedes:** the "L3/L4 deferred" entries in `docs/design/roadmap.md`.
 
@@ -88,7 +88,7 @@ siblings is required too; and the id grammar has to change for polyglot apps any
 
 As of 2026-10-25 (code at `3504445`, branch `feat/l3-dataflow` = `feat/l4-sdg`):
 
-- **Phases 0 and 1 are implemented together on PR #16** (§9; open, not yet merged). L1/L2/L3 on
+- **Phases 0 and 1 were implemented together on PR #16** (§9; merged as `f9a39bb`). L1/L2/L3 on
   v2, Neo4j projection live through L3 (as of this snapshot; L4 is now live too, Status header).
 - **Phase 0 (live):** `can://<app>/go/…` ids (§4.1, `internal/schema/v2/ids.go`); L2 library calls
   with `application.external_symbols` (§4.14); co-positioned call keys `l:c/n`; `is_deferred`;
@@ -590,8 +590,12 @@ built per D2 (amended, A12): `ssautil.Packages` over the **same** `go/packages` 
 - **SSA construction (amended, A12; D2) [call].** The load is
   `NeedSyntax|NeedTypesInfo|NeedDeps`, so `AllPackages` would create, and `Build` would compile,
   **every dependency body** (stdlib included). Instead:
-  - `ssautil.Packages(roots, ssa.InstantiateGenerics|ssa.BuildSerially)` over `builder.Pkgs()`:
-    bodies only for project packages; dependencies come from types.
+  - `ssautil.Packages(roots, ssa.InstantiateGenerics|ssa.BuildSerially)` over every loaded
+    project package variant (`builder.Loaded()`): bodies only for project packages; dependencies
+    come from types. With tests loaded, `builder.Pkgs()` (keyed by path) holds only the test
+    variant `p [p.test]`; the plain `p` other packages import is a root too, or VTA misses the
+    types that flow through it [final review F2]. Both variants share syntax and join the same
+    units.
   - Build **per package** (`pkg.Build()`) in our own goroutine under `recover` — `Program.Build`
     and VTA panic inside their own goroutines, out of reach of the per-callable `recover`. A panic
     degrades (`partial_ssa` / `no_ssa`, §4.15).
@@ -890,7 +894,9 @@ callables) but marks the envelope:
   - `no_vta` — VTA failed (incl. a recovered VTA panic).
   - `partial_ssa` — listed packages had type errors (`pkg.IllTyped`) or a recovered per-package
     build panic, so no SSA.
-  - `partial_types` — packages with `go/packages` errors at any level.
+  - `partial_types` — project packages `go/packages` loaded with errors (list, parse or type
+    errors, or ill-typed through a broken dependency), every test variant included; `packages[]`
+    sorted. A package also listed under `partial_ssa` got no SSA.
   - `unmapped_ssa` — SSA functions or call instructions that map to no callable or call node
     (§4.8); counted, listed where nameable (A16).
   - `l3_skipped` — callables whose L3 result was dropped (contained panic, call-count mismatch);
@@ -1161,11 +1167,11 @@ JSON. The full results, insights and limitations are in `l3-dataflow-metrics.md`
 
 | Phase | Repo | Content | Release |
 
-> **Phases 0 and 1 ship together in one PR / one release** [user, 2026-10-23]; they stay separate rows for traceability. **Both are implemented, on PR #16 (open, not yet merged).**
+> **Phases 0 and 1 ship together in one PR / one release** [user, 2026-10-23]; they stay separate rows for traceability. **Both are implemented and merged (PR #16, `f9a39bb`); Phase 2 (L4) is live on `feat/l4-sdg`.**
 
 |---|---|---|---|
-| 0 | analyzer | **implemented (PR #16, open).** id grammar `can://<app>/go/…`; **L2 external calls (§4.14)**; L1 co-positioned call keys; `is_deferred`; `typeKind` alias/defined; `GO_DDG` `_k`; call-site position index (perf) | analyzer next **breaking** version (wheel is at 0.1.0 with no local tags — builder confirms the released version and bumps the major, or the minor if still 0.x) |
-| 1 | analyzer | **implemented (PR #16, open).** L3: body statements, CFG (+defer chain, panic), CDG, syntactic DDG, CLI `-a 3`/`--graph-field-depth`, Neo4j CFG/CDG/DDG, gates | minor |
+| 0 | analyzer | **merged (PR #16, `f9a39bb`).** id grammar `can://<app>/go/…`; **L2 external calls (§4.14)**; L1 co-positioned call keys; `is_deferred`; `typeKind` alias/defined; `GO_DDG` `_k`; call-site position index (perf) | analyzer next **breaking** version (wheel is at 0.1.0 with no local tags — builder confirms the released version and bumps the major, or the minor if still 0.x) |
+| 1 | analyzer | **merged (PR #16, `f9a39bb`).** L3: body statements, CFG (+defer chain, panic), CDG, syntactic DDG, CLI `-a 3`/`--graph-field-depth`, Neo4j CFG/CDG/DDG, gates | minor |
 | 2 | analyzer | **Prerequisites, in order (A24):** (1) #26 shared call/closure walker (incl. `//line` spans), first — returns `(*ast.CallExpr, key)`, `(*ast.FuncLit, closure name)` and call → host maps, replacing the index-paired L1/L3 walks; (2) #17 closure call resolution, after #26 — closures carry a declaring `Path` and `call_graph` gains edges from closures; (3) the #22 L3 fixes (D1, §4.5), then the #28 satellite-`parent` tests and a Go 1.23+ fixture — before L4 port wiring (changing L3 after L4 would re-baseline every L4 gate); (4) #27 streaming JSON and AST release — before the real-app L4 eval, can run in parallel with the L4 core; (5) schema and CLI scaffolding (A14, A18, A19, A17 declarations, a `-a 1..4` monotonicity harness) — the first L4 task. Dependencies: #26 → #17 → (VTA, summaries); #22 fixes → port wiring and gates; scaffolding → all of L4; #27 → the Kubernetes eval. **Then L4:** SSA spike (D3 measurement) and build (D2), SSA → L3 join, VTA, `degraded` marker (§4.15), external stand-ins (`external_symbols` `receiver`/`body`), vertices, param edges, summaries, port wiring, type-based alias delta, Neo4j L4 overlay, `--emit neo4j` at L4 (per D4), real-app eval | minor |
 | 3 | python-sdk | Go v2 models (first the §7 prerequisites: `GoType.kind`, L3 fields), facade, local + Neo4j backends, L1–L4 accessors, taint e2e | minor; pins the analyzer only after Phase 2 is released |
 

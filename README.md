@@ -324,10 +324,12 @@ subset of `-a 4` output, and `-j 1` and `-j N` output are byte-identical.
   `<import-path>/<sig>` tail, and a value is a list of `[in, out]` pairs of `of` names (`[]` = no
   summary edges). A model changes summaries, **not statement-level reachability**: in
   `n, err := strconv.Atoi(id)` the value assigned at the call site keeps its reaching-definition
-  edge from `id`, which is correct data flow. A model is therefore not a sanitizer. Cutting such a
-  flow is the SDK taint analysis's job ([codellm-devkit/.github#103](https://github.com/codellm-devkit/.github/issues/103)). A variable cut on `n` is also bypassed, by
-  implicit flow through `err` and by the coarse host wiring. An entry naming an `of` the external lacks falls back to all-to-all, with a warning. A
-  key no call site targets is ignored, with a warning. The flag is valid only at `-a 4` and with
+  edge from `id`, which is correct data flow. A model is therefore not a sanitizer. Cutting such
+  a flow is the SDK taint analysis's job
+  ([codellm-devkit/.github#103](https://github.com/codellm-devkit/.github/issues/103)). A variable
+  cut on `n` is also bypassed, by implicit flow through `err` and by the coarse host wiring. An
+  entry naming an `of` the external lacks falls back to all-to-all, with a warning. A key no call
+  site targets is ignored, with a warning. The flag is valid only at `-a 4` and with
   `--emit neo4j`.
 - **`-t` / `--target-files` is not supported at `-a 4`** (whole-program): it is an error. Use
   `-a 3 -t`, or run without `-t`.

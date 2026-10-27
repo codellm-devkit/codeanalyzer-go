@@ -63,8 +63,9 @@ func (o l3Overlay) apply(c *v2.Callable, li *lineIndex, key dataflow.L3Key) {
 
 // l3BodyNode is a non-L1 body node: its kind, and its span from the node's
 // [line, col] range (zero for @entry/@exit). A call node reaching here is a
-// call L1 did not key — impossible when Run's count check passed — and keeps
-// the call shape with a null callee.
+// call L1 did not key — impossible once Run paired every body call with an
+// L1 key by Lparen (a unit with an unpaired call gets no L3 result) — and
+// keeps the call shape with a null callee.
 func l3BodyNode(n dataflow.Node, li *lineIndex) v2.BodyNode {
 	bn := v2.BodyNode{Kind: string(n.Kind), Parent: n.Parent}
 	if n.Kind != dataflow.KindEntry && n.Kind != dataflow.KindExit {
