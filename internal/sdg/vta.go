@@ -182,7 +182,13 @@ func (d *dispatch) methodTarget(j *join, m *types.Func) (Target, bool) {
 }
 
 // addVTA adds VTA's callees: every edge whose site joins a call node and
-// whose callee maps to a target.
+// whose callee maps to a target. A callee that is a synthetic wrapper — a
+// $bound or $thunk, a promotion, pointer or instantiation wrapper: SSA code
+// with no syntax of its own — calls what it wraps at a synthetic call site,
+// which joins no call node; for an interface method's wrapper (a method value
+// of an interface, a struct embedding an interface) VTA's concrete callees
+// sit only there. So the wrapper's own VTA callees, transitively through
+// nested wrappers, are targets of the original site too.
 func (d *dispatch) addVTA(j *join, cg *callgraph.Graph) {
 	for _, node := range cg.Nodes {
 		for _, e := range node.Out {
@@ -193,11 +199,54 @@ func (d *dispatch) addVTA(j *join, cg *callgraph.Graph) {
 			if !ok {
 				continue
 			}
-			if t, ok := d.calleeTarget(j, e.Callee.Func); ok {
-				d.add(siteKey{unit, key}, t)
+			site := siteKey{unit, key}
+			for _, fn := range throughWrappers(cg, e.Callee.Func) {
+				if t, ok := d.calleeTarget(j, fn); ok {
+					d.add(site, t)
+				}
 			}
 		}
 	}
+}
+
+// throughWrappers returns fn and, when fn is a synthetic wrapper, the VTA
+// callees of its calls, transitively through nested wrappers (each function
+// once, so a cycle of wrappers ends). The order is the graph's; d.add sorts.
+func throughWrappers(cg *callgraph.Graph, fn *ssa.Function) []*ssa.Function {
+	if !isWrapper(fn) {
+		return []*ssa.Function{fn}
+	}
+	seen := map[*ssa.Function]bool{fn: true}
+	out := []*ssa.Function{fn}
+	for work := []*ssa.Function{fn}; len(work) > 0; {
+		w := work[len(work)-1]
+		work = work[:len(work)-1]
+		node := cg.Nodes[w]
+		if node == nil {
+			continue
+		}
+		for _, e := range node.Out {
+			if e.Callee == nil || e.Callee.Func == nil || seen[e.Callee.Func] {
+				continue
+			}
+			g := e.Callee.Func
+			seen[g] = true
+			out = append(out, g)
+			if isWrapper(g) {
+				work = append(work, g)
+			}
+		}
+	}
+	return out
+}
+
+// isWrapper reports whether fn is SSA-synthesized code with no syntax of its
+// own: a $bound, $thunk, promotion or pointer wrapper. A range-over-func
+// yield and an instance keep syntax (their code is the unit's own); an
+// instantiation wrapper keeps its origin's syntax but is a synthetic call of
+// the origin, which the join already maps.
+func isWrapper(fn *ssa.Function) bool {
+	return fn.Synthetic != "" && fn.Syntax() == nil && fn.Synthetic != synthPackageInit
 }
 
 // calleeTarget maps an SSA callee to its target: the unit it joins (by body
