@@ -71,7 +71,7 @@ func TestAnalyze_Level4StrictFailsOnDegraded(t *testing.T) {
 	if err == nil {
 		t.Fatal("--strict -a 4 on a degraded project succeeded")
 	}
-	for _, code := range []string{"partial_ssa", "no_ssa"} {
+	for _, code := range []string{"partial_types", "partial_ssa", "no_ssa"} {
 		if !strings.Contains(err.Error(), code) {
 			t.Errorf("error %q does not name %s", err, code)
 		}

@@ -417,6 +417,28 @@ func homePath(fn *ssa.Function) string {
 	return ""
 }
 
+// partialTypes is the partial_types entry (spec §4.15): the project
+// packages (every variant, by path) go/packages loaded with errors — list,
+// parse or type errors — or that are ill-typed through a broken dependency,
+// sorted; nil when every package loaded clean. Their types (and so L1–L3
+// over them) are partial; partial_ssa says which also got no SSA.
+func partialTypes(in Input) *Degraded {
+	pkgs := map[string]bool{}
+	for _, p := range projectPackages(in) {
+		if len(p.Errors) > 0 || p.IllTyped {
+			pkgs[p.PkgPath] = true
+		}
+	}
+	if len(pkgs) == 0 {
+		return nil
+	}
+	return &Degraded{
+		Code:     CodePartialTypes,
+		Detail:   fmt.Sprintf("%d package(s) loaded with errors (list, parse or type errors, or a broken dependency)", len(pkgs)),
+		Packages: sortedKeys(pkgs),
+	}
+}
+
 // l3Skipped is the l3_skipped entry (spec §4.15, A16): the units with no L3
 // result (a recovered panic, or a body call with no L1 key), or nil.
 func l3Skipped(in Input) *Degraded {

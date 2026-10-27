@@ -653,19 +653,22 @@ func TestSDG_L3SkippedDegrades(t *testing.T) {
 	}
 }
 
-// TestSDG_IllTypedPackageDegrades (Review Focus 1): testdata/typeerr does not
-// type-check, so it gets no SSA: partial_ssa lists it (then no_ssa), nothing
-// panics, and its L3 results are those of -a 3.
+// TestSDG_IllTypedPackageDegrades (Review Focus 1, F4): testdata/typeerr
+// does not type-check: partial_types lists it (its go/packages errors), it
+// gets no SSA (partial_ssa, then no_ssa), nothing panics, and its L3
+// results are those of -a 3.
 func TestSDG_IllTypedPackageDegrades(t *testing.T) {
 	in := loadInput(t, "typeerr")
 	plain := dataflow.Run(in.Fset, in.Units, 3, 1)
 	res := Run(in)
 	codes := codesOf(res.Degraded)
-	if !slices.Equal(codes, []string{CodePartialSSA, CodeNoSSA}) {
-		t.Fatalf("codes = %v, want [partial_ssa no_ssa]", codes)
+	if !slices.Equal(codes, []string{CodePartialTypes, CodePartialSSA, CodeNoSSA}) {
+		t.Fatalf("codes = %v, want [partial_types partial_ssa no_ssa]", codes)
 	}
-	if !slices.Equal(res.Degraded[0].Packages, []string{"example.com/typeerr"}) {
-		t.Errorf("partial_ssa packages = %v", res.Degraded[0].Packages)
+	for _, d := range res.Degraded[:2] {
+		if !slices.Equal(d.Packages, []string{"example.com/typeerr"}) {
+			t.Errorf("%s packages = %v", d.Code, d.Packages)
+		}
 	}
 	if len(in.L3) == 0 || len(in.L3) != len(plain) {
 		t.Fatalf("L3 has %d results, -a 3 has %d", len(in.L3), len(plain))

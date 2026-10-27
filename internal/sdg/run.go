@@ -35,7 +35,8 @@ const l4GCPercent = 50
 //
 // Order: the join is computed before VTA, so it never reads a program a VTA
 // panic may have wedged; after no_vta, later stages use the program for the
-// join alone. The degradations are, in order: partial_ssa / no_ssa (SSA),
+// join alone. The degradations are, in order: partial_types (the load),
+// partial_ssa / no_ssa (SSA),
 // l3_skipped and range_func (from the units, whether or not SSA built),
 // unmapped_ssa (the join), no_vta.
 //
@@ -68,8 +69,13 @@ func run(in Input) (Result, *dispatch) {
 // dispatchRun is run up to the dispatch: SSA, the join and VTA.
 func dispatchRun(in Input) (Result, *dispatch) {
 	d := newDispatch(in)
+	var deg []Degraded
+	if dg := partialTypes(in); dg != nil {
+		deg = append(deg, *dg)
+	}
 	start := time.Now()
-	prog, pkgs, deg := buildSSA(in)
+	prog, pkgs, ssaDeg := buildSSA(in)
+	deg = append(deg, ssaDeg...)
 	utils.Info("L4: SSA built %d project packages in %s", len(pkgs), time.Since(start).Round(time.Millisecond))
 	for _, dg := range []*Degraded{l3Skipped(in), rangeFunc(in)} {
 		if dg != nil {
