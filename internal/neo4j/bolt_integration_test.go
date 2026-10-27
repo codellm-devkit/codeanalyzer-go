@@ -250,3 +250,54 @@ func TestIntegration_LazyL4PushOverLowerLevelGraph(t *testing.T) {
 		}
 	}
 }
+
+// TestIntegration_CleanLazyPushClearsDegradedJSON (F6): a graph a degraded
+// run wrote carries :GoApplication.degraded_json; a clean lazy push of the
+// same app removes it (the application row's explicit null), so the SDK no
+// longer reads a stale degradation.
+func TestIntegration_CleanLazyPushClearsDegradedJSON(t *testing.T) {
+	ctx := context.Background()
+	cfg := itConfig(t)
+	a := buildDataflowL4(t)
+	if len(a.Degraded) != 0 {
+		t.Fatalf("fixture degraded: %+v", a.Degraded)
+	}
+	degraded := Project(a)
+	for i, n := range degraded.Nodes {
+		if n.Labels[0] == LabelApplication {
+			p := Props{}
+			for k, v := range n.Props {
+				p[k] = v
+			}
+			p["degraded_json"] = `[{"code":"no_vta"}]`
+			degraded.Nodes[i].Props = p
+		}
+	}
+	seed := cfg
+	seed.Eager, seed.FullRun = true, true
+	if err := WriteBolt(ctx, degraded, a.Application.ID, seed); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	read := func() any {
+		drv, err := neo4j.NewDriverWithContext(cfg.URI, neo4j.BasicAuth(cfg.User, cfg.Password, ""))
+		if err != nil {
+			t.Fatalf("driver: %v", err)
+		}
+		defer drv.Close(ctx)
+		res, err := neo4j.ExecuteQuery(ctx, drv, "MATCH (a:GoApplication {id: $id}) RETURN a.degraded_json",
+			map[string]any{"id": a.Application.ID}, neo4j.EagerResultTransformer, neo4j.ExecuteQueryWithDatabase(cfg.Database))
+		if err != nil || len(res.Records) != 1 {
+			t.Fatalf("read degraded_json: %v (%d records)", err, len(res.Records))
+		}
+		return res.Records[0].Values[0]
+	}
+	if v := read(); v != `[{"code":"no_vta"}]` {
+		t.Fatalf("seeded degraded_json = %v", v)
+	}
+	if err := WriteBolt(ctx, Project(a), a.Application.ID, cfg); err != nil {
+		t.Fatalf("lazy push: %v", err)
+	}
+	if v := read(); v != nil {
+		t.Errorf("clean lazy push left degraded_json = %v", v)
+	}
+}

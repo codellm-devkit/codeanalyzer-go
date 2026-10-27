@@ -339,3 +339,50 @@ func TestBolt_LazyPushForcesFullOnUnreadableStoredLevel(t *testing.T) {
 		}
 	}
 }
+
+// TestBolt_CleanPushClearsDegradedJSON (F6): the projector prunes a nil
+// degraded_json, and `SET n += row.p` keeps a property row.p lacks, so a
+// clean push over a graph an earlier degraded run wrote would leave the
+// stale degraded_json behind (and the SDK would refuse "no flow"
+// certificates). The application row therefore carries an explicit null
+// when nothing is degraded, which SET += removes; a degraded run keeps its
+// JSON string.
+func TestBolt_CleanPushClearsDegradedJSON(t *testing.T) {
+	a := buildDataflowL4(t)
+	if len(a.Degraded) != 0 {
+		t.Fatalf("fixture degraded: %+v", a.Degraded)
+	}
+	appProps := func(rows GraphRows) map[string]any {
+		t.Helper()
+		db := &fakeDB{level: 4}
+		w := &boltWriter{ctx: context.Background(), session: db, rows: rows, appID: a.Application.ID}
+		if err := w.run(); err != nil {
+			t.Fatal(err)
+		}
+		for _, st := range db.writes {
+			if !strings.Contains(st.q, "MERGE (n:"+LabelApplication+" ") {
+				continue
+			}
+			for _, r := range st.params["rows"].([]map[string]any) {
+				if r["k"] == a.Application.ID {
+					return r["p"].(map[string]any)
+				}
+			}
+		}
+		t.Fatal("no :GoApplication upsert")
+		return nil
+	}
+	p := appProps(Project(a))
+	if v, has := p["degraded_json"]; !has || v != nil {
+		t.Errorf("clean push: degraded_json = %v (present %v), want an explicit null", v, has)
+	}
+	rows := Project(a)
+	for i, n := range rows.Nodes {
+		if n.Labels[0] == LabelApplication {
+			rows.Nodes[i].Props = Props{"degraded_json": `[{"code":"no_vta"}]`, "max_level": int64(4)}
+		}
+	}
+	if v := appProps(rows)["degraded_json"]; v != `[{"code":"no_vta"}]` {
+		t.Errorf("degraded push: degraded_json = %v, want the JSON string", v)
+	}
+}

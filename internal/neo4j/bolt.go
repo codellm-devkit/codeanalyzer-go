@@ -433,10 +433,25 @@ func (w *boltWriter) read(fn func(neo4j.ManagedTransaction) error) error {
 
 // nodeParams converts node rows to driver params. Props map directly (the
 // driver stores Go ints as integers, strings as strings, []string as a list).
+// clearedAppProps are the :GoApplication props a push writes as an
+// explicit null when the projection pruned them: `SET n += row.p` keeps a
+// property row.p lacks, so a clean run over a graph a degraded run wrote
+// would otherwise keep the stale degraded_json (F6). A null in SET +=
+// removes the property. (The snapshot script wipes the application first.)
+var clearedAppProps = []string{"degraded_json"}
+
 func nodeParams(g []NodeRow) []map[string]any {
 	out := make([]map[string]any, len(g))
 	for i, n := range g {
-		out[i] = map[string]any{"k": n.Value, "p": propsToAny(n.Props)}
+		p := propsToAny(n.Props)
+		if len(n.Labels) > 0 && n.Labels[0] == LabelApplication {
+			for _, k := range clearedAppProps {
+				if _, ok := p[k]; !ok {
+					p[k] = nil
+				}
+			}
+		}
+		out[i] = map[string]any{"k": n.Value, "p": p}
 	}
 	return out
 }

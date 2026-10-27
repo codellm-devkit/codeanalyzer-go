@@ -63,8 +63,8 @@ type Analysis struct {
 }
 
 // Degraded is one degradation marker: an L4 step that fell back to a coarser
-// result. Code is a closed vocabulary; Detail, Packages and Callables say what
-// was affected.
+// result. Code is an open vocabulary of plain strings (spec §4.15); Detail,
+// Packages and Callables say what was affected.
 type Degraded struct {
 	Code      string   `json:"code"`
 	Detail    string   `json:"detail,omitempty"`
