@@ -1110,9 +1110,23 @@ over-approximation or reported as degraded.
   | memos | +495 / 223 | +803 / 347 | 59,025 → 63,547 (+7.7%) | 64,804 → 68,487 (+5.7%) | 174 ms |
   | nats-server | +317 / 63 | +2,290 / 883 | 862,765 → 864,091 (+0.15%) | 431,327 → 433,667 (+0.54%) | 456 ms |
 
-  Peak RSS and overlay time do not move measurably. On chi most new sites are
-  `next.ServeHTTP(w, r)` and `w.Write`/`w.WriteHeader` on the `http.ResponseWriter` parameter of
-  a handler, which `net/http` (library code) calls: each gains chi's ResponseWriter wrappers.
+  Peak RSS and overlay time do not move measurably. The parameters of a handler that `net/http`
+  calls are **not** seeds (a handler's `w.Write` gains nothing). What drives the growth, measured
+  by ablating one seed kind or propagation rule at a time (a site counts for a rule when
+  disabling the rule removes some of its CHA targets; the kinds overlap, since several seeds
+  often reach one site):
+  - **chi** (75 sites): the seeds are type assertions (`ctx.Value(k).(*Context)`, `r.Context()`
+    values, `w.(http.Flusher)`; 69 sites with type assertions alone) and library call results
+    (46 alone). Their reach comes from the type-keyed storage cells: 39 sites (78 targets) need
+    the load through a closure capture of a pointer cell whose element type some LO store
+    marked (`any(T)`: the captured `next http.Handler` of each middleware closure, after an
+    LO `http.Handler` is stored anywhere), and 9 need a field read of an LO base. Most of these
+    sites are `next.ServeHTTP(w, r)` in middleware closures, which gain chi's 2 handler types.
+  - **memos** (347 sites): interface type assertions (needed by 281 sites), library call results
+    (34), field reads of an LO base (83).
+  - **nats-server** (883 sites): library call results (needed by 118), field reads of an LO base
+    (597), capture-cell loads (113); most sites have several sufficient seeds (concrete and
+    interface type assertions, library fields and globals, promoted library methods).
 - **A15: summaries are near all-to-all** (74–94% of sites, table above). Under the coarse host
   wiring, a summary edge adds no reachability for the SDK's context-insensitive walk. It is a
   shortcut hop, and a precondition for a future HRB two-phase walk (spec §11).

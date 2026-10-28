@@ -594,8 +594,13 @@ built per D2 (amended, A12): `ssautil.Packages` over the **same** `go/packages` 
   - *Termination and determinism:* each fact only goes false → true and the facts are finite
     (per function result, parameter, capture, global, struct field and type), so the reader-tracked
     worklist ends; a function is re-evaluated (a local fixpoint over its Phi cycles) only when a
-    fact it read changed. The least fixpoint is unique, so the result does not depend on the
-    visiting order, which is deterministic anyway (functions sorted by package path, name).
+    fact it read changed. Every input an evaluation reads is either fixed before the worklist
+    starts (the program, the project types and their method sets, the address-taken function
+    sets, and memos of pure functions of them, such as which implementers' methods are library
+    code) or a tracked fact that re-queues its readers when it turns true. So each evaluation is
+    a monotone function of the facts, and the result is the least fixpoint, which is unique and
+    independent of the visiting order (`TestCHA_OriginOrderIndependent` permutes the seed
+    order); the order is deterministic anyway (functions sorted by package path, name).
 
   Every `invoke` site in a joined project function whose receiver is LO gets, beside D7 and VTA,
   every **project** named type `T` or `*T` (non-generic) whose method set implements the interface
