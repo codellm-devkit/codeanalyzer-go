@@ -38,7 +38,7 @@ const l4GCPercent = 50
 // join alone. The degradations are, in order: partial_types (the load),
 // partial_ssa / no_ssa (SSA),
 // l3_skipped and range_func (from the units, whether or not SSA built),
-// unmapped_ssa (the join), no_vta.
+// unmapped_ssa (the join), no_cha (the CHA complement), no_vta.
 //
 // Run lowers the process-wide GC target to l4GCPercent while it runs and
 // restores the previous one on return (debug.SetGCPercent is global: a
@@ -103,7 +103,10 @@ func dispatchRun(in Input) (Result, *dispatch) {
 		deg = append(deg, *dg)
 	}
 	d.addInvokes(j, funcs)
-	d.addCHA(newCHA(j, in), funcs)
+	if err := d.runCHA(j, in, funcs); err != nil {
+		utils.Debug("L4: CHA complement failed: %v", err)
+		deg = append(deg, Degraded{Code: CodeNoCHA, Detail: err.Error()})
+	}
 
 	start = time.Now()
 	cg, err := runVTA(all)

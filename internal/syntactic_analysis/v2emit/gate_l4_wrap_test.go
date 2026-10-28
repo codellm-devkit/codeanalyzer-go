@@ -82,3 +82,29 @@ func TestGateL4_FlowThroughLibraryStorage(t *testing.T) {
 		}
 	}
 }
+
+// TestGateL4_FlowThroughProjectCode (round 2): on testdata/dataflow/libflow,
+// a sqlStore put in library storage reaches an interface call through
+// project code (a result, a parameter, a field, a global, a capture) or a
+// library container (map, slice, array, channel); each handler's id reaches
+// Exec's query formal through the CHA complement's sqlStore.Find.
+func TestGateL4_FlowThroughProjectCode(t *testing.T) {
+	a := buildL4(t, "dataflow/libflow").l4
+	if len(a.Degraded) != 0 {
+		t.Fatalf("libflow degraded: %+v", a.Degraded)
+	}
+	mod := v2.ModuleID(a.Application.ID, "libflow.go")
+	pkg := "example.com/dataflow/libflow."
+	fn := func(name string) string { return v2.CallableID(mod, pkg+name) }
+	method := func(typ, m string) string { return v2.CallableID(v2.TypeID(mod, pkg+typ), pkg+typ+"."+m) }
+	sink := l4Vertex(t, a, fn("Exec"), "formal_in", "query")
+	g := newSDGGraph(a)
+	for _, src := range []string{
+		fn("ViaReturn"), fn("ViaParam"), method("handler", "ViaField"), fn("ViaGlobal"), fn("ViaCapture"),
+		fn("ViaMap"), fn("ViaSlice"), fn("ViaChan"), fn("ViaArray"),
+	} {
+		if p := g.path(l4Vertex(t, a, src, "formal_in", "id"), sink); p == nil {
+			t.Errorf("%s's id does not reach Exec's query", src)
+		}
+	}
+}

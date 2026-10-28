@@ -1,8 +1,8 @@
 package sdg
 
 import (
+	"fmt"
 	"go/ast"
-	"go/token"
 	"go/types"
 
 	"golang.org/x/tools/go/ssa"
@@ -17,7 +17,7 @@ import (
 // a sync.Map, returned by a library call, read from a library struct's field
 // — reaches an interface call with no concrete type VTA can see, and only
 // the D7 interface method (empty footprint) would remain. For an interface
-// call whose receiver originates in library code (libraryOrigin), every
+// call whose receiver may carry such a value (origins), every
 // project type whose method set implements the interface is a target: the
 // method it resolves to, mapped as the join maps a callee. It reads SSA
 // instructions and go/types only, never builds code, so it is safe before
@@ -78,14 +78,23 @@ func (c *cha) implementers(iface types.Type) []types.Type {
 	return out
 }
 
-// addCHA adds the CHA complement's targets to every interface call of a
-// body-joined project function (funcs) whose receiver originates in library
-// code. A target is the method each implementer's method set selects:
-// a unit, an interface method (a struct embedding an interface), a
-// bodiless declaration, or a library method's external (a promoted library
-// method). It never adds a call_graph edge (only VTA's callees are edges).
+// addCHA adds the CHA complement's targets (spec §4.8) to every interface
+// call of a body-joined project function (funcs) whose receiver may carry
+// a library-originated dynamic type: the origins fixpoint over the whole
+// program (cha_origin.go). A target is the method each implementer's method
+// set selects: a unit, an interface method (a struct embedding an
+// interface), a bodiless declaration, or a library method's external (a
+// promoted library method). It never adds a call_graph edge (only VTA's
+// callees are edges). Functions are visited in a sorted order and targets
+// are kept sorted (d.add), so the result is deterministic.
 func (d *dispatch) addCHA(c *cha, funcs map[*ssa.Function]bool) {
-	for fn := range funcs {
+	o := newOrigins(c, funcs)
+	o.solve()
+	for _, fn := range o.order {
+		if chaHook != nil {
+			chaHook(fn)
+		}
+		var lo map[ssa.Value]bool
 		forCalls(fn, func(call ssa.CallInstruction) {
 			cc := call.Common()
 			if !cc.IsInvoke() || cc.Method == nil {
@@ -95,7 +104,13 @@ func (d *dispatch) addCHA(c *cha, funcs map[*ssa.Function]bool) {
 				return
 			}
 			unit, key, ok := c.j.callSite(call)
-			if !ok || !c.libraryOrigin(cc.Value, map[ssa.Value]bool{}) {
+			if !ok {
+				return
+			}
+			if lo == nil {
+				lo = o.eval(fn) // o.cur is nil: no reader is registered
+			}
+			if !lo[cc.Value] {
 				return
 			}
 			site := siteKey{unit, key}
@@ -110,6 +125,34 @@ func (d *dispatch) addCHA(c *cha, funcs map[*ssa.Function]bool) {
 			}
 		})
 	}
+}
+
+// runCHA is addCHA under recover (N1): it reads go/types and SSA in ways
+// VTA does not, so an unforeseen shape must not abort the analyzer. On a
+// panic every CHA target is dropped — the dispatch is restored to what it
+// held before — and the error is returned (degraded no_cha).
+func (d *dispatch) runCHA(j *join, in Input, funcs map[*ssa.Function]bool) (err error) {
+	saved := make(map[siteKey][]Target, len(d.sites))
+	for k, ts := range d.sites {
+		saved[k] = ts
+	}
+	newExt := make(map[string]bool, len(d.newExt))
+	for k := range d.newExt {
+		newExt[k] = true
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			d.sites = saved
+			for k := range d.newExt {
+				if !newExt[k] {
+					delete(d.newExt, k)
+				}
+			}
+			err = fmt.Errorf("panic: %v", r)
+		}
+	}()
+	d.addCHA(newCHA(j, in), funcs)
+	return nil
 }
 
 // funcTarget maps a declared function or method to its target, as
@@ -134,86 +177,6 @@ func (d *dispatch) funcTarget(j *join, obj *types.Func) (Target, bool) {
 		return Target{Callable: k}, true
 	}
 	return Target{}, false
-}
-
-// libraryOrigin reports whether v, an interface call's receiver, may hold a
-// value whose dynamic type VTA cannot see: following Phi edges, Extract,
-// ChangeInterface and loads back to
-//
-//   - a TypeAssert (the asserted value came from anywhere);
-//   - the result of a call to a library function or of an interface call of
-//     a library interface's method (its callee may be library code);
-//   - a load of a library global, or through a library struct's field, or
-//     through a pointer that itself originates in library code.
-//
-// A value project code built (MakeInterface), a parameter, a free variable
-// or a load of project storage is VTA's: false. The walk is
-// intraprocedural, so the remaining gap is a library-originated value that
-// reaches the call through project code: stored in a project struct field
-// or global and read back, or a project function's result or parameter
-// (spec §4.8).
-func (c *cha) libraryOrigin(v ssa.Value, seen map[ssa.Value]bool) bool {
-	if seen[v] {
-		return false
-	}
-	seen[v] = true
-	switch v := v.(type) {
-	case *ssa.Phi:
-		for _, e := range v.Edges {
-			if c.libraryOrigin(e, seen) {
-				return true
-			}
-		}
-	case *ssa.Extract:
-		return c.libraryOrigin(v.Tuple, seen)
-	case *ssa.ChangeInterface:
-		return c.libraryOrigin(v.X, seen)
-	case *ssa.TypeAssert:
-		return true
-	case *ssa.Call:
-		return c.libraryCall(v.Common())
-	case *ssa.UnOp:
-		if v.Op == token.MUL {
-			return c.libraryLoad(v.X, seen)
-		}
-	case *ssa.Field:
-		if c.libraryType(v.X.Type()) {
-			return true
-		}
-		return c.libraryOrigin(v.X, seen)
-	}
-	return false
-}
-
-// libraryCall reports whether cc calls a library function, or a library
-// interface's method.
-func (c *cha) libraryCall(cc *ssa.CallCommon) bool {
-	if cc.IsInvoke() {
-		return cc.Method != nil && cc.Method.Pkg() != nil && c.j.isLibrary(cc.Method)
-	}
-	callee := cc.StaticCallee()
-	if callee == nil {
-		return false
-	}
-	obj, ok := callee.Object().(*types.Func)
-	return ok && obj.Pkg() != nil && c.j.isLibrary(obj)
-}
-
-// libraryLoad reports whether a load through the pointer x reads library
-// storage, or a pointer that originates in library code.
-func (c *cha) libraryLoad(x ssa.Value, seen map[ssa.Value]bool) bool {
-	switch x := x.(type) {
-	case *ssa.Global:
-		return x.Pkg != nil && !c.j.projPaths[x.Pkg.Pkg.Path()]
-	case *ssa.FieldAddr:
-		if ptr, ok := x.X.Type().Underlying().(*types.Pointer); ok && c.libraryType(ptr.Elem()) {
-			return true
-		}
-		return c.libraryOrigin(x.X, seen)
-	case *ssa.IndexAddr:
-		return c.libraryOrigin(x.X, seen)
-	}
-	return c.libraryOrigin(x, seen)
 }
 
 // libraryType reports whether t is a named type declared outside the

@@ -111,6 +111,7 @@ const (
 	CodePartialSSA   = "partial_ssa"
 	CodePartialTypes = "partial_types"
 	CodeNoVTA        = "no_vta"
+	CodeNoCHA        = "no_cha"
 	CodeUnmappedSSA  = "unmapped_ssa"
 	CodeL3Skipped    = "l3_skipped"
 	CodeRangeFunc    = "range_func"
