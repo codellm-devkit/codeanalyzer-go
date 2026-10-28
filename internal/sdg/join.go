@@ -288,7 +288,8 @@ func (j *join) externalOf(fn *ssa.Function) (sig string, ok bool) {
 }
 
 // isLibrary mirrors the L2 rule: declared in a file outside the project or
-// vendored; without a file, in a package that is not a project package.
+// vendored; without a file, by L2's semantic_analysis.LibraryByPath (the
+// go.mod module prefix, else whether the package is a project package).
 func (j *join) isLibrary(obj *types.Func) bool {
 	if tf := j.fset.File(obj.Pos()); tf != nil {
 		if !utils.IsWithin(j.projectDir, tf.Name()) {

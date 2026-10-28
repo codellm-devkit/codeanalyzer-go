@@ -16,11 +16,15 @@ package core
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"math/rand/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/codellm-devkit/codeanalyzer-go/internal/analysis"
@@ -319,11 +323,10 @@ func WriteOutput(app *schema.GoApplication, l3 map[dataflow.L3Key]dataflow.Resul
 		return err
 	}
 	dst := filepath.Join(opts.OutputDir, "analysis.json")
-	f, err := os.CreateTemp(opts.OutputDir, ".analysis.json.*")
+	f, tmp, err := createTemp(opts.OutputDir, ".analysis.json.")
 	if err != nil {
 		return err
 	}
-	tmp := f.Name()
 	err = StreamJSON(f, app, l3, l4, opts)
 	if err == nil {
 		err = f.Sync() // the rename below must not publish unflushed bytes
@@ -332,15 +335,25 @@ func WriteOutput(app *schema.GoApplication, l3 map[dataflow.L3Key]dataflow.Resul
 		err = cerr
 	}
 	if err == nil {
-		// CreateTemp makes the file 0600; give it the mode os.Create would,
-		// 0666 less the process umask.
-		err = os.Chmod(tmp, 0o666&^currentUmask())
-	}
-	if err == nil {
 		err = os.Rename(tmp, dst)
 	}
 	if err != nil {
 		_ = os.Remove(tmp)
 	}
 	return err
+}
+
+// createTemp creates a new file prefix+<random> in dir with mode 0666, so the
+// kernel applies the process umask as os.Create would (os.CreateTemp uses
+// 0600). O_EXCL makes a name collision an error, and the name is retried.
+func createTemp(dir, prefix string) (*os.File, string, error) {
+	for range 10000 {
+		name := filepath.Join(dir, prefix+strconv.FormatUint(uint64(rand.Uint32()), 36))
+		f, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o666)
+		if errors.Is(err, fs.ErrExist) {
+			continue
+		}
+		return f, name, err
+	}
+	return nil, "", fmt.Errorf("creating a temporary file in %s: too many name collisions", dir)
 }

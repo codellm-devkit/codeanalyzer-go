@@ -401,4 +401,10 @@ func TestCallShape_NoSignatureNeverBindsMethodExpression(t *testing.T) {
 	if got := expr.bind(fs); got[0] != 0 || got[1] != 1 {
 		t.Errorf("method expression: want value 0 → receiver, value 1 → param, got %v", got)
 	}
+	// Without a signature, a selection go/types recorded as MethodExpr is
+	// still a method expression.
+	exprNoSig := callShape{values: 2, nParams: 2, results: -1, noSig: true, methodExpr: true}
+	if got := exprNoSig.bind(fs); got[0] != 0 || got[1] != 1 {
+		t.Errorf("method expression without a signature: want value 0 → receiver, value 1 → param, got %v", got)
+	}
 }

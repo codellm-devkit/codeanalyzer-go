@@ -898,14 +898,16 @@ func TestSupersetL4_DetectsEveryViolation(t *testing.T) {
 		b    string
 		want string // a substring of the error; "" means no error
 	}{
-		"identical":          {base, ""},
-		"pure addition":      {`{"application":{"call_graph":[{"src":"a","dst":"b"},{"src":"a","dst":"c"}],"x":{"f":{"ddg":[{"src":"0","dst":"1","var":"w"},{"src":"1","dst":"2","var":"v"}],"k":"v","list":[1,2,3],"new":1}},"extra":true}}`, ""},
-		"removed key":        {`{"application":{"call_graph":[{"src":"a","dst":"b"}],"x":{"f":{"ddg":[{"src":"1","dst":"2","var":"v"}],"list":[1,2]}}}}`, "k missing at L4"},
-		"changed value":      {`{"application":{"call_graph":[{"src":"a","dst":"b"}],"x":{"f":{"ddg":[{"src":"1","dst":"2","var":"v"}],"k":"w","list":[1,2]}}}}`, "value changed"},
-		"shrunk list":        {`{"application":{"call_graph":[{"src":"a","dst":"b"}],"x":{"f":{"ddg":[{"src":"1","dst":"2","var":"v"}],"k":"v","list":[1]}}}}`, "list shrank"},
-		"changed type":       {`{"application":{"call_graph":[{"src":"a","dst":"b"}],"x":{"f":{"ddg":[{"src":"1","dst":"2","var":"v"}],"k":"v","list":{"a":1}}}}}`, "list shrank or changed type"},
-		"removed ddg edge":   {`{"application":{"call_graph":[{"src":"a","dst":"b"}],"x":{"f":{"ddg":[{"src":"0","dst":"1","var":"w"}],"k":"v","list":[1,2]}}}}`, "missing or changed at L4"},
-		"changed call_graph": {`{"application":{"call_graph":[{"src":"a","dst":"z"}],"x":{"f":{"ddg":[{"src":"1","dst":"2","var":"v"}],"k":"v","list":[1,2]}}}}`, "call_graph: edge"},
+		"identical":           {base, ""},
+		"pure addition":       {`{"application":{"call_graph":[{"src":"a","dst":"b"},{"src":"a","dst":"c"}],"x":{"f":{"ddg":[{"src":"0","dst":"1","var":"w"},{"src":"1","dst":"2","var":"v"}],"k":"v","list":[1,2,3],"new":1}},"extra":true}}`, ""},
+		"removed key":         {`{"application":{"call_graph":[{"src":"a","dst":"b"}],"x":{"f":{"ddg":[{"src":"1","dst":"2","var":"v"}],"list":[1,2]}}}}`, "k missing at L4"},
+		"changed value":       {`{"application":{"call_graph":[{"src":"a","dst":"b"}],"x":{"f":{"ddg":[{"src":"1","dst":"2","var":"v"}],"k":"w","list":[1,2]}}}}`, "value changed"},
+		"shrunk list":         {`{"application":{"call_graph":[{"src":"a","dst":"b"}],"x":{"f":{"ddg":[{"src":"1","dst":"2","var":"v"}],"k":"v","list":[1]}}}}`, "list shrank"},
+		"changed type":        {`{"application":{"call_graph":[{"src":"a","dst":"b"}],"x":{"f":{"ddg":[{"src":"1","dst":"2","var":"v"}],"k":"v","list":{"a":1}}}}}`, "list shrank or changed type"},
+		"removed ddg edge":    {`{"application":{"call_graph":[{"src":"a","dst":"b"}],"x":{"f":{"ddg":[{"src":"0","dst":"1","var":"w"}],"k":"v","list":[1,2]}}}}`, "missing or changed at L4"},
+		"object to scalar":    {`{"application":{"call_graph":[{"src":"a","dst":"b"}],"x":{"f":5}}}`, "object changed type"},
+		"edge list to object": {`{"application":{"call_graph":[{"src":"a","dst":"b"}],"x":{"f":{"ddg":{},"k":"v","list":[1,2]}}}}`, ".ddg: changed type"},
+		"changed call_graph":  {`{"application":{"call_graph":[{"src":"a","dst":"z"}],"x":{"f":{"ddg":[{"src":"1","dst":"2","var":"v"}],"k":"v","list":[1,2]}}}}`, "call_graph: edge"},
 	} {
 		var errs []string
 		supersetL4("$", parse(base), parse(c.b), &errs)
