@@ -34,3 +34,10 @@ func Chan(k string) <-chan Finder {
 	ch <- store[k]
 	return ch
 }
+
+// Holder holds a Finder; a project type embedding it promotes Get, whose
+// code is library code.
+type Holder struct{ F Finder }
+
+// Get returns the held Finder.
+func (h Holder) Get() Finder { return h.F }

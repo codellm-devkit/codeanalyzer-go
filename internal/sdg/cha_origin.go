@@ -3,6 +3,7 @@ package sdg
 import (
 	"go/token"
 	"go/types"
+	"slices"
 	"sort"
 
 	"golang.org/x/tools/go/ssa"
@@ -76,9 +77,11 @@ type origins struct {
 	byFuncSig typeutil.Map // signature → []*ssa.Function: address-taken project functions
 	libFuncs  typeutil.Map // signature → true: address-taken library functions
 	libConv   []types.Type // library types project code converts to an interface
-	libImpl   typeutil.Map // interface → bool: a libConv type implements it
-	implFns   map[implKey][]*ssa.Function
-	implLib   map[implKey]bool // an implementer's method is library code (no body)
+	// Memos of pure functions of the program (fixed before the worklist;
+	// never facts): each entry is computed whole the first time it is read.
+	libImpl typeutil.Map                // interface → bool: a libConv type implements it
+	implFns map[implKey][]*ssa.Function // filled with implLib, by implementers
+	implLib map[implKey]bool            // an implementer's selected method is library code
 }
 
 type factKind uint8
@@ -112,6 +115,10 @@ type implKey struct {
 	pkg   *types.Package
 	name  string
 }
+
+// originSeedOrder, when set, permutes the order the origin worklist is
+// seeded in (a test seam: the least fixpoint must not depend on it).
+var originSeedOrder func([]*ssa.Function)
 
 // chaHook, when set, runs on each function the CHA complement scans (a test
 // seam for the recovered-panic path, N1).
@@ -232,7 +239,12 @@ func (o *origins) enqueue(fn *ssa.Function) {
 
 // solve runs the worklist to the fixpoint.
 func (o *origins) solve() {
-	for _, fn := range o.order {
+	seed := o.order
+	if originSeedOrder != nil {
+		seed = slices.Clone(o.order)
+		originSeedOrder(seed)
+	}
+	for _, fn := range seed {
 		o.enqueue(fn)
 	}
 	for len(o.work) > 0 {
@@ -446,11 +458,11 @@ func (o *origins) callLO(cc *ssa.CallCommon, i int, lo map[ssa.Value]bool) bool 
 		if o.c.j.isLibrary(cc.Method) || lo[cc.Value] || o.libImplements(cc.Value.Type()) {
 			return true
 		}
-		k := o.implKey(cc)
-		if o.implLib[k] {
+		fns, lib := o.implementers(cc)
+		if lib {
 			return true
 		}
-		for _, g := range o.implementers(cc, k) {
+		for _, g := range fns {
 			if o.get(fact{k: fRet, p: g, a: i}) {
 				return true
 			}
@@ -498,12 +510,18 @@ func (o *origins) implKey(cc *ssa.CallCommon) implKey {
 	return implKey{o.typeID(cc.Value.Type()), cc.Method.Pkg(), cc.Method.Name()}
 }
 
-// implementers returns the project functions an interface call cc may run:
-// the method each project implementer's method set selects, when it has a
-// body (implLib records one that is library code).
-func (o *origins) implementers(cc *ssa.CallCommon, k implKey) []*ssa.Function {
+// implementers returns the project functions an interface call cc may run
+// — the method each project implementer's method set selects, when it has a
+// body — and whether some implementer's selected method is library code (a
+// promoted library method: its result may carry a library-originated
+// type). Both are a pure function of the program (the project types and
+// their method sets, fixed before the worklist), computed together and
+// memoized together: neither is ever read before it is filled, so no
+// evaluation depends on which call was evaluated first.
+func (o *origins) implementers(cc *ssa.CallCommon) ([]*ssa.Function, bool) {
+	k := o.implKey(cc)
 	if fns, ok := o.implFns[k]; ok {
-		return fns
+		return fns, o.implLib[k]
 	}
 	var fns []*ssa.Function
 	seen := map[*ssa.Function]bool{}
@@ -526,7 +544,7 @@ func (o *origins) implementers(cc *ssa.CallCommon, k implKey) []*ssa.Function {
 		}
 	}
 	o.implFns[k] = fns
-	return fns
+	return fns, o.implLib[k]
 }
 
 // effects applies fn's instructions to the facts, under its values lo.
@@ -619,7 +637,8 @@ func (o *origins) callEffects(cc *ssa.CallCommon, lo map[ssa.Value]bool) {
 			o.escape(cc.Args)
 		}
 		args := append([]ssa.Value{cc.Value}, cc.Args...)
-		for _, g := range o.implementers(cc, o.implKey(cc)) {
+		fns, _ := o.implementers(cc)
+		for _, g := range fns {
 			pass(g, args)
 		}
 		return

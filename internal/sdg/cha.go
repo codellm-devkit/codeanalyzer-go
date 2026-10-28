@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/types"
+	"slices"
 
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/types/typeutil"
@@ -134,7 +135,7 @@ func (d *dispatch) addCHA(c *cha, funcs map[*ssa.Function]bool) {
 func (d *dispatch) runCHA(j *join, in Input, funcs map[*ssa.Function]bool) (err error) {
 	saved := make(map[siteKey][]Target, len(d.sites))
 	for k, ts := range d.sites {
-		saved[k] = ts
+		saved[k] = slices.Clone(ts) // d.add inserts in place: the backing array is not ours
 	}
 	newExt := make(map[string]bool, len(d.newExt))
 	for k := range d.newExt {

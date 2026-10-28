@@ -171,3 +171,50 @@ func MainBox() {
 	ViaChan("h")
 	ViaArray("i")
 }
+
+// Getter is a project interface whose one implementer's method is promoted
+// library code (box.Holder.Get): a call of it returns a library-originated
+// value whatever the visiting order of the origin fixpoint.
+type Getter interface {
+	Get() box.Finder
+}
+
+type holder struct {
+	box.Holder
+}
+
+// zzzGet calls Get through the interface; its name sorts after
+// ViaPromoted, so the fixpoint visits ViaPromoted first.
+func zzzGet(g Getter) box.Finder {
+	return g.Get()
+}
+
+// ViaPromoted calls Find on what a promoted library method returned,
+// through a project function.
+func ViaPromoted(g Getter, id string) string {
+	return zzzGet(g).Find(id)
+}
+
+func MainPromoted() {
+	ViaPromoted(holder{box.Holder{F: &sqlStore{}}}, "j")
+}
+
+// zzzViaPromoted is ViaPromoted visited after zzzGet: with an order-
+// dependent fixpoint the two sites would differ.
+func zzzViaPromoted(g Getter, id string) string {
+	return zzzGet(g).Find(id)
+}
+
+func MainPromoted2() {
+	zzzViaPromoted(holder{box.Holder{F: &sqlStore{}}}, "k")
+}
+
+// aaaPeek calls Get through the interface too; its name sorts first, so
+// the fixpoint meets the Getter.Get call here before zzzGet.
+func aaaPeek(g Getter) {
+	g.Get()
+}
+
+func MainPeek() {
+	aaaPeek(holder{})
+}
