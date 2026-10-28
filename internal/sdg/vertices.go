@@ -508,6 +508,7 @@ type callShape struct {
 	nParams int
 	values  int
 	results int
+	noSig   bool // the call's type is unknown: nParams is the value count
 }
 
 func callShapeOf(call *ast.CallExpr, info *types.Info) callShape {
@@ -529,7 +530,14 @@ func callShapeOf(call *ast.CallExpr, info *types.Info) callShape {
 		}
 	}
 	if sig == nil {
+		// No signature (a package with type errors): the value count stands
+		// in for the param count, but it must never make bind read a bound
+		// method value f(x) on a one-param method as a method expression
+		// (nParams == params+1). Only a selection go/types recorded as
+		// MethodExpr is one, and without a signature there is none; cap
+		// nParams so the receiver binds through the function value.
 		s.nParams = s.values
+		s.noSig = true
 		return s
 	}
 	s.nParams = sig.Params().Len()
@@ -560,7 +568,7 @@ func (s callShape) bind(fs *formalSet) map[int]int {
 	base, off := 0, 0 // declared param d is fs.inPos[base+d] and binds call param d+off
 	if fs.recv {
 		base = 1
-		if !s.method && s.nParams == fs.params+1 {
+		if !s.method && !s.noSig && s.nParams == fs.params+1 {
 			off = 1
 			out[0] = 0 // a method expression always passes its receiver
 		} else {

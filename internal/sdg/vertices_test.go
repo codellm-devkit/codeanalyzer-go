@@ -380,3 +380,25 @@ func TestVertices_Deterministic(t *testing.T) {
 		}
 	}
 }
+
+// TestCallShape_NoSignatureNeverBindsMethodExpression: without type info (a
+// package with type errors), a bound method value f(x) on a one-param method
+// passes 2 values, the declared param count plus one. That must not read as
+// a method expression binding x to the receiver: the function value binds
+// the receiver, x binds the declared param.
+func TestCallShape_NoSignatureNeverBindsMethodExpression(t *testing.T) {
+	fs := &formalSet{recv: true, params: 1}
+	noSig := callShape{values: 2, nParams: 2, results: -1, noSig: true}
+	got := noSig.bind(fs)
+	if got[slotRecv] != 0 {
+		t.Errorf("no signature: receiver not bound through the function value: %v", got)
+	}
+	if _, ok := got[0]; ok && got[0] == 0 {
+		t.Errorf("no signature: value 0 bound to the receiver (read as a method expression): %v", got)
+	}
+	// With a known signature the same counts are a method expression.
+	expr := callShape{values: 2, nParams: 2, results: 1}
+	if got := expr.bind(fs); got[0] != 0 || got[1] != 1 {
+		t.Errorf("method expression: want value 0 → receiver, value 1 → param, got %v", got)
+	}
+}

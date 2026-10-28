@@ -215,12 +215,33 @@ func (cg *CallGraphBuilder) isLibrary(fn *types.Func) bool {
 		// (the symbol table skips it), so it is a library too.
 		return utils.IsVendored(utils.RelativePath(root, file))
 	}
-	if mod := cg.modulePath(); mod != "" {
-		p := fn.Pkg().Path()
-		return p != mod && !strings.HasPrefix(p, mod+"/")
-	}
 	_, inProject := cg.pkgs[fn.Pkg().Path()]
-	return !inProject
+	return LibraryByPath(fn.Pkg().Path(), cg.modulePath(), inProject)
+}
+
+// LibraryByPath is the fallback library test for an object with no source
+// file: by the project module's path prefix when go.mod names one, else by
+// whether its package is a loaded project package. L2 and L4 share it so the
+// two levels classify a callee the same way.
+func LibraryByPath(pkgPath, modulePath string, projectPkg bool) bool {
+	if modulePath != "" {
+		return pkgPath != modulePath && !strings.HasPrefix(pkgPath, modulePath+"/")
+	}
+	return !projectPkg
+}
+
+// ModulePath reads the module path from dir's go.mod ("" when unavailable).
+func ModulePath(dir string) string {
+	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "module "); ok {
+			return strings.Trim(strings.TrimSpace(rest), "\"")
+		}
+	}
+	return ""
 }
 
 func absPath(p string) string {
@@ -233,18 +254,7 @@ func absPath(p string) string {
 func (cg *CallGraphBuilder) absProjectDir() string { return absPath(cg.projectDir) }
 
 // modulePath reads the project's module path from go.mod ("" when unavailable).
-func (cg *CallGraphBuilder) modulePath() string {
-	data, err := os.ReadFile(filepath.Join(cg.projectDir, "go.mod"))
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "module "); ok {
-			return strings.Trim(strings.TrimSpace(rest), "\"")
-		}
-	}
-	return ""
-}
+func (cg *CallGraphBuilder) modulePath() string { return ModulePath(cg.projectDir) }
 
 // recordExternal registers a library callee, keyed by its full signature.
 func (cg *CallGraphBuilder) recordExternal(fn *types.Func, fullSig string) {

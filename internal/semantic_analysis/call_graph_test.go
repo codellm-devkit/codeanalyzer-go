@@ -224,3 +224,25 @@ func TestCallGraph_ClosureSitesResolve(t *testing.T) {
 	}
 	t.Error("no edge from the closure to flow.f")
 }
+
+// TestLibraryByPath: the no-source-file fallback classifies by the module
+// path prefix when go.mod names one (so an unloaded project package is still
+// project code), else by whether the package was loaded.
+func TestLibraryByPath(t *testing.T) {
+	for _, c := range []struct {
+		pkg, mod string
+		loaded   bool
+		want     bool
+	}{
+		{"example.com/app", "example.com/app", false, false},
+		{"example.com/app/internal/x", "example.com/app", false, false}, // unloaded project package
+		{"example.com/application", "example.com/app", true, true},      // prefix is segment-wise
+		{"fmt", "example.com/app", false, true},
+		{"example.com/app/x", "", true, false}, // no go.mod: loaded = project
+		{"example.com/app/x", "", false, true},
+	} {
+		if got := semantic_analysis.LibraryByPath(c.pkg, c.mod, c.loaded); got != c.want {
+			t.Errorf("LibraryByPath(%q, %q, %v) = %v, want %v", c.pkg, c.mod, c.loaded, got, c.want)
+		}
+	}
+}

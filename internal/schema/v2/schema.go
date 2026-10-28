@@ -48,8 +48,8 @@ type Span struct {
 
 // Analysis is the top-level payload written to analysis.json / stdout. Its
 // siblings of `application` carry the manifest; consumers read `max_level`
-// rather than sniffing for keys. k_limit (the L3 field-path depth bound) is
-// present only at max_level >= 3.
+// rather than sniffing for keys. k_limit (the field-path depth bound of the
+// L3 and L4 access paths) is present only at max_level >= 3.
 type Analysis struct {
 	SchemaVersion string      `json:"schema_version"`
 	Language      string      `json:"language"`

@@ -2,6 +2,7 @@ package sdg
 
 import (
 	"go/ast"
+	"go/token"
 	"go/types"
 	"path/filepath"
 	"slices"
@@ -768,3 +769,45 @@ func TestJoin_ExternalOf(t *testing.T) {
 }
 
 func ptrTo(t types.Type) types.Type { return types.NewPointer(t) }
+
+// TestJoin_IsLibraryWithoutAFileFollowsL2: an object with no source file (no
+// position) is classified by L2's rule — the go.mod module prefix — not by
+// whether its package happened to be loaded, so L2 and L4 agree.
+func TestJoin_IsLibraryWithoutAFileFollowsL2(t *testing.T) {
+	j := newJoin(loadInput(t, "dataflow"))
+	if j.modPath != "example.com/dataflow" {
+		t.Fatalf("modPath = %q, want example.com/dataflow", j.modPath)
+	}
+	sig := types.NewSignatureType(nil, nil, nil, nil, nil, false)
+	unloaded := types.NewFunc(token.NoPos, types.NewPackage("example.com/dataflow/notloaded", "notloaded"), "F", sig)
+	if j.isLibrary(unloaded) {
+		t.Error("an unloaded package under the module path is project code at L2, but L4 called it a library")
+	}
+	other := types.NewFunc(token.NoPos, types.NewPackage("example.com/other", "other"), "F", sig)
+	if !j.isLibrary(other) {
+		t.Error("a package outside the module path must be a library")
+	}
+}
+
+// TestSDG_RangeFuncInPackageLevelLiteral: rangefuncpkg ranges over a function
+// only inside a package-level `var Sum = func(){…}`. That literal has no
+// callable (it is no unit, and is unmapped_ssa), yet range_func must still
+// list its package, so the SDK does not certify "no flow" there.
+func TestSDG_RangeFuncInPackageLevelLiteral(t *testing.T) {
+	res := Run(loadInput(t, "rangefuncpkg"))
+	var rf *Degraded
+	for i := range res.Degraded {
+		if res.Degraded[i].Code == CodeRangeFunc {
+			rf = &res.Degraded[i]
+		}
+	}
+	if rf == nil {
+		t.Fatalf("no range_func entry; degraded = %v", codesOf(res.Degraded))
+	}
+	if !slices.Equal(rf.Packages, []string{"example.com/rangefuncpkg"}) || len(rf.Callables) != 0 {
+		t.Errorf("range_func = %+v, want package example.com/rangefuncpkg and no callables", rf)
+	}
+	if !hasCode(res.Degraded, CodeUnmappedSSA) {
+		t.Error("the package-level literal should also be unmapped_ssa")
+	}
+}

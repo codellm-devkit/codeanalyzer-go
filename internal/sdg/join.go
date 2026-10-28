@@ -49,6 +49,7 @@ type join struct {
 	bodiless   map[dataflow.L3Key]bool                 // (declaring file, signature) of every bodiless declared callable
 	calls      map[dataflow.L3Key]map[token.Pos]string // unit → call Lparen → L1/L3 call key
 	projPaths  map[string]bool                         // import paths of the project packages
+	modPath    string                                  // the project module path from go.mod ("" when unavailable)
 	units      map[dataflow.L3Key]dataflow.Unit        // by key
 	results    map[dataflow.L3Key]dataflow.Result      // in.L3
 	pkgs       map[string]*packages.Package            // in.Pkgs
@@ -67,6 +68,7 @@ func newJoin(in Input) *join {
 		bodiless:   map[dataflow.L3Key]bool{},
 		calls:      make(map[dataflow.L3Key]map[token.Pos]string, len(in.Units)),
 		projPaths:  map[string]bool{},
+		modPath:    semantic_analysis.ModulePath(in.ProjectDir),
 		units:      make(map[dataflow.L3Key]dataflow.Unit, len(in.Units)),
 		results:    in.L3,
 		pkgs:       in.Pkgs,
@@ -294,7 +296,8 @@ func (j *join) isLibrary(obj *types.Func) bool {
 		}
 		return utils.IsVendored(utils.RelativePath(j.projectDir, tf.Name()))
 	}
-	return !j.projPaths[obj.Pkg().Path()]
+	// No source file: L2's rule, so the two levels agree on the callee.
+	return semantic_analysis.LibraryByPath(obj.Pkg().Path(), j.modPath, j.projPaths[obj.Pkg().Path()])
 }
 
 // joinCoverage counts how the project functions and their call instructions
@@ -483,7 +486,14 @@ func rangeFunc(in Input) *Degraded {
 			}
 		}
 	}
-	if len(keys) == 0 {
+	// A function literal in a package-level declaration (`var f = func(){…}`)
+	// has no callable, so it is no unit; its package is still listed.
+	for _, p := range projectPackages(in) {
+		if pkgLevelRangesOverFunc(p) {
+			pkgs[p.PkgPath] = true
+		}
+	}
+	if len(keys) == 0 && len(pkgs) == 0 {
 		return nil
 	}
 	sortKeys(keys)
@@ -519,6 +529,32 @@ func rangesOverFunc(u dataflow.Unit) bool {
 		return !found
 	})
 	return found
+}
+
+// pkgLevelRangesOverFunc reports whether a function literal in one of p's
+// package-level declarations (outside every FuncDecl) ranges over a function.
+func pkgLevelRangesOverFunc(p *packages.Package) bool {
+	if p.TypesInfo == nil {
+		return false
+	}
+	found := false
+	for _, f := range p.Syntax {
+		for _, d := range f.Decls {
+			if _, ok := d.(*ast.GenDecl); !ok {
+				continue
+			}
+			ast.Inspect(d, func(n ast.Node) bool {
+				if rs, ok := n.(*ast.RangeStmt); ok && dataflow.RangesOverFunc(rs.X, p.TypesInfo) {
+					found = true
+				}
+				return !found
+			})
+			if found {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func sortKeys(keys []dataflow.L3Key) {

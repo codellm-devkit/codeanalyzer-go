@@ -106,7 +106,9 @@ type GoCallsite struct {
 // GoCallable represents a function, method, or function literal in Go.
 // receiver_type / receiver_name are non-empty for methods; empty for functions.
 type GoCallable struct {
-	Name                 string                  `json:"name"`
+	Name string `json:"name"`
+	// Path is the declaring file (a symbol_table key). A closure carries its
+	// enclosing callable's declaring file, so v1 inner_callables have a path.
 	Path                 string                  `json:"path"`
 	Signature            string                  `json:"signature"` // signatureOf() output — edge id
 	Comments             []GoComment             `json:"comments"`
