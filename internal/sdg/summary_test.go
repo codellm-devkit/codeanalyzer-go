@@ -2,6 +2,7 @@ package sdg
 
 import (
 	"cmp"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -370,11 +371,24 @@ func TestSDG_Deterministic(t *testing.T) {
 	if !slices.Equal(a.ParamIn, b.ParamIn) || !slices.Equal(a.ParamOut, b.ParamOut) {
 		t.Error("param edges differ across runs")
 	}
+	if len(a.Callables) != len(b.Callables) {
+		t.Errorf("callables: %d vs %d across runs", len(a.Callables), len(b.Callables))
+	}
 	for k, c := range a.Callables {
-		d := b.Callables[k]
+		d, ok := b.Callables[k]
+		if !ok {
+			t.Errorf("%v only in the first run", k)
+			continue
+		}
 		if !slices.Equal(c.Vertices, d.Vertices) || !slices.Equal(c.Ddg, d.Ddg) || !slices.Equal(c.Summary, d.Summary) {
 			t.Errorf("%v differs across runs", k)
 		}
+	}
+	if len(a.Externals) == 0 {
+		t.Fatal("no stand-ins: the Externals comparison would be vacuous")
+	}
+	if !maps.EqualFunc(a.Externals, b.Externals, slices.Equal[[]Vertex]) {
+		t.Error("stand-in vertices differ across runs")
 	}
 }
 

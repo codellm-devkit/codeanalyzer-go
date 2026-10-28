@@ -881,3 +881,40 @@ func TestGateL4_PointsToEdges(t *testing.T) {
 		t.Errorf("AliasPtr points-to ddg = %v, want %v", got, want)
 	}
 }
+
+// TestSupersetL4_DetectsEveryViolation: the -a 3 ⊆ -a 4 checker is a gate, so
+// it must itself fail on each way a superset can break, and accept a pure
+// addition. Without this a bug in supersetL4 would make that gate vacuous.
+func TestSupersetL4_DetectsEveryViolation(t *testing.T) {
+	parse := func(s string) any {
+		var v any
+		if err := json.Unmarshal([]byte(s), &v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	base := `{"application":{"call_graph":[{"src":"a","dst":"b"}],"x":{"f":{"ddg":[{"src":"1","dst":"2","var":"v"}],"k":"v","list":[1,2]}}}}`
+	for name, c := range map[string]struct {
+		b    string
+		want string // a substring of the error; "" means no error
+	}{
+		"identical":          {base, ""},
+		"pure addition":      {`{"application":{"call_graph":[{"src":"a","dst":"b"},{"src":"a","dst":"c"}],"x":{"f":{"ddg":[{"src":"0","dst":"1","var":"w"},{"src":"1","dst":"2","var":"v"}],"k":"v","list":[1,2,3],"new":1}},"extra":true}}`, ""},
+		"removed key":        {`{"application":{"call_graph":[{"src":"a","dst":"b"}],"x":{"f":{"ddg":[{"src":"1","dst":"2","var":"v"}],"list":[1,2]}}}}`, "k missing at L4"},
+		"changed value":      {`{"application":{"call_graph":[{"src":"a","dst":"b"}],"x":{"f":{"ddg":[{"src":"1","dst":"2","var":"v"}],"k":"w","list":[1,2]}}}}`, "value changed"},
+		"shrunk list":        {`{"application":{"call_graph":[{"src":"a","dst":"b"}],"x":{"f":{"ddg":[{"src":"1","dst":"2","var":"v"}],"k":"v","list":[1]}}}}`, "list shrank"},
+		"changed type":       {`{"application":{"call_graph":[{"src":"a","dst":"b"}],"x":{"f":{"ddg":[{"src":"1","dst":"2","var":"v"}],"k":"v","list":{"a":1}}}}}`, "list shrank or changed type"},
+		"removed ddg edge":   {`{"application":{"call_graph":[{"src":"a","dst":"b"}],"x":{"f":{"ddg":[{"src":"0","dst":"1","var":"w"}],"k":"v","list":[1,2]}}}}`, "missing or changed at L4"},
+		"changed call_graph": {`{"application":{"call_graph":[{"src":"a","dst":"z"}],"x":{"f":{"ddg":[{"src":"1","dst":"2","var":"v"}],"k":"v","list":[1,2]}}}}`, "call_graph: edge"},
+	} {
+		var errs []string
+		supersetL4("$", parse(base), parse(c.b), &errs)
+		got := strings.Join(errs, "; ")
+		switch {
+		case c.want == "" && len(errs) > 0:
+			t.Errorf("%s: want no error, got %s", name, got)
+		case c.want != "" && !strings.Contains(got, c.want):
+			t.Errorf("%s: want an error containing %q, got %q", name, c.want, got)
+		}
+	}
+}
