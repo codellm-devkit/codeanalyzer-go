@@ -54,7 +54,7 @@ func (a *Analyzer) L3() map[dataflow.L3Key]dataflow.Result { return a.l3 }
 // L4 returns the SDG result of the last Analyze run. Nil below level 4.
 func (a *Analyzer) L4() *sdg.Result { return a.l4 }
 
-// KLimit is the access-path bound used at L3: opts.FieldDepth, or the
+// KLimit is the access-path bound used at L3 and L4: opts.FieldDepth, or the
 // --graph-field-depth default of 3 when a non-CLI caller left it 0.
 func KLimit(opts options.AnalysisOptions) int {
 	if opts.FieldDepth > 0 {
@@ -248,7 +248,9 @@ func (a *Analyzer) finalizeAndCache(app *schema.GoApplication) (*schema.GoApplic
 	return app, nil
 }
 
-// saveCache persists the application to cache as analysis_cache.json.
+// saveCache persists the application to cache as analysis_cache.json, in the
+// internal v1 shape. Nothing reads it back: it is a debugging aid, not an
+// input, so a v1 shape change (e.g. closures gaining path) affects nothing.
 func (a *Analyzer) saveCache(app *schema.GoApplication) error {
 	if err := utils.EnsureDir(a.opts.CacheDir); err != nil {
 		return err
@@ -323,11 +325,16 @@ func WriteOutput(app *schema.GoApplication, l3 map[dataflow.L3Key]dataflow.Resul
 	}
 	tmp := f.Name()
 	err = StreamJSON(f, app, l3, l4, opts)
+	if err == nil {
+		err = f.Sync() // the rename below must not publish unflushed bytes
+	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
 	if err == nil {
-		err = os.Chmod(tmp, 0o644)
+		// CreateTemp makes the file 0600; give it the mode os.Create would,
+		// 0666 less the process umask.
+		err = os.Chmod(tmp, 0o666&^currentUmask())
 	}
 	if err == nil {
 		err = os.Rename(tmp, dst)
