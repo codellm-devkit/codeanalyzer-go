@@ -16,7 +16,7 @@ the JSON tags from that file.
 ├─ k_limit                            # L3+ only: access-path bound (--graph-field-depth, default 3)
 ├─ degraded[]                         # L4; optional: absent when nothing degraded
 │  └─ { code, detail?, packages[]?, callables[]? }
-│                                     #   code: no_ssa | no_vta | partial_ssa | partial_types |
+│                                     #   code: no_ssa | no_vta | no_cha | partial_ssa | partial_types |
 │                                     #   unmapped_ssa | l3_skipped | range_func (open vocabulary);
 │                                     #   callables[] = can:// ids (l3_skipped, range_func)
 ├─ analyzer

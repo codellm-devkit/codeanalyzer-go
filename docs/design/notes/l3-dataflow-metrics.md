@@ -877,7 +877,7 @@ dispatch targets to `call_graph` (`prov:["vta"]`), library callees get stand-in 
 7. **Degradation is reported, never silent.** Five of the six apps and the Kubernetes root use
    range-over-func somewhere (`range_func`, D8). Four apps and the root carry `unmapped_ssa`,
    which comes almost entirely from closures in package-level `var` initializers. No app hit
-   `no_ssa`, `no_vta`, `partial_ssa`, `partial_types` or `l3_skipped`.
+   `no_ssa`, `no_vta`, `no_cha`, `partial_ssa`, `partial_types` or `l3_skipped`.
 
 ### Per-app results (L4)
 
@@ -1096,16 +1096,23 @@ over-approximation or reported as degraded.
 - **Library callbacks are not edges.** In `sort.Slice(xs, less)` and `http.HandleFunc(path, h)`,
   the function value flows into the stand-in, but the library calling it back is not modelled.
   Taint that *starts* in a handler (its own parameters) is unaffected.
-- **Library-stored dynamic types (final review F3).** VTA sees no concrete type in library code.
-  An interface call whose receiver comes straight out of library code (`ctx.Value(k).(Store)`,
-  `sync.Map.Load`, a library call's result, a library field) gets a targeted CHA complement:
-  every project type implementing the interface. Measured (go1.26.4, `-j 8`): chi +54 targets at
-  15 sites (the `w.(http.Flusher)` pattern), param_in 1,895 → 1,961 (+3.5%), param_out
-  1,649 → 1,770 (+7.3%); nats-server +317 targets at 63 sites, param_in 862,765 → 863,075
-  (+0.04%), param_out 431,327 → 431,854 (+0.12%). Remaining gap (the origin walk is
-  intraprocedural): a library-originated value that reaches the call through project code — a
-  project struct field or global, a project function's result or parameter — gets VTA's
-  targets only.
+- **Library-originated dynamic types (final review F3, round 2).** VTA sees no concrete type in
+  library code. An interface call whose receiver may carry a value that came out of library code
+  (`ctx.Value(k).(Store)`, `sync.Map.Load`, a library call's result, field or container element),
+  directly or through project code (results, parameters, closure captures, fields, globals,
+  container elements; a whole-program fixpoint), gets a CHA complement: every project type
+  implementing the interface. Storage is tracked field-insensitively by container type. CHA
+  targets added over no CHA (go1.27.3, `-j 8`; round 1 = intraprocedural origin):
+
+  | app | round 1: targets / sites | round 2: targets / sites | param_in, no CHA → round 2 | param_out, no CHA → round 2 | CHA time |
+  |---|---|---|---|---|---|
+  | chi | +54 / 15 | +168 / 75 | 1,895 → 2,431 (+28.3%) | 1,649 → 2,242 (+36.0%) | 6 ms |
+  | memos | +495 / 223 | +803 / 347 | 59,025 → 63,547 (+7.7%) | 64,804 → 68,487 (+5.7%) | 174 ms |
+  | nats-server | +317 / 63 | +2,290 / 883 | 862,765 → 864,091 (+0.15%) | 431,327 → 433,667 (+0.54%) | 456 ms |
+
+  Peak RSS and overlay time do not move measurably. On chi most new sites are
+  `next.ServeHTTP(w, r)` and `w.Write`/`w.WriteHeader` on the `http.ResponseWriter` parameter of
+  a handler, which `net/http` (library code) calls: each gains chi's ResponseWriter wrappers.
 - **A15: summaries are near all-to-all** (74–94% of sites, table above). Under the coarse host
   wiring, a summary edge adds no reachability for the SDK's context-insensitive walk. It is a
   shortcut hop, and a precondition for a future HRB two-phase walk (spec §11).

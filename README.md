@@ -313,6 +313,7 @@ subset of `-a 4` output, and `-j 1` and `-j N` output are byte-identical.
   and `callables[]`. The codes are:
   - `no_ssa` / `partial_ssa`: SSA failed, in whole or for some packages;
   - `no_vta`: VTA failed;
+  - `no_cha`: the CHA complement for library-originated values failed (its targets are dropped);
   - `partial_types`: some packages have type errors;
   - `unmapped_ssa`: SSA functions or calls that map to no callable;
   - `l3_skipped`: callables without an L3 result, which get a pass-through summary;
@@ -336,11 +337,11 @@ subset of `-a 4` output, and `-j 1` and `-j N` output are byte-identical.
 - **Known limits** (see `docs/design/notes/l3-dataflow-metrics.md` § L4):
   - library code calling back into the project (`sort.Slice`, `http.HandleFunc`) is not an
     edge;
-  - an interface call on a value that came out of library code (`ctx.Value(k).(Store)`,
-    `sync.Map.Load`) in the same function binds every project type implementing the interface
-    (a targeted CHA complement); a value that first passes through project code (a struct field
-    or global, a project function's result or parameter) gets VTA's targets only, which miss
-    the concrete type;
+  - an interface call on a value that may have come out of library code (`ctx.Value(k).(Store)`,
+    `sync.Map.Load`, a library container), directly or through project code (results,
+    parameters, captures, fields, globals, container elements), binds every project type
+    implementing the interface (a CHA complement). Storage is tracked by container type (every
+    instance of a struct field), which is sound but coarser than VTA;
   - range-over-func is not modelled (`range_func`);
   - summaries are close to all-to-all, by design;
   - `summary` edges whose two ends are both `<global>:` vertices are omitted

@@ -562,23 +562,48 @@ built per D2 (amended, A12): `ssautil.Packages` over the **same** `go/packages` 
   interface — VTA's concrete callees sit only there. The wrapper's VTA out-edges are followed
   transitively (cycle-safe) and their joined callees are targets, and `call_graph` edges, of the
   original site.
-- **Targeted CHA complement [final review F3; controller ruling].** VTA propagates types through
-  project bodies only, so a value that passes through library storage — `ctx.Value(k).(Store)`,
-  `sync.Map.Load`, a library call's result — reaches an interface call with no concrete type VTA
-  sees, and only the D7 interface method (empty footprint) would remain. For an `invoke` site whose
-  receiver SSA value originates — through `Phi`, `Extract`, `ChangeInterface`, field reads and
-  `UnOp` loads — in a `TypeAssert`, the result of a call to a non-project function (or of a
-  library interface's method), or a load of a library global or through a library-typed
-  pointer or field, every **project** named type `T` or `*T` (non-generic) whose method set
-  implements the interface (`types.Implements`) adds the method its method set selects, mapped by
-  the join. A receiver that originates in project code (a `MakeInterface`, a parameter, a free
-  variable, a load of project storage) gets no CHA target: VTA covers it. Not a `call_graph` edge
-  (F7). The origin walk is intraprocedural. **Remaining gap:** a library-originated value that
-  reaches the call through project code — first stored in a project struct field or global and
-  read back, or returned by a project function (`func FromCtx(ctx) Store { return
-  ctx.Value(k).(Store) }`), or passed in as a parameter — is VTA's alone (the walk stops at the
-  project load, call result or parameter) and misses the concrete type. Recorded in §6 beside
-  library callbacks.
+- **Targeted CHA complement [final review F3; controller ruling; interprocedural: user,
+  2026-10-27].** VTA propagates types through project bodies only, so a value that passes through
+  library code — `ctx.Value(k).(Store)`, `sync.Map.Load`, a library call's result, a library
+  container's element — reaches an interface call with no concrete type VTA sees, and only the D7
+  interface method (empty footprint) would remain. A whole-program monotone fixpoint
+  (`cha_origin.go`) computes the SSA values that **may carry a library-originated dynamic type**
+  (LO):
+  - *Seeds:* a `TypeAssert`; the result of a library function, of a function with no SSA body, of
+    a library interface's method, of `recover()`; a load of a library global or through a library
+    struct's field.
+  - *Local steps:* `Phi`, `Extract`, `ChangeInterface`/`ChangeType`/`Convert`, `Slice`, `Field`
+    and `FieldAddr`/`IndexAddr` of an LO base; a map `Lookup`, an `Index`, a channel receive
+    (`UnOp ARROW`, `select`) and a range `Next` over an LO container (N2).
+  - *Interprocedural:* a project function's result *i* (any `Return` operand *i* is LO) flows to
+    every call of it; an LO actual makes the callee's parameter LO (receiver included); an LO
+    `MakeClosure` binding makes the closure's free variable LO. Call targets are the static
+    callee; for an interface call, the method each project implementer selects (CHA) — and the
+    result is LO when the receiver is LO or a library type the project converts to an interface
+    implements it; for a call through a function value, every address-taken project function
+    of an identical signature — and the result is LO when the value is LO or a library function
+    of that signature is used as a value. VTA's targets are not used: the fixpoint runs before
+    VTA (so the program is never read after a `no_vta`), over supersets of them.
+  - *Storage, field-insensitive by container type:* an LO store marks the project global, or the
+    **(struct type, field index)** (every instance), or the slice/array element type, map key /
+    value type or channel element type of the container (any container of that type); a load of
+    that global, field or element is LO. A store through a pointer of unknown provenance (a
+    parameter, a call result) marks its element type for every load; a pointer, slice, map or
+    channel of interface elements passed to library code (`errors.As(err, &target)`) marks its
+    cells (the library may write them).
+  - *Termination and determinism:* each fact only goes false → true and the facts are finite
+    (per function result, parameter, capture, global, struct field and type), so the reader-tracked
+    worklist ends; a function is re-evaluated (a local fixpoint over its Phi cycles) only when a
+    fact it read changed. The least fixpoint is unique, so the result does not depend on the
+    visiting order, which is deterministic anyway (functions sorted by package path, name).
+
+  Every `invoke` site in a joined project function whose receiver is LO gets, beside D7 and VTA,
+  every **project** named type `T` or `*T` (non-generic) whose method set implements the interface
+  (`types.Implements`) — the method its method set selects, mapped by the join. A receiver no
+  library value can reach (only project-built values: `MakeInterface` of project types) gets no
+  CHA target. Not a `call_graph` edge (F7). The complement and the fixpoint run under `recover`:
+  a panic drops every CHA target and degrades `no_cha` (N1). Reflection, `unsafe` and cgo stay
+  unsound spots (§4.7).
 - **Interfaces with no symbol-table node (ruling, Task 10) [call].** `error.Error()` (the universe
   `error`), methods of interface literals (`interface{ M() }`), and methods promoted through an
   embedded interface whose origin is declared outside the symbol table have no callable id and no
@@ -895,6 +920,8 @@ callables) but marks the envelope:
 - Codes (open vocabulary, plain strings):
   - `no_ssa` — SSA build failed entirely.
   - `no_vta` — VTA failed (incl. a recovered VTA panic).
+  - `no_cha` — the CHA complement (§4.8) panicked (recovered): its targets are dropped, so an
+    interface call on a library-originated value keeps only D7 and VTA's targets.
   - `partial_ssa` — listed packages had type errors (`pkg.IllTyped`) or a recovered per-package
     build panic, so no SSA.
   - `partial_types` — project packages `go/packages` loaded with errors (list, parse or type
@@ -917,7 +944,7 @@ callables) but marks the envelope:
 - **Go leaves (all additive, none in the shared keystone yet):** the `degraded` envelope field
   itself; the entry's `callables[]` (`can://` ids, sorted; carried by `l3_skipped` and
   `range_func`); the codes beyond the original four (`partial_types`, `unmapped_ssa`,
-  `l3_skipped`, `range_func`); and, in the vertex vocabulary it degrades over, the `_recv` `of`
+  `l3_skipped`, `range_func`, `no_cha`); and, in the vertex vocabulary it degrades over, the `_recv` `of`
   for an unnamed or `_` receiver (D6) and `<return>:<i>` (§4.6).
 - Go-only leaf now; candidate for the keystone alongside the cross-language taint revisit (§11).
 
@@ -1020,13 +1047,12 @@ addition now; the cross-language SDK taint revisit is deferred (§11).
   `http.HandleFunc(path, h)`): the function-value argument flows in, but the library calling it back
   is not an edge. Taint *starting* in a handler is unaffected (sources are the handler's own
   params). Recorded limitation.
-- **Not modelled:** a value that came out of library code (`ctx.Value(k)`, `sync.Map.Load`, a
-  library call's result) and reaches an interface call through project code: stored in a
-  project struct field or global and read back, returned by a project function, or passed as a
-  parameter. The targeted CHA complement (§4.8) covers the call made on the library-originated
-  value in the same function; otherwise the receiver's origin is a project load, call result or
-  parameter, and VTA, which sees no concrete type in library code, finds none. The call keeps
-  its D7 interface method (pass-through, empty footprint). Recorded limitation.
+- **Library-originated dynamic types** (`ctx.Value(k)`, `sync.Map.Load`, a library call's
+  result or container element) reach interface calls through project code; VTA sees no
+  concrete type in library code, so the CHA complement (§4.8) binds every project implementer
+  at each call the interprocedural origin fixpoint reaches. Its storage tracking is
+  field-insensitive by container type (every instance of a struct field, every container of an
+  element type): sound, coarser than VTA.
 - **SDK addressing:** `("query", "database/sql.DB.Query")` resolves through the Go backend's
   `resolve_callable` (domain = analysed callables ∪ stand-ins) then `resolve_value` over the stand-in
   body's `formal_in` `of`. Shared `commons/` code is untouched.
