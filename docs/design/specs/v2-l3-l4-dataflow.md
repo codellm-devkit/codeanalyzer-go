@@ -1193,10 +1193,11 @@ the six apps and both Kubernetes modules complete `-a 4` without crash and deter
 (`-j 1`/`-j N` and two runs on Kubernetes, not just fixtures); memory is reported per app as
 absolute `-a 4` peak RSS and its ratio to `-a 3`, not gated (D3, §4.13); no hard time budget, but timings are reported and a regression budget is set after
 the first measurement. Results go in `l3-dataflow-metrics.md` § L4.
-**Measured 2026-10-27 (go1.27.3, `c230592`):** the gate passed on all eight. Every app completes
-`-a 4` and its `-j 1` / `-j 16` / rerun outputs are byte-identical. The Kubernetes root takes
-31.5 s at a 7.7 GB peak (1.05× `-a 3`). nats-server is the outlier at 3.6× RSS and 1.78 GB of
-JSON. The full results, insights and limitations are in `l3-dataflow-metrics.md` § L4.
+**Measured 2026-10-28 (go1.27.3, `98ebfef`, the final head):** the gate passed on all eight.
+Every app completes `-a 4` and its `-j 1` / `-j 16` / rerun outputs are byte-identical. The
+Kubernetes root takes 38.4 s at a 7.9 GB peak (0.99–1.13× a noisy `-a 3` peak). nats-server is
+the outlier at 3.8× RSS and 1.78 GB of JSON. (The first measurement, 2026-10-27, before the
+final-review fixes: 31.5 s at 7.7 GB.) The full results, insights and limitations are in `l3-dataflow-metrics.md` § L4.
 
 ## 9. Phasing and release
 
