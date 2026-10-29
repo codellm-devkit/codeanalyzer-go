@@ -16,17 +16,29 @@ import (
 //
 // Algorithm:
 //  1. ensure constraints + indexes;
-//  2. schema-version gate: read :GoApplication.schema_version scoped to this
-//     app's id; a mismatch forces a full re-UPSERT (never a delete — that is
+//  2. stored-application gate: read :GoApplication.schema_version and
+//     max_level scoped to this app's id; a version mismatch, or a stored level
+//     below this push's, forces a full re-UPSERT (never a delete — that is
 //     --eager's job);
 //  3. partition nodes by owning module (NodeRow.module); shared nodes (externals,
-//     neutral repo nodes) have none and are MERGE-only, always upserted;
+//     neutral repo nodes) have none and are MERGE-only, always upserted; L4
+//     vertex nodes (a callable's or a stand-in's formal/actual vertices) are
+//     their own group;
 //  4. --eager? scoped purge of everything under the app prefix, then rebuild;
 //  5. diff each module's content_hash against the DB → the changed set;
 //  6. per changed module: on --eager, purge its owned edges + stale decls, then
 //     upsert its nodes; WITHOUT --eager the push only adds/updates;
-//  7. upsert edges owned by a changed module (or shared);
-//  8. on a full --eager run, orphan-prune modules whose source vanished.
+//  7. upsert every L4 vertex node, changed module or not (D5, below);
+//  8. upsert every edge (an unchanged edge's MERGE is a no-op);
+//  9. on a full --eager run, orphan-prune modules whose source vanished.
+//
+// D5 (spec §4.11): L4 facts are not module-local — editing a callee changes
+// its callers' summary edges, actual vertices and even formal_in indices —
+// so the content_hash diff gates the L1–L3 rows only. A lazy push upserts
+// every L4 row on every push: the vertex nodes (step 7), the stand-in
+// bodies among them, and the GO_PARAM_IN / GO_PARAM_OUT / GO_SUMMARY rows
+// and the port GO_DDG rows (prov ≠ ssa) with every other edge (step 8). It
+// is additive: a stale L4 row stays until an --eager push.
 //
 // A push NEVER deletes by default (#171): steps 4/6/8 run under --eager only.
 // Every destructive statement is scoped on the can://<app>/ id prefix (#173),
@@ -79,11 +91,12 @@ func (w *boltWriter) run() error {
 		return err
 	}
 
-	// Schema-version gate: a producer/consumer mismatch forces a full re-upsert
-	// (it never deletes). We detect it but the upsert path below is already a
-	// full MERGE of every current node, so a mismatch simply means we don't
-	// trust the per-module content_hash diff and upsert everything.
-	forceFull, err := w.schemaVersionMismatch()
+	// Stored-application gate: a producer/consumer version mismatch, or a
+	// graph pushed at a lower level, forces a full re-upsert (it never
+	// deletes). The upsert path below is already a full MERGE of every
+	// current node, so it simply means we don't trust the per-module
+	// content_hash diff and upsert everything.
+	forceFull, err := w.storedAppStale()
 	if err != nil {
 		return err
 	}
@@ -95,9 +108,9 @@ func (w *boltWriter) run() error {
 		}
 	}
 
-	// Partition nodes by owning module; shared nodes (module == "") are always
-	// upserted.
-	byModule, shared := partitionNodes(w.rows.Nodes)
+	// Partition nodes by owning module; shared nodes (module == "") and L4
+	// vertex nodes are always upserted.
+	byModule, shared, l4 := partitionNodes(w.rows.Nodes)
 
 	// Diff content_hash per module unless a mismatch/eager forces everything.
 	changed := map[string]bool{}
@@ -129,12 +142,15 @@ func (w *boltWriter) run() error {
 			return err
 		}
 	}
+	// L4 vertex nodes, after the module purges so an --eager purge of a
+	// changed module cannot delete them (D5).
+	if err := w.upsertNodes(l4); err != nil {
+		return err
+	}
 
-	// Upsert edges owned by a changed module (owner = source node's module) or
-	// shared. Determining ownership precisely needs the source node's module; we
-	// conservatively upsert every edge whose source id is under a changed module
-	// prefix, plus all shared/app-level edges. A MERGE-upsert of an unchanged
-	// edge is a harmless no-op.
+	// Upsert every edge: the L4 rows must be (D5), and for the L1–L3 rows
+	// the precise owner (the source node's module) buys nothing — a
+	// MERGE-upsert of an unchanged edge is a harmless no-op.
 	if err := w.upsertEdges(w.rows.Edges); err != nil {
 		return err
 	}
@@ -169,14 +185,28 @@ func (w *boltWriter) ensureDDL() error {
 	})
 }
 
-// schemaVersionMismatch reads the stored :GoApplication.schema_version for THIS
-// app and compares to the producer's SchemaVersion. A mismatch (or absence)
-// returns true → the caller upserts everything rather than trusting the diff.
-func (w *boltWriter) schemaVersionMismatch() (bool, error) {
+// storedAppStale reads the stored :GoApplication.schema_version and
+// max_level for THIS app and reports whether the content_hash diff cannot be
+// trusted, so the caller upserts everything:
+//
+//   - a stored schema_version different from the producer's SchemaVersion;
+//   - a stored max_level below this push's. A module's content_hash covers
+//     its source, not the level it was analysed at, so an unchanged module
+//     of a graph pushed at L3 still lacks what an L4 push adds to it — its L4
+//     vertices are upserted (D5), but rows the diff skips stay at L3, and an
+//     edge row whose endpoint is missing is dropped by its MATCH silently;
+//   - a stored max_level present but not an integer: it cannot be compared,
+//     so the push fails safe.
+//
+// No stored application (first push) forces nothing beyond the normal
+// upsert, nor does a stored level at or above this push's.
+func (w *boltWriter) storedAppStale() (bool, error) {
 	var stored string
+	var storedLevel int64
+	haveLevel, badLevel := false, false
 	err := w.read(func(tx neo4j.ManagedTransaction) error {
 		res, err := tx.Run(w.ctx,
-			"MATCH (a:GoApplication {id: $id}) RETURN a.schema_version AS v",
+			"MATCH (a:GoApplication {id: $id}) RETURN a.schema_version AS v, a.max_level AS l",
 			map[string]any{"id": w.appID})
 		if err != nil {
 			return err
@@ -185,15 +215,33 @@ func (w *boltWriter) schemaVersionMismatch() (bool, error) {
 			if v, ok := res.Record().Get("v"); ok && v != nil {
 				stored, _ = v.(string)
 			}
+			if l, ok := res.Record().Get("l"); ok && l != nil {
+				storedLevel, haveLevel = l.(int64)
+				badLevel = !haveLevel
+			}
 		}
 		return res.Err()
 	})
 	if err != nil {
 		return false, err
 	}
-	// No stored version (first push) is not a "mismatch" that forces anything
-	// beyond the normal upsert; a DIFFERENT stored version does.
-	return stored != "" && stored != SchemaVersion, nil
+	if stored != "" && stored != SchemaVersion || badLevel {
+		return true, nil
+	}
+	return haveLevel && storedLevel < int64(w.pushLevel()), nil
+}
+
+// pushLevel is the max_level of the application row this push carries (0
+// when it carries none).
+func (w *boltWriter) pushLevel() int {
+	for _, n := range w.rows.Nodes {
+		if n.Labels[0] == LabelApplication && n.Value == w.appID {
+			if l, ok := n.Props["max_level"].(int); ok {
+				return l
+			}
+		}
+	}
+	return 0
 }
 
 // ─── destructive steps (--eager only) ─────────────────────────────────────────
@@ -385,10 +433,25 @@ func (w *boltWriter) read(fn func(neo4j.ManagedTransaction) error) error {
 
 // nodeParams converts node rows to driver params. Props map directly (the
 // driver stores Go ints as integers, strings as strings, []string as a list).
+// clearedAppProps are the :GoApplication props a push writes as an
+// explicit null when the projection pruned them: `SET n += row.p` keeps a
+// property row.p lacks, so a clean run over a graph a degraded run wrote
+// would otherwise keep the stale degraded_json (F6). A null in SET +=
+// removes the property. (The snapshot script wipes the application first.)
+var clearedAppProps = []string{"degraded_json"}
+
 func nodeParams(g []NodeRow) []map[string]any {
 	out := make([]map[string]any, len(g))
 	for i, n := range g {
-		out[i] = map[string]any{"k": n.Value, "p": propsToAny(n.Props)}
+		p := propsToAny(n.Props)
+		if len(n.Labels) > 0 && n.Labels[0] == LabelApplication {
+			for _, k := range clearedAppProps {
+				if _, ok := p[k]; !ok {
+					p[k] = nil
+				}
+			}
+		}
+		out[i] = map[string]any{"k": n.Value, "p": p}
 	}
 	return out
 }
@@ -418,16 +481,34 @@ func propsToAny(p Props) map[string]any {
 
 // ─── partitioning & hashing ───────────────────────────────────────────────────
 
-func partitionNodes(nodes []NodeRow) (byModule map[string][]NodeRow, shared []NodeRow) {
+// partitionNodes splits nodes into the module-owned L1–L3 nodes (by owning
+// module), the shared nodes (no module), and the L4 vertex nodes, owned by
+// a module or by a stand-in, which a push always upserts (D5).
+func partitionNodes(nodes []NodeRow) (byModule map[string][]NodeRow, shared, l4 []NodeRow) {
 	byModule = map[string][]NodeRow{}
 	for _, n := range nodes {
-		if n.Module == "" {
+		switch {
+		case isL4Node(n):
+			l4 = append(l4, n)
+		case n.Module == "":
 			shared = append(shared, n)
-			continue
+		default:
+			byModule[n.Module] = append(byModule[n.Module], n)
 		}
-		byModule[n.Module] = append(byModule[n.Module], n)
 	}
-	return byModule, shared
+	return byModule, shared, l4
+}
+
+// isL4Node reports an L4 vertex: a :GoBodyNode of a formal / actual kind.
+func isL4Node(n NodeRow) bool {
+	if n.Labels[0] != LabelBodyNode {
+		return false
+	}
+	switch n.Props["kind"] {
+	case "formal_in", "formal_out", "actual_in", "actual_out":
+		return true
+	}
+	return false
 }
 
 // moduleHash returns the content_hash the projector put on the :GoModule node in

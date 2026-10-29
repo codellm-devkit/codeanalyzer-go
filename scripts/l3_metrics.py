@@ -8,7 +8,10 @@ Prints one JSON object per input: structure counts, body-node and cfg-edge kind 
 switch / select / type-switch fan-out, defer-chain and exception-edge shape, the per-callable
 DDG distribution and its top callables, `var` classes (wildcard, `<defer>:` pseudo path), DDG
 volume by generated-file class and by callable name (e.g. protobuf `Marshal*` / `Unmarshal`), approximate bytes per section, and the internal-consistency
-checks. The figures in docs/design/notes/l3-dataflow-metrics.md come from this script. It loads
+checks. On an `-a 4` file it adds an `l4` object: vertices by kind and by `of` class, param_in /
+param_out, summary edges (and how many are all-to-all at their call site), port / points-to ddg,
+stand-ins and their formals, the share of call nodes with a VTA call_graph target, the degraded
+codes, and the L4 consistency checks (no dangling endpoint, no global → global summary). The figures in docs/design/notes/l3-dataflow-metrics.md come from this script. It loads
 each file whole: a 1.1 GB analysis.json needs about 11 GB of RAM.
 """
 import json
@@ -20,6 +23,7 @@ from collections import Counter, defaultdict, deque
 CFG_KINDS = ["fallthrough", "true", "false", "switch_case", "loop_back", "exception",
              "return", "break", "continue", "defer_resume"]
 NODE_KINDS = ["call", "statement", "branch", "loop", "switch", "return", "entry", "exit"]
+VERTEX_KINDS = ("formal_in", "formal_out", "actual_in", "actual_out")  # L4
 IF_ERR = re.compile(rb"^if\s+(?:[^{]*;\s*)?err\s*!=\s*nil\s*\{")
 
 
@@ -102,8 +106,11 @@ def analyze(label, path):
             K["no_cfg"][c.get("kind") + (" with body" if c.get("body") else " no body")] += 1
             continue
         C["with_cfg"] += 1
-        body = c.get("body") or {}
-        cfg, cdg, ddg = c.get("cfg") or [], c.get("cdg") or [], c.get("ddg") or []
+        # The L3 figures leave out the L4 overlay (port vertices, reaching-defs / points-to
+        # ddg), so they compare across -a 3 and -a 4; analyze_l4 counts the overlay.
+        body = {k: n for k, n in (c.get("body") or {}).items() if n.get("kind") not in VERTEX_KINDS}
+        cfg, cdg = c.get("cfg") or [], c.get("cdg") or []
+        ddg = [e for e in c.get("ddg") or [] if e.get("prov") == ["ssa"]]
         if len(body) == 2:
             C["entry_exit_only_bodies"] += 1
 
@@ -234,19 +241,22 @@ def analyze(label, path):
             top.sort(key=lambda x: -x[0])
             del top[5:]
 
+    l4 = analyze_l4(doc, st) if doc.get("max_level", 0) >= 4 else None
     ddg_per.sort()
     top.sort(key=lambda x: -x[0])
     top_detail = []
     for n, _, c in top[:5]:
-        vc = Counter(e["var"] for e in c["ddg"])
+        l3ddg = [e for e in c["ddg"] if e.get("prov") == ["ssa"]]
+        vc = Counter(e["var"] for e in l3ddg)
         defs, uses = defaultdict(set), defaultdict(set)
-        for e in c["ddg"]:
+        for e in l3ddg:
             defs[e["var"]].add(e["src"])
             uses[e["var"]].add(e["dst"])
         top_detail.append({
-            "signature": c.get("signature"), "ddg": n, "body": len(c["body"]), "cfg": len(c["cfg"]),
+            "signature": c.get("signature"), "ddg": n, "cfg": len(c["cfg"]),
+            "body": sum(1 for b in c["body"].values() if b.get("kind") not in VERTEX_KINDS),
             "cyclomatic": (c.get("metrics") or {}).get("cyclomatic"),
-            "node_kinds": dict(Counter(b.get("kind") for b in c["body"].values())),
+            "node_kinds": dict(Counter(b.get("kind") for b in c["body"].values() if b.get("kind") not in VERTEX_KINDS)),
             "distinct_vars": len(vc),
             "top_vars": [[v, k, len(defs[v]), len(uses[v])] for v, k in vc.most_common(4)]})
     k1 = max(1, len(ddg_per) // 100)
@@ -267,6 +277,102 @@ def analyze(label, path):
                              "zero": sum(1 for x in ddg_per if x == 0),
                              "top1pct_share": round(sum(ddg_per[-k1:]) / max(1, C["ddg"]), 4)},
         "ddg_top": top_detail,
+        "check_failures": {k: v for k, v in chk.items() if v},
+        **({"l4": l4} if l4 is not None else {}),
+    }
+
+
+
+def of_class(of):
+    for p in ("<global>:", "<capture>:", "<return>"):
+        if of.startswith(p):
+            return p.rstrip(":")
+    return "_recv" if of == "_recv" else "param"
+
+
+def analyze_l4(doc, st):
+    """The L4 overlay of an -a 4 analysis.json.
+
+    Dispatch per call site comes from param_in: a site's targets are the owners of the formals
+    its actual_ins bind (`<owner-id>@formal_in:<i>`); a target other than the call node's static
+    `callee` was added by VTA (an interface call's concrete methods, a func-value call's
+    functions). A site whose callee is not null but binds nothing has no vertices (a pruned call
+    node or an external with no formals)."""
+    a = doc["application"]
+    C, K, chk = Counter(), defaultdict(Counter), Counter()
+    ids, calls = set(), {}
+    for c, closure, mpath, sfile in callables(st):
+        body = c.get("body") or {}
+        sites = defaultdict(lambda: [0, 0])  # call key -> [#actual_in, #actual_out]
+        for k, n in body.items():
+            ids.add(n.get("id"))
+            kd = n.get("kind")
+            if kd in VERTEX_KINDS:
+                K["vertices_by_kind"][kd] += 1
+                K["vertex_of_class"][kd + " " + of_class(n.get("of", ""))] += 1
+                if kd.startswith("actual"):
+                    sites[n.get("parent")][kd == "actual_out"] += 1
+            elif kd == "call":
+                calls[n["id"]] = n.get("callee")
+        per_site = Counter()
+        for e in c.get("summary") or []:
+            for x in (e["src"], e["dst"]):
+                chk["summary_endpoint_not_vertex"] += body.get(x, {}).get("kind") not in VERTEX_KINDS
+            if (body.get(e["src"], {}).get("of", "").startswith("<global>:")
+                    and body.get(e["dst"], {}).get("of", "").startswith("<global>:")):
+                chk["summary_global_to_global"] += 1
+            per_site[body.get(e["src"], {}).get("parent")] += 1
+            C["summary"] += 1
+        for site, (ni, no) in sites.items():
+            if per_site[site]:
+                C["sites_with_summary"] += 1
+                C["sites_with_summary_all_to_all"] += per_site[site] == ni * no
+        for e in c.get("ddg") or []:
+            prov = e.get("prov") or []
+            if prov == ["reaching-defs"]:
+                C["port_ddg"] += 1
+            elif prov == ["points-to"]:
+                C["points_to_ddg"] += 1
+    C["vertices"] = sum(K["vertices_by_kind"].values())
+    C["call_nodes"] = len(calls)
+    C["call_nodes_with_callee"] = sum(1 for v in calls.values() if v)
+    ext = a.get("external_symbols") or {}
+    C["external_symbols"] = len(ext)
+    for e in ext.values():
+        b = e.get("body") or {}
+        C["stand_ins"] += bool(b)
+        C["stand_in_formals"] += len(b)
+        for n in b.values():
+            ids.add(n.get("id"))
+    for e in a.get("call_graph") or []:
+        prov = e.get("prov") or []
+        C["call_graph_vta"] += "vta" in prov
+        C["call_graph_vta_only"] += prov == ["vta"]
+    targets = defaultdict(set)
+    for lst in ("param_in", "param_out"):
+        es = a.get(lst) or []
+        C[lst] = len(es)
+        for e in es:
+            chk[lst + "_endpoint_dangling"] += e["src"] not in ids or e["dst"] not in ids
+            if lst == "param_in" and "/actual_in:" in e["src"]:
+                targets[e["src"].rsplit("/actual_in:", 1)[0]].add(e["dst"].rsplit("@formal_in:", 1)[0])
+    for site, ts in targets.items():
+        if site not in calls:
+            C["capture_sites"] += 1  # a non-call capture site (a literal's position)
+            continue
+        C["call_sites_bound"] += 1
+        extra = ts - {calls[site]}
+        C["call_sites_with_vta_target"] += bool(extra)
+        C["call_sites_multi_target"] += len(ts) > 1
+        K["targets_per_bound_site"][min(len(ts), 10)] += 1
+    deg = doc.get("degraded") or []
+    return {
+        **dict(C), **{k: dict(v) for k, v in K.items()},
+        "pct_call_nodes_with_vta_target": round(100 * C["call_sites_with_vta_target"] / max(1, C["call_nodes"]), 2),
+        "pct_bound_sites_with_vta_target": round(100 * C["call_sites_with_vta_target"] / max(1, C["call_sites_bound"]), 2),
+        "degraded": {d["code"]: {"packages": len(d.get("packages") or []),
+                                 "callables": len(d.get("callables") or []),
+                                 "detail": d.get("detail", "")} for d in deg},
         "check_failures": {k: v for k, v in chk.items() if v},
     }
 

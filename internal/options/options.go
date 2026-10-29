@@ -11,6 +11,8 @@ const (
 	LevelCallGraph AnalysisLevel = 2
 	// LevelDataflow adds intraprocedural CFG/CDG/DDG on top of the call graph.
 	LevelDataflow AnalysisLevel = 3
+	// LevelSDG adds the interprocedural system dependence graph (L4) on top of L3.
+	LevelSDG AnalysisLevel = 4
 )
 
 // EmitTarget selects the analyzer's output projection (cli-contract.md § Neo4j).
@@ -38,9 +40,14 @@ type AnalysisOptions struct {
 	// AppName anchors application identity (can://<app-name> and the Neo4j
 	// :Application node). Defaults to the input directory's base name.
 	AppName string
-	// AnalysisLevel controls symbol-table-only (1), + call graph (2), or
-	// + intraprocedural dataflow (3).
+	// AnalysisLevel controls symbol-table-only (1), + call graph (2),
+	// + intraprocedural dataflow (3), or + the interprocedural SDG (4).
 	Level AnalysisLevel
+	// Strict makes the run fail non-zero on any L4 degradation (--strict).
+	Strict bool
+	// LibraryModels is the --library-models JSON file overriding library
+	// stand-in summaries at L4 (sdg.LoadModels). Empty = the defaults.
+	LibraryModels string
 	// AnalyzerVersion is the analyzer's own version, recorded in the v2
 	// manifest's analyzer{} tag. Set by the CLI from its build-stamped value.
 	AnalyzerVersion string

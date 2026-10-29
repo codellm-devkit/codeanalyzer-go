@@ -43,7 +43,14 @@ func (p Path) Covers(q Path) bool {
 	}
 	ph, ps := splitSpell(p.Spell)
 	qh, qs := splitSpell(q.Spell)
-	if ph != qh || len(ps) > len(qs) {
+	return ph == qh && stepsCover(ps, qs)
+}
+
+// stepsCover is Covers on step lists alone, bases ignored: ps is a prefix of
+// qs, a final wildcard of ps matching any non-empty remainder. The alias
+// rule (BuildDDGAlias) compares the suffixes of two different bases with it.
+func stepsCover(ps, qs []string) bool {
+	if len(ps) > len(qs) {
 		return false
 	}
 	for i, s := range ps {
@@ -270,6 +277,21 @@ func baseSpell(v types.Object) string {
 	}
 	return v.Name()
 }
+
+// SpellBase returns the base spelling of an emitted path spelling: "x" of
+// "x.f[*]", "pkgpath::Name" of "pkgpath::Name.F", a pseudo-base whole. The
+// L4 port wiring maps a ddg edge's var to the formal of its base with it.
+func SpellBase(s string) string {
+	head, _ := splitSpell(s)
+	return head
+}
+
+// BaseSpell is baseSpell for package sdg: the L4 global formals and
+// footprints spell a package-level variable as its L3 ddg base.
+func BaseSpell(v types.Object) string { return baseSpell(v) }
+
+// IsPkgVar is isPkgVar for package sdg (the L4 global footprints).
+func IsPkgVar(obj types.Object) bool { return isPkgVar(obj) }
 
 // isPkgVar reports whether obj is a package-level variable. It checks
 // membership of the package scope by identity, which holds for packages

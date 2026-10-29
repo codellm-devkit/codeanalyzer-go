@@ -59,7 +59,10 @@ The binary is fully self-contained: a single static executable with no runtime d
 - **Call graph** — a resolver-based call graph via `go/types`: each call site is resolved to its
   full import-path signature. Level 2 emits edges to project callees and to library callees
   (homed in `application.external_symbols` under `can://<app>/@external/<import-path>/<sig>`).
-  Level 3 (`-a 3`) adds per-callable `cfg`, `cdg` and `ddg`.
+  Level 3 (`-a 3`) adds per-callable `cfg`, `cdg` and `ddg`. Level 4 (`-a 4`) adds the
+  interprocedural system dependence graph (SDG): parameter vertices, `param_in` / `param_out`,
+  call-site `summary` edges, VTA dispatch targets and library stand-ins — what the SDK's
+  slicing and `taint()` walk.
 - **Generics-aware** — Go 1.18+ generics (`Set[T]`, union-constraint interfaces, multi-type-param
   functions) are modeled in the unified type/callable schema.
 - **Self-contained binary** — a single static executable (`go build`, `CGO_ENABLED=0`); no runtime
@@ -162,22 +165,24 @@ Aliases:
   cango, codeanalyzer-go
 
 Flags:
-  -a, --analysis-level int      Analysis level: 1=symbol table, 2=+call graph, 3=+intraprocedural cfg/cdg/ddg (default 1)
+  -a, --analysis-level int      Analysis level: 1=symbol table, 2=+call graph, 3=+intraprocedural cfg/cdg/ddg, 4=+interprocedural SDG (default 1)
       --app-name string         Application anchor name for can:// ids and Neo4j :Application (default: input dir name)
   -c, --cache-dir string        Cache directory (default: ~/.cldk/go-cache)
       --eager                   Force clean rebuild (ignore cache)
       --emit string             Output projection: json|neo4j|schema (default "json")
   -f, --format string           Output format: json|msgpack (default "json")
-      --graph-field-depth int   Field-path depth bound for L3 dataflow nodes (k limit; applies at -a 3 only) (default 3)
+      --graph-field-depth int   Field-path depth bound for L3 dataflow nodes (k limit; applies at -a 3 and -a 4) (default 3)
   -h, --help                    help for cango
   -i, --input string            Project root to analyze (required)
   -j, --jobs int                Worker parallelism (default: CPU cores)
+      --library-models string   JSON file of library stand-in flows overriding the all-to-all default (-a 4 and --emit neo4j only)
       --neo4j-database string   Neo4j database (env NEO4J_DATABASE, optional)
       --neo4j-password string   Neo4j password (env NEO4J_PASSWORD, default neo4j)
       --neo4j-uri string        Live Bolt push target (env NEO4J_URI); omit to write graph.cypher
       --neo4j-user string       Neo4j username (env NEO4J_USERNAME, default neo4j)
   -o, --output string           Output directory for analysis.json (default: stdout)
       --skip-tests              Skip *_test.go files (default true)
+      --strict                  Fail non-zero on any L4 degradation (default: degrade and record it)
   -t, --target-files strings    Restrict analysis to specific files (incremental mode)
   -v, --verbose count           Verbosity (repeat for more detail)
       --version                 Print version and exit
@@ -275,7 +280,7 @@ are build artifacts, not project source), so only your own declarations are emit
 | 1 | `-a 1` (default) | Symbol table only — types, functions, call sites | Implemented |
 | 2 | `-a 2` | Level 1 + resolver-based call graph via `go/types` | Implemented |
 | 3 | `-a 3` | Level 2 + per-callable statement nodes and `cfg` / `cdg` / `ddg` | Implemented |
-| 4 | `-a 4` | Level 3 + interprocedural parameter edges | Not implemented (rejected) |
+| 4 | `-a 4` | Level 3 + interprocedural SDG: VTA dispatch, parameter vertices, `param_in` / `param_out`, `summary`, port and `points-to` `ddg`, library stand-ins | Implemented |
 
 **Level 1** loads each package with `packages.NeedSyntax | NeedTypes | NeedTypesInfo` and walks the AST file by file. Call sites are recorded with `callee_signature = null` at this stage.
 
@@ -288,6 +293,60 @@ reaching definitions over k-limited access paths, `prov: ["ssa"]`). `--graph-fie
 recorded in the envelope as `k_limit`. It is a flag error below `-a 3` and with
 `--emit neo4j`. Callables are analyzed in parallel (`-j`), and the output is byte-identical
 for every `-j`. L3 only adds to the L2 output: every L2 fact stays as it is.
+
+**Level 4** is whole-program. It builds `go/ssa` for the project packages over the same load and
+runs VTA (`golang.org/x/tools/go/callgraph/vta`) over the project's functions, so interface and
+function-value calls get their concrete targets: `call_graph` gains those edges with
+`prov: ["vta"]` (an L2 edge is never changed). Every callable gets `formal_in` / `formal_out`
+vertices (parameters, receiver, closure captures, the package variables it reads or writes,
+results), and every resolved call site gets `actual_in` / `actual_out` vertices, wired into the
+body's `ddg` (`prov: ["reaching-defs"]`). `param_in` / `param_out` (application scope) join each
+call site to every target, including the interface method itself for an interface call, and a
+bottom-up pass over the call graph's SCCs puts `summary` edges (`actual_in` → `actual_out`) at
+each call site. Library callees get a **stand-in** in `external_symbols` (`body` holds only its
+formal vertices; summary all inputs → all outputs unless `--library-models` overrides it). A
+type-based may-alias oracle adds `ddg` edges with `prov: ["points-to"]`. `-a 3` output is a
+subset of `-a 4` output, and `-j 1` and `-j N` output are byte-identical.
+
+- **Degradation.** When L4 cannot build all it needs, it still emits and records why in the
+  envelope's `degraded[]`. Each entry has a `code`, an optional `detail`, and optional `packages[]`
+  and `callables[]`. The codes are:
+  - `no_ssa` / `partial_ssa`: SSA failed, in whole or for some packages;
+  - `no_vta`: VTA failed;
+  - `no_cha`: the CHA complement for library-originated values failed (its targets are dropped);
+  - `partial_types`: some packages have type errors;
+  - `unmapped_ssa`: SSA functions or calls that map to no callable;
+  - `l3_skipped`: callables without an L3 result, which get a pass-through summary;
+  - `range_func`: range-over-func, which is not modelled at L4.
+
+  It also logs one warning per entry. `--strict` makes any degradation a non-zero exit.
+- **`--library-models <file.json>`** overrides stand-in summaries:
+  `{"strconv/Atoi": [], "strings/TrimSpace": [["s", "<return>"]]}`. A key is the external id's
+  `<import-path>/<sig>` tail, and a value is a list of `[in, out]` pairs of `of` names (`[]` = no
+  summary edges). A model changes summaries, **not statement-level reachability**: in
+  `n, err := strconv.Atoi(id)` the value assigned at the call site keeps its reaching-definition
+  edge from `id`, which is correct data flow. A model is therefore not a sanitizer. Cutting such
+  a flow is the SDK taint analysis's job
+  ([codellm-devkit/.github#103](https://github.com/codellm-devkit/.github/issues/103)). A variable
+  cut on `n` is also bypassed, by implicit flow through `err` and by the coarse host wiring. An
+  entry naming an `of` the external lacks falls back to all-to-all, with a warning. A key no call
+  site targets is ignored, with a warning. The flag is valid only at `-a 4` and with
+  `--emit neo4j`.
+- **`-t` / `--target-files` is not supported at `-a 4`** (whole-program): it is an error. Use
+  `-a 3 -t`, or run without `-t`.
+- **Known limits** (see `docs/design/notes/l3-dataflow-metrics.md` § L4):
+  - library code calling back into the project (`sort.Slice`, `http.HandleFunc`) is not an
+    edge;
+  - an interface call on a value that may have come out of library code (`ctx.Value(k).(Store)`,
+    `sync.Map.Load`, a library container), directly or through project code (results,
+    parameters, captures, fields, globals, container elements), binds every project type
+    implementing the interface (a CHA complement). Storage is tracked by container type (every
+    instance of a struct field), which is sound but coarser than VTA;
+  - range-over-func is not modelled (`range_func`);
+  - summaries are close to all-to-all, by design;
+  - `summary` edges whose two ends are both `<global>:` vertices are omitted
+    (codeanalyzer-go#30). Reachability is unchanged, but a depth-bounded slice can stop earlier
+    than it would through that shortcut.
 
 **Level 2** adds a resolver pass: for each call site, `go/types` resolves the callee to its full import-path signature (`pkgImportPath.TypeName.MethodName`). A project callee becomes an edge to its callable; a **library callee** (stdlib, a dependency, or a package vendored under `vendor/`) becomes an edge to an `@external` symbol, recorded once in `application.external_symbols`. A callee that is neither (an interface method of a project type, a conversion, a builtin, a call through a function value) gets no edge. Every resolved call node's `callee` is backfilled.
 
@@ -367,9 +426,9 @@ node carries a `can://<app>/…` `id`, a `kind`, and a `span`:
 ```
 
 Key v2 schema properties:
-- **Envelope** — `schema_version` (`"2.0.0"`), `language` (`"go"`), `max_level` (1, 2 or 3),
-  `k_limit` (L3 only: the `--graph-field-depth` value) and `analyzer{name,version}` wrap a
-  single `application` node.
+- **Envelope** — `schema_version` (`"2.0.0"`), `language` (`"go"`), `max_level` (1–4),
+  `k_limit` (L3+: the `--graph-field-depth` value), `degraded[]` (L4, only when something
+  degraded) and `analyzer{name,version}` wrap a single `application` node.
 - **One containment tree** — `application → module → type → callable → body`, keyed as
   `symbol_table` (modules, by **project-relative file path**), `types`, `callables`, `body`.
 - **`id`** — every node carries a durable `can://<app>/go/<file>/<type>/<signature>` id;
@@ -404,6 +463,15 @@ Key v2 schema properties:
   A call nested in a statement carries `parent`, the statement's key. The callable gains
   `cfg[] {src, dst, kind}`, `cdg[] {src, dst}` and `ddg[] {src, dst, var, prov}`, whose
   endpoints are `body` keys. See `docs/design/specs/v2-schema-structure.md`.
+- **L4 (`-a 4`)** — `body` gains span-less vertices `@formal_in:<i>`, `@formal_out[:<i>]`,
+  `<call-key>/actual_in:<i>`, `<call-key>/actual_out[:<i>]`, each with `of` (the bound name:
+  a parameter or receiver name, `_<i>`, `_recv`, `<return>`, `<return>:<i>`,
+  `<capture>:<name>`, `<global>:<pkgpath>::<Name>`); actuals carry `parent` = the call key.
+  `ddg` gains `prov: ["reaching-defs"]` (port wiring) and `["points-to"]` edges; a callable gains
+  `summary[] {src, dst}` (local keys); the application gains `param_in[]` / `param_out[]`
+  `{src, dst, var}` (global body-node ids, `var` = the callee formal's `of`); an external gains
+  `receiver {name, type}` and a stand-in `body` of its formal vertices (ids
+  `<external-id>@formal_in:<i>`).
 
 ## Neo4j projection (`--emit neo4j`)
 
@@ -439,10 +507,27 @@ What a re-emit replaces depends on the path:
   remain beside the new ones. Pass `--eager` when you push an L3 graph after editing source.
   The purge needs a full run: with `--target-files` it is skipped, because the push carries only
   the targeted packages.
+- **L4 rows on a lazy push (D5).** L4 facts are not local to a module: editing a callee changes
+  its callers' summaries and vertices. So a lazy push upserts **every** L4 row (vertices,
+  `GO_PARAM_IN` / `GO_PARAM_OUT`, `GO_SUMMARY`, port `GO_DDG`) on every push, not only the changed
+  modules'. It still adds and never removes: stale L4 rows stay until an `--eager` full run.
+- **Level changes.** A lazy push whose level is above the stored `:GoApplication.max_level` (a graph
+  last pushed at L3, or with `-t`), or whose stored level is unreadable, upserts every module, so
+  no L4 row is dropped for a missing L3 endpoint. A push at a *lower* level onto a higher graph
+  diffs as usual and leaves the old L4 rows in place (additive). An **interrupted** push can leave
+  `:GoApplication` at the new `max_level` while some modules still hold older rows; the next lazy
+  push then trusts the diff. Recover with an `--eager` full run.
+- **`--target-files` (D9).** L4 is whole-program, so `--emit neo4j -t` projects the targeted modules
+  at **L3** and writes no L4 rows; they keep the last full run's facts until the next full run. It
+  warns once on stderr: `--target-files: projecting the graph at level 3 (level 4 is
+  whole-program); L4 rows keep the last full run's facts until a full run` (plus `;
+  --library-models is ignored at level 3` when that flag is set).
 
-> **`--emit neo4j` is always full depth.** The graph is projected at the max implemented level (L3
-> today — symbol table, call graph, and every callable's body nodes with `GO_CFG_NEXT` / `GO_CDG` /
-> `GO_DDG`) and canonical schema v2. Do **not** pass `-a`/`--analysis-level`
+> **`--emit neo4j` is always full depth.** The graph is projected at the max implemented level (L4
+> — symbol table, call graph, every callable's body nodes with `GO_CFG_NEXT` / `GO_CDG` /
+> `GO_DDG`, and the SDG: vertex `:GoBodyNode`s with `var`, `GO_PARAM_IN` / `GO_PARAM_OUT {var}`,
+> `GO_SUMMARY`, stand-in vertices under their `:GoExternal`, and `degraded_json` on
+> `:GoApplication`) and canonical schema v2. Do **not** pass `-a`/`--analysis-level`
 > with it — an explicit level is a flag error (`--analysis-level does not apply to --emit neo4j`),
 > because there is no shallower graph to ask for.
 
@@ -576,8 +661,24 @@ check the following.
     as plain `line:col`.
   - Calls inside `go` statement arguments, such as `g()` in `go f(g())`, are now call sites.
   - Consumers that count call nodes will see more of them.
+- **L4 (`-a 4`) is new.** It is additive: an `-a 3` consumer sees the same document plus new
+  keys (vertices, `of`, `summary`, `param_in` / `param_out`, `points-to` / `reaching-defs` `ddg`,
+  VTA `call_graph` edges, external `receiver` / `body`, `degraded`). Code that assumes every body
+  node has a `span`, or that every `ddg` edge has `prov: ["ssa"]`, must handle the L4 kinds.
+  `-a 4 -t` is an error (whole-program; D9). `--library-models` is new and valid only at L4.
+  **Measured cost** (2026-10-28, analyzer built with go1.27.3, eight real apps). On 7 of 8
+  apps, the peak RSS of `-a 4` is 1.0–1.5× that of `-a 3`; Kubernetes takes 38 s at 7.9 GB.
+  nats-server is the outlier at 3.8×, because its globals fan out through one recursive 822-callable
+  SCC. The JSON output is 1.9–23× that of `-a 3`. Per-app figures are in
+  `docs/design/notes/l3-dataflow-metrics.md` § L4.
 - **Neo4j:**
-  - `--emit neo4j` projects L3, adding `GO_CFG_NEXT`, `GO_CDG` and `GO_DDG`.
+  - `--emit neo4j` projects **L4** (D4), adding `GO_CFG_NEXT`, `GO_CDG` and `GO_DDG`, and the SDG
+    rows `GO_PARAM_IN`, `GO_PARAM_OUT`, `GO_SUMMARY`, vertex `:GoBodyNode`s with `var`, and
+    `degraded_json`. `-a` with it is still an error.
+  - A lazy push upserts every L4 row on every push and removes none (D5); use `--eager` to drop
+    stale ones. `--emit neo4j -t` projects at L3 with a warning (D9). A push at a higher level
+    than the stored graph upserts everything; a lower-level push leaves the old L4 rows. See
+    [Neo4j projection](#neo4j-projection---emit-neo4j).
   - `:GoBodyNode.call_node` is the enclosing statement's local key (the JSON `parent`), not a
     global id.
   - `--eager` now works on Neo4j 5.x.
@@ -593,10 +694,13 @@ check the following.
 | Type resolver | `golang.org/x/tools/go/packages` | Single API for both AST + full type resolution; handles modules natively |
 | Build/dep materialization | `go mod download` | Required before `packages.Load` so the module cache is warm; result cached by `go.sum` hash |
 | Packaging | Native binary (`go build`) | Zero-runtime-dep distribution; matches Rust/C++ analyzers |
-| Analysis depth | Levels 1–3 | Symbol table, resolver call graph, intraprocedural cfg/cdg/ddg |
+| Analysis depth | Levels 1–4 | Symbol table, resolver call graph, intraprocedural cfg/cdg/ddg, interprocedural SDG |
 | Call-graph dispatch | Declared-type resolution via `go/types.Selections` | CHA-equivalent; sufficient for cross-package reachability at Level 1 |
 | CFG (L3) | Hand-built from `go/ast` (`internal/dataflow`) | Adds what `go/cfg` does not model as edges: panic `exception` edges and the `defer` chain (`defer_resume`). A differential test checks reachability against `golang.org/x/tools/go/cfg` on every fixture body |
 | Def-use / DDG (L3) | Syntactic reaching definitions over k-limited access paths | `go/types` objects as bases (shadowing-safe); weak defs through reference arguments; `prov: ["ssa"]` for parity with the Java and Python L3 |
+| SSA (L4) | `golang.org/x/tools/go/ssa` via `ssautil.Packages` over the same load, project packages only, built per package under `recover` | Bodies only for the project (dependencies from types); a panic degrades instead of aborting |
+| Dispatch oracle (L4) | VTA (`go/callgraph/vta`) over the project's functions, library targets included | Concrete targets for interface and function-value calls; an interface call also binds the interface method (pass-through) |
+| Alias oracle (L4) | Type-based may-alias (structural pointee compatibility, interface pairs, address-taken values, one-level field offset) | Additive `points-to` `ddg` edges; an interface so Andersen points-to can replace it without a schema change |
 
 ### Package structure
 
@@ -610,6 +714,7 @@ codeanalyzer-go/
 │   ├── syntactic_analysis/   # SymbolTableBuilder (packages.Load → AST walk)
 │   ├── semantic_analysis/    # CallGraphBuilder (go/types resolver)
 │   ├── dataflow/             # L3: body nodes, CFG, CDG, def-use, DDG; Run fans out per callable
+│   ├── sdg/                  # L4: SSA, VTA dispatch, footprints, vertices, port wiring, summaries, stand-ins, may-alias
 │   ├── analysis/             # Pluggable pass interface + registry (topo-ordered pipeline)
 │   ├── frameworks/           # BaseEntrypointFinder — extension seam for framework passes
 │   └── utils/                # DiscoverGoFiles, IsVendored, IsTestFile, logging

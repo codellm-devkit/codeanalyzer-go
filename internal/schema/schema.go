@@ -5,6 +5,8 @@
 // transformation. Design decisions are recorded in .claude/SCHEMA_DECISIONS.md.
 package schema
 
+import "go/token"
+
 // ─── Leaf models ─────────────────────────────────────────────────────────────
 
 // GoImport represents a single import declaration in a Go source file.
@@ -92,6 +94,11 @@ type GoCallsite struct {
 	StartColumn       int    `json:"start_column"`
 	EndLine           int    `json:"end_line"`
 	EndColumn         int    `json:"end_column"`
+	// Lparen is the call's raw CallExpr.Lparen in the builder's FileSet: the
+	// in-memory join key from an L1 site to its *ast.CallExpr (L3 body nodes,
+	// and go/ssa CallCommon.Pos() at L4). Never serialized; meaningless once
+	// the FileSet is gone.
+	Lparen token.Pos `json:"-"`
 }
 
 // ─── Callable ─────────────────────────────────────────────────────────────────
@@ -99,7 +106,9 @@ type GoCallsite struct {
 // GoCallable represents a function, method, or function literal in Go.
 // receiver_type / receiver_name are non-empty for methods; empty for functions.
 type GoCallable struct {
-	Name                 string                  `json:"name"`
+	Name string `json:"name"`
+	// Path is the declaring file (a symbol_table key). A closure carries its
+	// enclosing callable's declaring file, so v1 inner_callables have a path.
 	Path                 string                  `json:"path"`
 	Signature            string                  `json:"signature"` // signatureOf() output — edge id
 	Comments             []GoComment             `json:"comments"`
@@ -186,6 +195,13 @@ type GoCallEdge struct {
 	// whose signature is already unique (the common case). Internal-only; not
 	// part of the v2 output schema.
 	SourcePath string `json:"-"`
+
+	// TargetPath is the relative file declaring the target callable, set only
+	// when the signature alone may not name it: a VTA target can be a closure
+	// of a package-level init ("<pkg>.init.closure_1" repeats once per file
+	// with an init). Empty for L2 edges (a static call never targets an init
+	// or a closure) and for an external target. Internal-only, like SourcePath.
+	TargetPath string `json:"-"`
 }
 
 // ─── Root object ──────────────────────────────────────────────────────────────
@@ -208,6 +224,10 @@ type GoExternalCallee struct {
 	Name       string        `json:"name"`
 	Params     []GoParameter `json:"parameters"`
 	ReturnType string        `json:"return_type,omitempty"`
+	// Receiver is the method receiver (nil for a plain function): named by the
+	// receiver variable, or "_recv" when unnamed or "_"; typed by the origin's
+	// receiver type string.
+	Receiver *GoParameter `json:"receiver,omitempty"`
 }
 
 // GoEntrypoint marks a callable as a framework entry point.

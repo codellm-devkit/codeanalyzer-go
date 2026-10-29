@@ -319,7 +319,7 @@ func canPanic(n ast.Node, info *types.Info) bool {
 	case *ast.ForStmt:
 		parts = []ast.Node{s.Init, s.Cond, s.Post}
 	case *ast.RangeStmt:
-		if rangesOverFunc(s.X, info) {
+		if RangesOverFunc(s.X, info) {
 			return true // each iteration calls the iterator
 		}
 		parts = []ast.Node{s.Key, s.Value, s.X}
@@ -493,10 +493,11 @@ func sliceToArray(call *ast.CallExpr, info *types.Info) bool {
 	return ok
 }
 
-// rangesOverFunc reports whether a range statement over x iterates a
+// RangesOverFunc reports whether a range statement over x iterates a
 // function (range-over-func). Without info it cannot tell and says no; the
-// header's own expressions are still inspected.
-func rangesOverFunc(x ast.Expr, info *types.Info) bool {
+// header's own expressions are still inspected. L4 lists the callables that
+// hold one under degraded code range_func (D8).
+func RangesOverFunc(x ast.Expr, info *types.Info) bool {
 	if info == nil || x == nil {
 		return false
 	}

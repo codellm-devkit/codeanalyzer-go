@@ -2,7 +2,7 @@
 //
 // This stage uses the same golang.org/x/tools/go/packages load that built the
 // symbol table. For each recorded call site it resolves the callee to a
-// *types.Func, derives its signature via signatureOf(), backfills
+// *types.Func, derives its signature via SignatureOf(), backfills
 // callee_signature in place, and emits an identity-only GoCallEdge.
 //
 // Precision choice: declared-type dispatch (CHA-style). Pointer-receiver
@@ -23,6 +23,7 @@ import (
 	"golang.org/x/tools/go/packages"
 
 	"github.com/codellm-devkit/codeanalyzer-go/internal/schema"
+	"github.com/codellm-devkit/codeanalyzer-go/internal/syntactic_analysis"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/utils"
 )
 
@@ -121,6 +122,8 @@ func buildKnownSigs(symbolTable map[string]schema.GoFile) map[string]bool {
 }
 
 // resolveCallable backfills callee_signature on each call site and produces edges.
+// It then does the same for the callable's closures (InnerCallables) in sorted
+// key order, recursively, after the callable's own sites.
 //
 // An in-project callee (in knownSigs) gets an edge. A library callee (a package
 // outside the project) is recorded in cg.externals, its site is tagged with the
@@ -146,7 +149,7 @@ func (cg *CallGraphBuilder) resolveCallable(
 			utils.Debug("unresolved call site: %s in %s", site.MethodName, callable.Signature)
 			continue
 		}
-		calleeSig := calleeSignatureOf(fn)
+		calleeSig := CalleeSignatureOf(fn)
 
 		// Backfill the site whether the callee is in-project or a library.
 		site.CalleeSignature = &calleeSig
@@ -181,6 +184,15 @@ func (cg *CallGraphBuilder) resolveCallable(
 		})
 	}
 
+	// Closures: their own sites, then theirs in turn. Each carries its enclosing
+	// callable's declaring file as Path, so the site index and the edge dedup
+	// treat it like any other callable.
+	for _, name := range sortedKeys(callable.InnerCallables) {
+		inner, innerEdges := cg.resolveCallable(pkg, callable.InnerCallables[name], seen, knownSigs)
+		callable.InnerCallables[name] = inner
+		edges = append(edges, innerEdges...)
+	}
+
 	return callable, edges
 }
 
@@ -203,12 +215,33 @@ func (cg *CallGraphBuilder) isLibrary(fn *types.Func) bool {
 		// (the symbol table skips it), so it is a library too.
 		return utils.IsVendored(utils.RelativePath(root, file))
 	}
-	if mod := cg.modulePath(); mod != "" {
-		p := fn.Pkg().Path()
-		return p != mod && !strings.HasPrefix(p, mod+"/")
-	}
 	_, inProject := cg.pkgs[fn.Pkg().Path()]
-	return !inProject
+	return LibraryByPath(fn.Pkg().Path(), cg.modulePath(), inProject)
+}
+
+// LibraryByPath is the fallback library test for an object with no source
+// file: by the project module's path prefix when go.mod names one, else by
+// whether its package is a loaded project package. L2 and L4 share it so the
+// two levels classify a callee the same way.
+func LibraryByPath(pkgPath, modulePath string, projectPkg bool) bool {
+	if modulePath != "" {
+		return pkgPath != modulePath && !strings.HasPrefix(pkgPath, modulePath+"/")
+	}
+	return !projectPkg
+}
+
+// ModulePath reads the module path from dir's go.mod ("" when unavailable).
+func ModulePath(dir string) string {
+	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "module "); ok {
+			return strings.Trim(strings.TrimSpace(rest), "\"")
+		}
+	}
+	return ""
 }
 
 func absPath(p string) string {
@@ -221,22 +254,9 @@ func absPath(p string) string {
 func (cg *CallGraphBuilder) absProjectDir() string { return absPath(cg.projectDir) }
 
 // modulePath reads the project's module path from go.mod ("" when unavailable).
-func (cg *CallGraphBuilder) modulePath() string {
-	data, err := os.ReadFile(filepath.Join(cg.projectDir, "go.mod"))
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "module "); ok {
-			return strings.Trim(strings.TrimSpace(rest), "\"")
-		}
-	}
-	return ""
-}
+func (cg *CallGraphBuilder) modulePath() string { return ModulePath(cg.projectDir) }
 
 // recordExternal registers a library callee, keyed by its full signature.
-// Parameter names and types come from the callee's *types.Signature; unnamed
-// parameters become "_<i>". The receiver is not a parameter.
 func (cg *CallGraphBuilder) recordExternal(fn *types.Func, fullSig string) {
 	if _, ok := cg.externals[fullSig]; ok {
 		return
@@ -244,6 +264,15 @@ func (cg *CallGraphBuilder) recordExternal(fn *types.Func, fullSig string) {
 	if cg.externals == nil {
 		cg.externals = map[string]schema.GoExternalCallee{}
 	}
+	cg.externals[fullSig] = ExternalCallee(fn, fullSig)
+}
+
+// ExternalCallee is the external_symbols entry of the library callee fn, whose
+// full signature (CalleeSignatureOf) is fullSig. L2 and the L4 VTA pass both
+// build their entries with it, so an external has one shape whichever found it.
+// Parameter names and types come from the callee's *types.Signature; unnamed
+// parameters become "_<i>". The receiver is not a parameter.
+func ExternalCallee(fn *types.Func, fullSig string) schema.GoExternalCallee {
 	importPath := fn.Pkg().Path()
 	// Record the declared signature, not the instance the call site selected: a
 	// method on a generic library type (atomic.Pointer[A].Store) must yield one
@@ -278,19 +307,29 @@ func (cg *CallGraphBuilder) recordExternal(fn *types.Func, fullSig string) {
 		ret = "(" + strings.Join(rets, ", ") + ")"
 	}
 
-	cg.externals[fullSig] = schema.GoExternalCallee{
+	var receiver *schema.GoParameter
+	if recv := sig.Recv(); recv != nil {
+		name := recv.Name()
+		if name == "" || name == "_" {
+			name = "_recv"
+		}
+		receiver = &schema.GoParameter{Name: name, Type: types.TypeString(recv.Type(), nil)}
+	}
+
+	return schema.GoExternalCallee{
 		ImportPath: importPath,
 		Sig:        strings.TrimPrefix(fullSig, importPath+"."),
 		Name:       fn.Name(),
 		Params:     params,
 		ReturnType: ret,
+		Receiver:   receiver,
 	}
 }
 
 // resolveCallSite resolves a single call site to its callee function by looking
 // it up in the package's call-site index under the key L1 recorded it with:
-// relPath (the file declaring the enclosing callable) and the site's
-// directive-adjusted start and end line:col. Returns nil when the site cannot be
+// relPath (the file declaring the enclosing callable) and the site's real
+// (not //line-adjusted) start and end line:col. Returns nil when the site cannot be
 // resolved (graceful fallback).
 func (cg *CallGraphBuilder) resolveCallSite(pkg *packages.Package, relPath string, site *schema.GoCallsite) *types.Func {
 	if pkg.TypesInfo == nil {
@@ -339,38 +378,12 @@ func (cg *CallGraphBuilder) resolveCallExpr(pkg *packages.Package, call *ast.Cal
 	return nil
 }
 
-// calleeSignatureOf is the call-site mirror of signatureOf — same canonicalization.
-// Must produce byte-identical strings to signatureOf() in syntactic_analysis.
-func calleeSignatureOf(obj types.Object) string {
-	if obj == nil {
-		return ""
-	}
-	pkg := obj.Pkg()
-	pkgPath := ""
-	if pkg != nil {
-		pkgPath = pkg.Path()
-	}
-
-	switch o := obj.(type) {
-	case *types.Func:
-		sig := o.Type().(*types.Signature)
-		recv := sig.Recv()
-		if recv != nil {
-			recvType := recv.Type()
-			if ptr, ok := recvType.(*types.Pointer); ok {
-				recvType = ptr.Elem()
-			}
-			if named, ok := recvType.(*types.Named); ok {
-				typeName := named.Obj().Name()
-				return pkgPath + "." + typeName + "." + o.Name()
-			}
-		}
-		return pkgPath + "." + o.Name()
-	case *types.TypeName:
-		return pkgPath + "." + o.Name()
-	default:
-		return pkgPath + "." + obj.Name()
-	}
+// CalleeSignatureOf is the signature of a resolved callee, the call-site side
+// of the one canonicalizer (syntactic_analysis.SignatureOf), so caller-side
+// and callee-side ids are identical by construction. The L4 SSA join uses it
+// for external callees (ruling R-P5).
+func CalleeSignatureOf(obj types.Object) string {
+	return syntactic_analysis.SignatureOf(obj)
 }
 
 // packageForFile returns the *packages.Package that contains the given relative file path.
@@ -386,14 +399,17 @@ func (cg *CallGraphBuilder) packageForFile(relPath string) *packages.Package {
 }
 
 // MergeEdges merges two edge lists, unioning provenance and accumulating weight
-// for duplicate (source, target) pairs. Mirrors Python's merge_edges().
+// for duplicate edges. Mirrors Python's merge_edges(), with the edge identity
+// (SourcePath, Source, Target, TargetPath). A signature is not unique (every
+// file's func init shares "<pkg>.init", and so do its closures), so the
+// declaring files keep two inits' edges apart.
 func MergeEdges(primary, secondary []schema.GoCallEdge) []schema.GoCallEdge {
-	type key struct{ src, tgt string }
+	type key struct{ path, src, tgt, tgtPath string }
 	index := map[key]int{}
 	result := make([]schema.GoCallEdge, 0, len(primary)+len(secondary))
 
 	add := func(e schema.GoCallEdge) {
-		k := key{e.Source, e.Target}
+		k := key{e.SourcePath, e.Source, e.Target, e.TargetPath}
 		if idx, exists := index[k]; exists {
 			// Merge provenance (union) and accumulate weight.
 			provSet := map[string]bool{}

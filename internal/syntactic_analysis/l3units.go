@@ -1,11 +1,11 @@
 package syntactic_analysis
 
 import (
-	"fmt"
 	"go/ast"
 	"go/types"
 	"sort"
 
+	"github.com/codellm-devkit/codeanalyzer-go/internal/astwalk"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/dataflow"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/schema"
 	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
@@ -22,14 +22,13 @@ import (
 //     which the symbol table overwrote, from taking the survivor's key.
 //     Declarations the symbol table dropped (cgo wrappers, methods whose
 //     receiver type was not found) get no unit.
-//   - A FuncLit is matched to its L1 closure by the traversal that named it:
-//     buildInnerCallables numbers the outermost literals of a body
-//     closure_1, closure_2, … in ast.Inspect order and recurses per literal,
-//     so walking the same way pairs each literal with InnerCallables[name].
-//     Its start line is checked too. Its key's Path is the enclosing
-//     callable's declaring file.
+//   - A FuncLit is matched to its L1 closure by name: buildInnerCallables
+//     names the outermost literals of a body with astwalk.Literals and
+//     recurses per literal, so walking the same way pairs each literal with
+//     InnerCallables[name]. Its start line is checked too. Its key's Path is
+//     the enclosing callable's declaring file.
 //   - Calls is v2.CallBodyKeys over the callable's L1 call sites, the exact
-//     keys the L1 emitter writes.
+//     keys the L1 emitter writes, each with its site's Lparen.
 //
 // A mismatch (which would mean the walk drifted from L1's) is logged and the
 // callable is left at L1.
@@ -73,7 +72,7 @@ func (b *SymbolTableBuilder) L3Units(symbolTable map[string]schema.GoFile) []dat
 					Signature: b.declSignature(pkg, fd),
 				}
 				c, ok := byKey[key]
-				if !ok || seen[key] || c.StartLine != b.fset.Position(fd.Pos()).Line {
+				if !ok || seen[key] || c.StartLine != b.position(fd.Pos()).Line {
 					continue
 				}
 				seen[key] = true
@@ -92,26 +91,18 @@ func (b *SymbolTableBuilder) L3Units(symbolTable map[string]schema.GoFile) []dat
 	return units
 }
 
-// closureUnits appends a unit for every function literal of body, mirroring
-// buildInnerCallables' naming walk.
+// closureUnits appends a unit for every function literal of body, walking
+// astwalk.Literals as buildInnerCallables does.
 func (b *SymbolTableBuilder) closureUnits(units []dataflow.Unit, path string, body *ast.BlockStmt, outer schema.GoCallable, info *types.Info) []dataflow.Unit {
-	n := 0
-	ast.Inspect(body, func(node ast.Node) bool {
-		lit, ok := node.(*ast.FuncLit)
-		if !ok {
-			return true
+	for _, l := range astwalk.Literals(body) {
+		ic, ok := outer.InnerCallables[l.Name]
+		if !ok || ic.StartLine != b.position(l.Lit.Pos()).Line {
+			utils.Warn("L3 skipped for %s.%s (%s): no matching L1 closure", outer.Signature, l.Name, path)
+			continue
 		}
-		n++
-		name := fmt.Sprintf("closure_%d", n)
-		ic, ok := outer.InnerCallables[name]
-		if !ok || ic.StartLine != b.fset.Position(lit.Pos()).Line {
-			utils.Warn("L3 skipped for %s.%s (%s): no matching L1 closure", outer.Signature, name, path)
-			return false
-		}
-		units = append(units, unit(dataflow.L3Key{Path: path, Signature: ic.Signature}, lit, info, ic))
-		units = b.closureUnits(units, path, lit.Body, ic, info)
-		return false
-	})
+		units = append(units, unit(dataflow.L3Key{Path: path, Signature: ic.Signature}, l.Lit, info, ic))
+		units = b.closureUnits(units, path, l.Lit.Body, ic, info)
+	}
 	return units
 }
 
@@ -120,5 +111,10 @@ func unit(key dataflow.L3Key, fn ast.Node, info *types.Info, c schema.GoCallable
 	for i, cs := range c.CallSites {
 		pos[i] = [2]int{cs.StartLine, cs.StartColumn}
 	}
-	return dataflow.Unit{Key: key, Fn: fn, Info: info, Calls: v2.CallBodyKeys(pos)}
+	keys := v2.CallBodyKeys(pos)
+	calls := make([]dataflow.UnitCall, len(c.CallSites))
+	for i, cs := range c.CallSites {
+		calls[i] = dataflow.UnitCall{Key: keys[i], Lparen: cs.Lparen}
+	}
+	return dataflow.Unit{Key: key, Fn: fn, Info: info, Calls: calls}
 }

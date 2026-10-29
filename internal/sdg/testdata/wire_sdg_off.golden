@@ -1,0 +1,451 @@
+example.com/dataflow/sdg.AliasArrPtr
+	491:2 -> @formal_out:0 <return> reaching-defs
+	@formal_in:0 -> 489:2 pa reaching-defs
+	@formal_in:0 -> 491:2 pa[*] reaching-defs
+	@formal_in:0 -> @formal_out:1 pa reaching-defs
+example.com/dataflow/sdg.AliasArraySlice
+	399:2 -> @formal_out <return> reaching-defs
+	@formal_in:0 -> 398:2 v reaching-defs
+example.com/dataflow/sdg.AliasEntryGlobal
+	469:2 -> @formal_out:0 <return> reaching-defs
+	@formal_in:0 -> 469:2 q.UserID reaching-defs
+	@formal_in:0 -> @formal_out:1 q reaching-defs
+	@formal_in:1 -> 468:2 example.com/dataflow/sdg::GReq.UserID reaching-defs
+example.com/dataflow/sdg.AliasEntryValue
+	455:3 -> @formal_out:1 q reaching-defs
+	457:2 -> @formal_out:0 <return> reaching-defs
+	@formal_in:0 -> 455:3 req reaching-defs
+	@formal_in:1 -> 457:2 q.UserID reaching-defs
+	@formal_in:1 -> @formal_out:1 q reaching-defs
+	@formal_in:2 -> 454:2 c reaching-defs
+example.com/dataflow/sdg.AliasFieldAddr
+	408:2 -> @formal_out <return> reaching-defs
+	@formal_in:0 -> 407:2 v reaching-defs
+example.com/dataflow/sdg.AliasIfaces
+	445:2 -> 445:2/actual_in:0 _recv reaching-defs
+	445:2 -> 445:2/actual_in:1 p reaching-defs
+	445:2 -> @formal_out:2 p reaching-defs
+	445:2/actual_out:0 -> 445:2 <return>:0 reaching-defs
+	445:2/actual_out:1 -> 445:2 <return>:1 reaching-defs
+	445:2/actual_out:2 -> 445:2 _recv reaching-defs
+	445:2/actual_out:3 -> 445:2 p reaching-defs
+	446:10/actual_out:0 -> 446:2 <return>:0 reaching-defs
+	446:10/actual_out:1 -> 446:2 <return>:1 reaching-defs
+	446:10/actual_out:2 -> 446:2 _recv reaching-defs
+	446:10/actual_out:3 -> 446:2 p reaching-defs
+	446:2 -> 446:10/actual_in:0 _recv reaching-defs
+	446:2 -> 446:10/actual_in:1 p reaching-defs
+	446:2 -> @formal_out:2 p reaching-defs
+	447:2 -> @formal_out:0 <return> reaching-defs
+	@formal_in:0 -> 443:2 f reaching-defs
+	@formal_in:0 -> 444:2 f reaching-defs
+	@formal_in:0 -> @formal_out:1 f reaching-defs
+	@formal_in:1 -> 445:2 p reaching-defs
+	@formal_in:1 -> 446:2 p reaching-defs
+	@formal_in:1 -> @formal_out:2 p reaching-defs
+example.com/dataflow/sdg.AliasPtr
+	361:2 -> @formal_out:0 <return> reaching-defs
+	@formal_in:0 -> 359:2 req reaching-defs
+	@formal_in:0 -> 361:2 req.UserID reaching-defs
+	@formal_in:0 -> @formal_out:1 req reaching-defs
+	@formal_in:1 -> 360:2 id reaching-defs
+example.com/dataflow/sdg.AliasPtrField
+	437:2 -> @formal_out:0 <return> reaching-defs
+	@formal_in:0 -> 435:2 r.ptr reaching-defs
+	@formal_in:0 -> 437:2 r.ptr.n reaching-defs
+	@formal_in:0 -> @formal_out:1 r reaching-defs
+	@formal_in:1 -> 436:2 v reaching-defs
+example.com/dataflow/sdg.AliasPtrPtr
+	477:2 -> @formal_out:0 <return> reaching-defs
+	@formal_in:0 -> 474:2 a reaching-defs
+	@formal_in:0 -> @formal_out:1 a reaching-defs
+	@formal_in:1 -> 476:2 b reaching-defs
+	@formal_in:1 -> @formal_out:2 b reaching-defs
+example.com/dataflow/sdg.AliasPtrValue
+	391:2 -> @formal_out <return> reaching-defs
+	@formal_in:0 -> 390:2 id reaching-defs
+example.com/dataflow/sdg.AliasPtrWhole
+	369:2 -> @formal_out:0 <return> reaching-defs
+	@formal_in:0 -> 367:2 req reaching-defs
+	@formal_in:0 -> 369:2 req reaching-defs
+	@formal_in:0 -> @formal_out:1 req reaching-defs
+	@formal_in:1 -> 368:2 id reaching-defs
+example.com/dataflow/sdg.AliasRefField
+	425:2 -> @formal_out:0 <return> reaching-defs
+	@formal_in:0 -> 423:2 s.m reaching-defs
+	@formal_in:0 -> 425:2 s.m[*] reaching-defs
+	@formal_in:0 -> @formal_out:1 s reaching-defs
+	@formal_in:1 -> 424:2 k reaching-defs
+	@formal_in:1 -> 425:2 k reaching-defs
+	@formal_in:2 -> 424:2 v reaching-defs
+example.com/dataflow/sdg.AliasSlicePtr
+	484:2 -> @formal_out:0 <return> reaching-defs
+	@formal_in:0 -> 482:2 s reaching-defs
+	@formal_in:0 -> 484:2 s[*] reaching-defs
+	@formal_in:0 -> @formal_out:1 s reaching-defs
+	@formal_in:1 -> 483:2 b reaching-defs
+	@formal_in:1 -> @formal_out:2 b reaching-defs
+example.com/dataflow/sdg.AliasValue
+	376:2 -> @formal_out <return> reaching-defs
+	@formal_in:0 -> 374:2 req reaching-defs
+	@formal_in:0 -> 376:2 req.UserID reaching-defs
+	@formal_in:1 -> 375:2 id reaching-defs
+example.com/dataflow/sdg.AliasValueCopies
+	417:2 -> @formal_out <return> reaching-defs
+	@formal_in:0 -> 414:2 s reaching-defs
+	@formal_in:0 -> 415:2 s reaching-defs
+	@formal_in:1 -> 416:2 v reaching-defs
+example.com/dataflow/sdg.Buffered
+	93:2 -> 93:2/actual_in:0 _recv reaching-defs
+	93:2 -> 93:2/actual_in:1 p reaching-defs
+	93:2 -> @formal_out:0 w reaching-defs
+	93:2 -> @formal_out:1 p reaching-defs
+	93:2/actual_out:0 -> 93:2 <return>:0 reaching-defs
+	93:2/actual_out:1 -> 93:2 <return>:1 reaching-defs
+	93:2/actual_out:2 -> 93:2 _recv reaching-defs
+	93:2/actual_out:3 -> 93:2 p reaching-defs
+	@formal_in:0 -> 93:2 w reaching-defs
+	@formal_in:0 -> @formal_out:0 w reaching-defs
+	@formal_in:1 -> 93:2 p reaching-defs
+	@formal_in:1 -> @formal_out:1 p reaching-defs
+example.com/dataflow/sdg.CallAliasAssign
+	382:2 -> 382:2/actual_in:0 p reaching-defs
+	382:2 -> 382:2/actual_in:1 v reaching-defs
+	382:2 -> @formal_out p reaching-defs
+	382:2/actual_out -> 382:2 p reaching-defs
+	@formal_in:0 -> 382:2 p reaching-defs
+	@formal_in:0 -> @formal_out p reaching-defs
+	@formal_in:1 -> 382:2 v reaching-defs
+example.com/dataflow/sdg.CallFuncValue
+	51:2 -> 51:9/actual_in:0 x reaching-defs
+	51:2 -> @formal_out:0 <return> reaching-defs
+	51:9/actual_out -> 51:2 <return> reaching-defs
+	@formal_in:0 -> 51:2 f reaching-defs
+	@formal_in:0 -> @formal_out:1 f reaching-defs
+example.com/dataflow/sdg.CallPromoted
+	80:2 -> 80:9/actual_in:0 _recv reaching-defs
+	80:2 -> @formal_out:0 <return> reaching-defs
+	80:2 -> @formal_out:1 o reaching-defs
+	80:9/actual_out:0 -> 80:2 <return> reaching-defs
+	80:9/actual_out:1 -> 80:2 _recv reaching-defs
+	@formal_in:0 -> 80:2 o reaching-defs
+	@formal_in:0 -> @formal_out:1 o reaching-defs
+example.com/dataflow/sdg.CallVariadic
+	195:2 -> 195:7/actual_in:0 xs reaching-defs
+	195:7/actual_out:0 -> 195:2 <return> reaching-defs
+	195:7/actual_out:1 -> 195:2 xs reaching-defs
+	196:16/actual_out:0 -> 196:2 <return>:0 reaching-defs
+	196:16/actual_out:1 -> 196:2 <return>:1 reaching-defs
+	196:2 -> 196:7/actual_in:0 xs reaching-defs
+	196:7/actual_out:0 -> 196:2 <return> reaching-defs
+	196:7/actual_out:1 -> 196:2 xs reaching-defs
+	197:15/actual_out:0 -> 197:2 <return>:0 reaching-defs
+	197:15/actual_out:1 -> 197:2 <return>:1 reaching-defs
+	197:2 -> 197:7/actual_in:0 a reaching-defs
+	197:2 -> 197:7/actual_in:1 b reaching-defs
+	197:7/actual_out -> 197:2 <return> reaching-defs
+	198:2 -> @formal_out <return> reaching-defs
+example.com/dataflow/sdg.CaptureAlias
+	499:2 -> 499:7/actual_in:0 <capture>:p reaching-defs
+	499:2 -> @formal_out p reaching-defs
+	499:7/actual_out -> 499:2 <capture>:p reaching-defs
+	499:7/actual_out -> @formal_out p reaching-defs
+	@formal_in:0 -> 499:2 p reaching-defs
+	@formal_in:0 -> 499:7/actual_in:0 <capture>:p reaching-defs
+	@formal_in:0 -> @formal_out p reaching-defs
+	@formal_in:1 -> 499:2 x reaching-defs
+	@formal_in:1 -> 499:7/actual_in:1 <capture>:x reaching-defs
+example.com/dataflow/sdg.CaptureAlias.closure_1
+	@formal_in:0 -> 499:16 p reaching-defs
+	@formal_in:0 -> @formal_out <capture>:p reaching-defs
+	@formal_in:1 -> 499:24 x reaching-defs
+example.com/dataflow/sdg.CaptureArg
+	267:2 -> 267:7/actual_in:0 f reaching-defs
+	267:7/actual_out:0 -> 267:2 <return> reaching-defs
+	267:7/actual_out:1 -> 267:2 f reaching-defs
+	268:2 -> @formal_out <return> reaching-defs
+	@formal_in:0 -> 267:13/actual_in:0 <capture>:v reaching-defs
+	@formal_in:0 -> 267:2 v reaching-defs
+example.com/dataflow/sdg.CaptureArg.closure_1
+	267:26 -> @formal_out <return> reaching-defs
+	@formal_in:0 -> 267:26 v reaching-defs
+example.com/dataflow/sdg.CaptureNamed
+	293:2 -> 293:7/actual_in:0 <capture>:err reaching-defs
+	293:2 -> @formal_out <return> reaching-defs
+	293:7/actual_out -> 293:2 <capture>:err reaching-defs
+	293:7/actual_out -> 295:2 <capture>:err reaching-defs
+	293:7/actual_out -> @formal_out <return> reaching-defs
+	@entry -> 293:7/actual_in:0 <capture>:err reaching-defs
+	@entry -> @formal_out <return> reaching-defs
+example.com/dataflow/sdg.CaptureNamed.closure_1
+	293:16 -> @formal_out <capture>:err reaching-defs
+example.com/dataflow/sdg.CaptureParam
+	301:2 -> 301:7/actual_in:0 <capture>:p reaching-defs
+	301:2 -> @formal_out p reaching-defs
+	301:7/actual_out -> 301:2 <capture>:p reaching-defs
+	301:7/actual_out -> @formal_out p reaching-defs
+	@formal_in:0 -> 301:2 p reaching-defs
+	@formal_in:0 -> 301:7/actual_in:0 <capture>:p reaching-defs
+	@formal_in:0 -> @formal_out p reaching-defs
+example.com/dataflow/sdg.CaptureParam.closure_1
+	301:16 -> @formal_out <capture>:p reaching-defs
+	@formal_in:0 -> 301:16 p reaching-defs
+	@formal_in:0 -> @formal_out <capture>:p reaching-defs
+example.com/dataflow/sdg.CaptureSite
+	214:2 -> 215:7/actual_in:0 <capture>:x reaching-defs
+	215:2 -> 215:7/actual_in:0 <capture>:x reaching-defs
+	215:7/actual_out -> 215:2 <capture>:x reaching-defs
+	219:2 -> @formal_out <return> reaching-defs
+	@formal_in:0 -> 214:2 v reaching-defs
+example.com/dataflow/sdg.CaptureSite.closure_1
+	216:3 -> @formal_out:1 <capture>:x reaching-defs
+	217:3 -> @formal_out:0 <return> reaching-defs
+	@formal_in:0 -> 216:3 x reaching-defs
+example.com/dataflow/sdg.ChainLit
+	259:2/2 -> 259:2/actual_in:0 <capture>:x reaching-defs
+	259:2/actual_out -> 259:2/2 <return> reaching-defs
+	@formal_in:0 -> 259:2/2 v reaching-defs
+example.com/dataflow/sdg.ChainLit.closure_1
+	259:25 -> @formal_out <return> reaching-defs
+	@formal_in:0 -> 259:18 x reaching-defs
+example.com/dataflow/sdg.DeadLit
+	@formal_in:0 -> 274:2 v reaching-defs
+example.com/dataflow/sdg.DeadLit.closure_1
+	276:20 -> @formal_out <return> reaching-defs
+	@formal_in:0 -> 276:20 v reaching-defs
+example.com/dataflow/sdg.DirectLit
+	226:2 -> 226:2/actual_in:0 a reaching-defs
+	226:2 -> 226:2/actual_in:1 <capture>:y reaching-defs
+	226:2/actual_out -> 226:2 <capture>:y reaching-defs
+	229:2 -> @formal_out <return> reaching-defs
+	@formal_in:0 -> 226:2 v reaching-defs
+example.com/dataflow/sdg.DirectLit.closure_1
+	227:3 -> @formal_out <capture>:y reaching-defs
+	@formal_in:0 -> 227:3 a reaching-defs
+example.com/dataflow/sdg.Inner.M
+	65:2 -> @formal_out <return> reaching-defs
+	@formal_in:0 -> 65:2 i.n reaching-defs
+example.com/dataflow/sdg.MethodExpr
+	209:2 -> 209:9/actual_in:0 s reaching-defs
+	209:2 -> 209:9/actual_in:1 k reaching-defs
+	209:2 -> @formal_out:0 <return> reaching-defs
+	209:2 -> @formal_out:1 s reaching-defs
+	209:9/actual_out:0 -> 209:2 <return> reaching-defs
+	209:9/actual_out:1 -> 209:2 s reaching-defs
+	@formal_in:0 -> 209:2 s reaching-defs
+	@formal_in:0 -> @formal_out:1 s reaching-defs
+	@formal_in:1 -> 209:2 k reaching-defs
+example.com/dataflow/sdg.MethodExprVariadic
+	287:2 -> 287:9/actual_in:0 _recv reaching-defs
+	287:2 -> @formal_out <return> reaching-defs
+	287:9/actual_out -> 287:2 <return> reaching-defs
+	@formal_in:0 -> 287:2 v reaching-defs
+example.com/dataflow/sdg.MethodValue
+	204:2 -> 204:9/actual_in:0 s reaching-defs
+	204:2 -> 204:9/actual_in:1 k reaching-defs
+	204:2 -> @formal_out:0 <return> reaching-defs
+	204:9/actual_out:0 -> 204:2 <return> reaching-defs
+	204:9/actual_out:1 -> 204:2 s reaching-defs
+	@formal_in:0 -> 203:2 s reaching-defs
+	@formal_in:0 -> @formal_out:1 s reaching-defs
+	@formal_in:1 -> 204:2 k reaching-defs
+example.com/dataflow/sdg.MixedValue
+	241:2 -> 241:9/actual_in:0 s reaching-defs
+	241:2 -> 241:9/actual_in:1 k reaching-defs
+	241:2 -> @formal_out:0 <return> reaching-defs
+	241:9/actual_out:0 -> 241:2 <return> reaching-defs
+	241:9/actual_out:1 -> 241:2 s reaching-defs
+	@formal_in:0 -> 239:3 s reaching-defs
+	@formal_in:0 -> @formal_out:1 s reaching-defs
+	@formal_in:1 -> 238:2 b reaching-defs
+example.com/dataflow/sdg.Named
+	179:2 -> @formal_out <return> reaching-defs
+example.com/dataflow/sdg.PassBuffer
+	99:2 -> 99:2/actual_in:0 w reaching-defs
+	99:2 -> 99:2/actual_in:1 p reaching-defs
+	99:2/actual_out:0 -> 99:2 w reaching-defs
+	99:2/actual_out:1 -> 99:2 p reaching-defs
+example.com/dataflow/sdg.PassDouble
+	56:2 -> 56:9/actual_in:0 f reaching-defs
+	56:2 -> @formal_out <return> reaching-defs
+	56:9/actual_out:0 -> 56:2 <return> reaching-defs
+	56:9/actual_out:1 -> 56:2 f reaching-defs
+example.com/dataflow/sdg.PassOuter
+	86:2 -> 86:7/actual_in:0 o reaching-defs
+	86:7/actual_out:0 -> 86:2 <return> reaching-defs
+	86:7/actual_out:1 -> 86:2 o reaching-defs
+	87:2 -> 87:7/actual_in:0 o reaching-defs
+	87:7/actual_out:0 -> 87:2 <return> reaching-defs
+	87:7/actual_out:1 -> 87:2 o reaching-defs
+	88:2 -> @formal_out <return> reaching-defs
+example.com/dataflow/sdg.PrunedCall
+	246:2 -> @formal_out <return> reaching-defs
+	@formal_in:0 -> 246:2 v reaching-defs
+example.com/dataflow/sdg.ScalarSink
+	510:2 -> 510:2/actual_in:0 v reaching-defs
+	510:2/actual_out -> 510:2 <return> reaching-defs
+	511:2 -> @formal_out <return> reaching-defs
+	@formal_in:0 -> 509:2 a reaching-defs
+example.com/dataflow/sdg.Stores
+	40:2 -> 40:2/actual_in:0 s reaching-defs
+	40:2 -> 40:2/actual_in:1 k reaching-defs
+	40:2/actual_out:0 -> 40:2 <return> reaching-defs
+	40:2/actual_out:1 -> 40:2 s reaching-defs
+	41:2 -> 41:2/actual_in:0 s reaching-defs
+	41:2 -> 41:2/actual_in:1 k reaching-defs
+	41:2/actual_out:0 -> 41:2 <return> reaching-defs
+	41:2/actual_out:1 -> 41:2 s reaching-defs
+	42:2 -> 42:2/actual_in:0 s reaching-defs
+	42:2 -> 42:2/actual_in:1 k reaching-defs
+	42:2/actual_out:0 -> 42:2 <return> reaching-defs
+	42:2/actual_out:1 -> 42:2 s reaching-defs
+example.com/dataflow/sdg.UseStore
+	34:2 -> 34:9/actual_in:0 _recv reaching-defs
+	34:2 -> 34:9/actual_in:1 k reaching-defs
+	34:2 -> @formal_out:0 <return> reaching-defs
+	34:2 -> @formal_out:1 s reaching-defs
+	34:9/actual_out:0 -> 34:2 <return> reaching-defs
+	34:9/actual_out:1 -> 34:2 _recv reaching-defs
+	@formal_in:0 -> 34:2 s reaching-defs
+	@formal_in:0 -> @formal_out:1 s reaching-defs
+	@formal_in:1 -> 34:2 k reaching-defs
+example.com/dataflow/sdg.Variadic
+	185:2 -> @formal_out:0 <return> reaching-defs
+	@formal_in:0 -> 185:2 xs reaching-defs
+	@formal_in:0 -> @formal_out:1 xs reaching-defs
+example.com/dataflow/sdg.a
+	308:2 -> 308:9/actual_in:0 x reaching-defs
+	308:2 -> @formal_out <return> reaching-defs
+	308:9/actual_out -> 308:2 <return> reaching-defs
+	@formal_in:0 -> 308:2 x reaching-defs
+example.com/dataflow/sdg.aliasAssign
+	@formal_in:0 -> 152:2 p reaching-defs
+	@formal_in:0 -> @formal_out p reaching-defs
+	@formal_in:1 -> 153:2 v reaching-defs
+example.com/dataflow/sdg.aliasCall
+	159:2 -> 159:2/actual_in:0 p reaching-defs
+	@formal_in:0 -> 158:2 p reaching-defs
+	@formal_in:0 -> @formal_out p reaching-defs
+example.com/dataflow/sdg.aliasRange
+	@formal_in:0 -> 145:2 s reaching-defs
+	@formal_in:0 -> @formal_out s reaching-defs
+	@formal_in:1 -> 146:3 v reaching-defs
+example.com/dataflow/sdg.apply
+	262:32 -> @formal_out:0 <return> reaching-defs
+	262:39/actual_out -> 262:32 <return> reaching-defs
+	@formal_in:0 -> 262:32 f reaching-defs
+	@formal_in:0 -> @formal_out:1 f reaching-defs
+example.com/dataflow/sdg.b
+	312:2 -> 312:9/actual_in:0 x reaching-defs
+	312:2 -> @formal_out <return> reaching-defs
+	312:9/actual_out -> 312:2 <return> reaching-defs
+	@formal_in:0 -> 312:2 x reaching-defs
+example.com/dataflow/sdg.c
+	316:2 -> @formal_out <return> reaching-defs
+	@formal_in:0 -> 316:2 x reaching-defs
+example.com/dataflow/sdg.callIgnore
+	326:2 -> 326:9/actual_in:0 x reaching-defs
+	326:2 -> 326:9/actual_in:1 y reaching-defs
+	326:2 -> @formal_out <return> reaching-defs
+	326:9/actual_out -> 326:2 <return> reaching-defs
+	@formal_in:0 -> 326:2 v reaching-defs
+	@formal_in:1 -> 326:2 w reaching-defs
+example.com/dataflow/sdg.callUnknown
+	252:2 -> @formal_out:0 <return> reaching-defs
+	@formal_in:0 -> 252:2 f reaching-defs
+	@formal_in:0 -> @formal_out:1 f reaching-defs
+example.com/dataflow/sdg.double
+	46:2 -> @formal_out <return> reaching-defs
+	@formal_in:0 -> 46:2 x reaching-defs
+example.com/dataflow/sdg.dropX
+	333:3 -> @formal_out <return> reaching-defs
+	335:2 -> 335:9/actual_in:0 y reaching-defs
+	335:2 -> @formal_out <return> reaching-defs
+	335:9/actual_out -> 335:2 <return> reaching-defs
+	@formal_in:1 -> 332:2 y reaching-defs
+	@formal_in:1 -> 333:3 y reaching-defs
+	@formal_in:1 -> 335:2 y reaching-defs
+example.com/dataflow/sdg.dropY
+	339:2 -> 339:9/actual_in:0 x reaching-defs
+	339:2 -> 339:9/actual_in:1 y reaching-defs
+	339:2 -> @formal_out <return> reaching-defs
+	339:9/actual_out -> 339:2 <return> reaching-defs
+	@formal_in:0 -> 339:2 y reaching-defs
+example.com/dataflow/sdg.ignore
+	322:2 -> @formal_out <return> reaching-defs
+	@formal_in:1 -> 322:2 y reaching-defs
+example.com/dataflow/sdg.implicit
+	346:3 -> @formal_out <return> reaching-defs
+	348:2 -> @formal_out <return> reaching-defs
+	@formal_in:0 -> 345:2 x reaching-defs
+example.com/dataflow/sdg.initConfig
+	111:2 -> @formal_out <global>:example.com/dataflow/sdg::Config reaching-defs
+example.com/dataflow/sdg.memStore.Get
+	21:2 -> @formal_out:0 <return> reaching-defs
+	@formal_in:0 -> 21:2 s.m[*] reaching-defs
+	@formal_in:0 -> @formal_out:1 s reaching-defs
+	@formal_in:1 -> 21:2 k reaching-defs
+example.com/dataflow/sdg.multiT.Multi
+	174:2 -> @formal_out:0 <return>:0 reaching-defs
+	174:2 -> @formal_out:1 <return>:1 reaching-defs
+	@formal_in:0 -> 174:2 s.n reaching-defs
+	@formal_in:1 -> 174:2 a reaching-defs
+example.com/dataflow/sdg.mutate
+	132:2 -> @formal_out:0 p reaching-defs
+	133:2 -> @formal_out:1 s reaching-defs
+	@formal_in:0 -> 132:2 p reaching-defs
+	@formal_in:0 -> @formal_out:0 p reaching-defs
+	@formal_in:1 -> 133:2 s.m reaching-defs
+	@formal_in:1 -> @formal_out:1 s reaching-defs
+	@formal_in:3 -> 135:2 q reaching-defs
+	@formal_in:3 -> @formal_out:2 q reaching-defs
+example.com/dataflow/sdg.pair
+	188:26 -> @formal_out:0 <return>:0 reaching-defs
+	188:26 -> @formal_out:1 <return>:1 reaching-defs
+example.com/dataflow/sdg.readConfig
+	116:10/actual_out -> 116:3 <return> reaching-defs
+	116:3 -> 116:10/actual_in:0 <global>:example.com/dataflow/sdg::Config reaching-defs
+	116:3 -> @formal_out <return> reaching-defs
+	118:2 -> @formal_out <return> reaching-defs
+	@formal_in:0 -> 115:2 example.com/dataflow/sdg::Config reaching-defs
+	@formal_in:0 -> 116:3 example.com/dataflow/sdg::Config reaching-defs
+	@formal_in:0 -> 118:2 example.com/dataflow/sdg::Config reaching-defs
+example.com/dataflow/sdg.readConst
+	126:2 -> @formal_out <return> reaching-defs
+example.com/dataflow/sdg.sinkInt
+	504:27 -> @formal_out <return> reaching-defs
+	@formal_in:0 -> 504:27 v reaching-defs
+example.com/dataflow/sdg.sqlStore.Get
+	29:2 -> @formal_out:0 <return> reaching-defs
+	@formal_in:0 -> 29:2 s.dsn reaching-defs
+	@formal_in:0 -> @formal_out:1 s reaching-defs
+	@formal_in:1 -> 29:2 k reaching-defs
+example.com/dataflow/sdg.sqlStore.setDSN
+	140:2 -> @formal_out s reaching-defs
+	@formal_in:0 -> 140:2 s reaching-defs
+	@formal_in:0 -> @formal_out s reaching-defs
+	@formal_in:1 -> 140:2 d reaching-defs
+example.com/dataflow/sdg.sumT.Sum
+	282:34 -> @formal_out:0 <return> reaching-defs
+	@formal_in:1 -> 282:34 xs reaching-defs
+	@formal_in:1 -> @formal_out:1 xs reaching-defs
+example.com/dataflow/sdg.takeGReq
+	463:24 -> @formal_out:0 <return> reaching-defs
+	@formal_in:0 -> 463:24 example.com/dataflow/sdg::GReq reaching-defs
+	@formal_in:0 -> @formal_out:1 <global>:example.com/dataflow/sdg::GReq reaching-defs
+example.com/dataflow/sdg.takeInner
+example.com/dataflow/sdg.takeTwo
+	190:30 -> @formal_out <return> reaching-defs
+	@formal_in:0 -> 190:30 a reaching-defs
+	@formal_in:1 -> 190:30 b reaching-defs
+example.com/dataflow/sdg.unusedRef
+	166:2 -> @formal_out <return> reaching-defs
+	@formal_in:1 -> 166:2 v reaching-defs
+example.com/dataflow/sdg.upper
+	232:31 -> @formal_out <return> reaching-defs
+	@formal_in:0 -> 232:31 t reaching-defs
+example.com/dataflow/sdg.useConfig
+	122:2 -> 122:9/actual_in:0 <global>:example.com/dataflow/sdg::Config reaching-defs
+	122:2 -> @formal_out <return> reaching-defs
+	122:9/actual_out -> 122:2 <return> reaching-defs
+	@formal_in:0 -> 122:2 example.com/dataflow/sdg::Config reaching-defs

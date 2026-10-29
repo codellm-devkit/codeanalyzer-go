@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 
+	"github.com/codellm-devkit/codeanalyzer-go/internal/astwalk"
 	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
 )
 
@@ -34,12 +35,12 @@ import (
 //     statement gets one only as a label target. Function literal bodies are
 //     skipped: closures are their own callables.
 //
-// calls holds the L1 call-node keys in L1 recording order (v2.CallBodyKeys
-// over the callable's call sites). They are paired with the body's call
-// expressions by recording index (ruling R5), never by position: under a
-// //line directive the recorded line:col does not name the call's token.Pos.
-// The caller checks len(calls) == RecordedCallCount(body); surplus keys are
-// ignored and calls past the end of the list get no call node.
+// calls holds the L1 call nodes: each call-node key (v2.CallBodyKeys over the
+// callable's call sites) with the raw CallExpr.Lparen of its site. They are
+// paired with the body's call expressions by Lparen — never by index or by
+// line:col — so their order is irrelevant. A call no entry names gets no call
+// node; entries naming no call of the body are ignored. Run skips a unit
+// with an unpaired call rather than build it.
 //
 // Keys: call nodes take their L1 key. Statement nodes take
 // v2.LocalID(line, col) of their anchor; a statement starting with a call
@@ -52,11 +53,14 @@ import (
 // synthetic nodes have NoPos and a nil Stmt. A nil body yields an empty slice
 // and an empty map (no entry/exit: a bodyless callable has no flow).
 //
+// Spans: a node's End is clampEnd'ed to Pos's file (a malformed file's
+// recovered nodes can end past it).
+//
 // The returned map keys every node's Stmt to its key. It also maps the AST
 // nodes folded into a node to that node's key: a bare or `go` call's
 // *ast.CallExpr, an if/for/switch init, a for post, a type switch guard, a comm
 // clause's statement, and a *ast.LabeledStmt (to its inner statement's node).
-func BuildNodes(fset *token.FileSet, body *ast.BlockStmt, calls []string) ([]Node, map[ast.Node]string) {
+func BuildNodes(fset *token.FileSet, body *ast.BlockStmt, calls []UnitCall) ([]Node, map[ast.Node]string) {
 	if body == nil {
 		return []Node{}, map[ast.Node]string{}
 	}
@@ -66,8 +70,8 @@ func BuildNodes(fset *token.FileSet, body *ast.BlockStmt, calls []string) ([]Nod
 		taken:   make(map[string]bool, len(calls)),
 		keyOf:   map[ast.Node]string{},
 	}
-	for _, k := range calls {
-		b.taken[k] = true
+	for _, c := range calls {
+		b.taken[c.Key] = true
 	}
 	b.stmtList(body.List)
 
@@ -75,7 +79,8 @@ func BuildNodes(fset *token.FileSet, body *ast.BlockStmt, calls []string) ([]Nod
 	out := make([]Node, 0, len(b.nodes)+2)
 	out = append(out, Node{Key: EntryKey, Kind: KindEntry})
 	for _, n := range b.nodes {
-		p, e := fset.Position(n.Pos), fset.Position(n.End)
+		n.End = clampEnd(fset, n.Pos, n.End)
+		p, e := fset.PositionFor(n.Pos, false), fset.PositionFor(n.End, false)
 		n.StartLC, n.EndLC = [2]int{p.Line, p.Column}, [2]int{e.Line, e.Column}
 		out = append(out, n)
 	}
@@ -83,43 +88,57 @@ func BuildNodes(fset *token.FileSet, body *ast.BlockStmt, calls []string) ([]Nod
 	return out, b.keyOf
 }
 
-// recordedCalls lists body's call expressions in the L1 recording order of
-// buildCallSites (internal/syntactic_analysis): pre-order — an outer call
-// before the calls nested in it, a `go` / `defer` statement's call before the
-// calls in its function value and arguments — and no function literal bodies.
-// The two walks must stay identical: keys pair with calls by index (R5).
-func recordedCalls(body *ast.BlockStmt) []*ast.CallExpr {
-	var out []*ast.CallExpr
-	ast.Inspect(body, func(n ast.Node) bool {
-		switch n := n.(type) {
-		case *ast.FuncLit:
-			return false
-		case *ast.CallExpr:
-			out = append(out, n)
-		}
-		return true
-	})
-	return out
+// clampEnd keeps a node's End inside the file its Pos is in (#28). The
+// parser recovers from a syntax error with nodes whose End is one past the
+// end of their file: in a shared FileSet that position has no file (the last
+// file) or is the next file's base. Such an End is clamped to the end of
+// Pos's file: the recovered node really runs to there (recovery swallowed
+// the rest of the file), so the span keeps all of its text and stays in its
+// own file. An End before Pos in the same file (no known source of one) is
+// clamped to Pos, an empty span: no text is invented. A Pos with no file is
+// left as it is.
+func clampEnd(fset *token.FileSet, pos, end token.Pos) token.Pos {
+	tf := fset.File(pos)
+	if tf == nil {
+		return end
+	}
+	if fset.File(end) != tf {
+		return tf.Pos(tf.Size())
+	}
+	if end < pos {
+		return pos
+	}
+	return end
 }
 
-// RecordedCallCount is the number of L1 call sites body records: the length
-// the calls argument of BuildNodes must have.
+// RecordedCallCount is the number of L1 call sites body records
+// (astwalk.Calls): a cross-check on the length of a unit's calls.
 func RecordedCallCount(body *ast.BlockStmt) int {
-	if body == nil {
-		return 0
-	}
-	return len(recordedCalls(body))
+	return len(astwalk.Calls(body))
 }
 
-// assignCallKeys pairs the i-th recorded call with the i-th L1 key.
-func assignCallKeys(body *ast.BlockStmt, calls []string) map[*ast.CallExpr]string {
-	out := map[*ast.CallExpr]string{}
-	for i, call := range recordedCalls(body) {
-		if i < len(calls) {
-			out[call] = calls[i]
+// assignCallKeys pairs each recorded call of body with the L1 key whose
+// Lparen is the call's.
+func assignCallKeys(body *ast.BlockStmt, calls []UnitCall) map[*ast.CallExpr]string {
+	out, _ := pairCalls(body, calls)
+	return out
+}
+
+// pairCalls pairs each recorded call of body with the L1 key whose Lparen is
+// the call's, and returns the pairs and the number of recorded calls.
+func pairCalls(body *ast.BlockStmt, calls []UnitCall) (map[*ast.CallExpr]string, int) {
+	byLparen := make(map[token.Pos]string, len(calls))
+	for _, c := range calls {
+		byLparen[c.Lparen] = c.Key
+	}
+	recorded := astwalk.Calls(body)
+	out := make(map[*ast.CallExpr]string, len(recorded))
+	for _, c := range recorded {
+		if k, ok := byLparen[c.Expr.Lparen]; ok {
+			out[c.Expr] = k
 		}
 	}
-	return out
+	return out, len(recorded)
 }
 
 type builder struct {
@@ -270,15 +289,24 @@ func (b *builder) folded(k string, s ast.Stmt) {
 // position's LocalID, or the next free "/n" suffix when an L1 call (or an
 // earlier node) already holds it.
 func (b *builder) add(kind NodeKind, n ast.Node, pos, end token.Pos) string {
-	p := b.fset.Position(pos)
-	base := v2.LocalID(p.Line, p.Column)
-	key := base
-	for i := 2; b.taken[key]; i++ {
-		key = base + "/" + strconv.Itoa(i)
-	}
-	b.taken[key] = true
+	p := b.fset.PositionFor(pos, false)
+	key := NextFreeKey(v2.LocalID(p.Line, p.Column), b.taken)
 	b.nodes = append(b.nodes, Node{Key: key, Kind: kind, Pos: pos, End: end, Stmt: n})
 	b.keyOf[n] = key
+	return key
+}
+
+// NextFreeKey returns base, or base + "/n" for the least n ≥ 2 that taken
+// does not hold, and marks it taken. It is the one rule for keying a node at
+// a position an L1 call (or an earlier node) may already hold: body nodes
+// (BuildNodes) and the L4 capture sites both use it, so neither ever moves
+// an L1 call key.
+func NextFreeKey(base string, taken map[string]bool) string {
+	key := base
+	for i := 2; taken[key]; i++ {
+		key = base + "/" + strconv.Itoa(i)
+	}
+	taken[key] = true
 	return key
 }
 

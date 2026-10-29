@@ -24,6 +24,9 @@ jobs:
       - name: Test
         run: go test ./... -count=1
 
+      - name: Metamorphic script arguments
+        run: scripts/metamorphic_args_test.sh
+
   # The release binary is built with the latest Go (release.yml), so test on
   # it too; the job above tests the go.mod minimum.
   test-stable:

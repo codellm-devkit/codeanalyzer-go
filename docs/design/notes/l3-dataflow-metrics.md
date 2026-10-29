@@ -31,8 +31,8 @@ degraded-input details. This note reuses its timings and extends its counts.
   rerun on the same trees where the earlier outputs were not kept (dae linux, both Kubernetes
   modules).
 
-One analysis engine, so there is no engine comparison here. Interprocedural (L4) results will be
-added under [§ L4](#l4-to-be-added).
+One analysis engine, so there is no engine comparison here. Interprocedural (L4) results, measured
+2026-10-27, are under [§ L4](#l4).
 
 ## Results at a glance
 
@@ -102,7 +102,13 @@ scripts/eval_l3.sh cobra listmonk memos nats-server openbao dae kubernetes k8s-a
 # L3 metrics and consistency checks, one JSON object per app:
 python3 -I scripts/l3_metrics.py cobra=/tmp/eval-out/cobra-a3j1/analysis.json \
   k8s-api=/tmp/eval-out/k8s-api-a3j1/analysis.json ... > metrics.jsonl
+
+# § L4: add the -a 4 triple (-j 1, -j N, rerun; byte-compared) and its counts:
+CANGO_LEVELS="2 3 4" scripts/eval_l3.sh cobra listmonk memos nats-server openbao dae kubernetes k8s-api
+python3 -I scripts/l3_metrics.py cobra=/tmp/eval-out/cobra-a4j1/analysis.json ... > metrics-a4.jsonl
 ```
+
+(`--all` also names cockroach, which is not prepared on this host, so the apps are listed.)
 
 - **What `--prepare` does.** For each app in the script's manifest: a shallow, blob-filtered fetch
   of the pinned commit into `/tmp/eval/<repo>` (an existing clone is reused only at that commit),
@@ -112,6 +118,9 @@ python3 -I scripts/l3_metrics.py cobra=/tmp/eval-out/cobra-a3j1/analysis.json \
 - **What `eval_l3.sh` does.** It runs a warm-up, `-a 2 -j 1`, `-a 3 -j 1` and two `-a 3 -j N`,
   all `--eager`, with each app's manifest env (dae: `GOOS=linux`). It records wall time and peak
   RSS from `/usr/bin/time -l`, then compares the three `-a 3` outputs byte for byte.
+- **Metamorphic relations (`scripts/metamorphic.sh`).** Run the default, `scripts/metamorphic.sh`
+  (memos, about 2 min), for any L3/L4 change; run `scripts/metamorphic.sh --all` (memos and
+  nats-server, about 25 min) before a release and for the Task 18 eval.
 - **What `scripts/l3_metrics.py` does.** It produces every count, ratio, distribution and check in
   this note. It has no dependencies and loads one file at a time; the 318 MB Kubernetes root file
   takes about 10 s. The per-family protobuf breakdown and the before/after edge diffs were
@@ -786,26 +795,432 @@ in any total above.
   node against every def in the body. A reviewer probe of one 6,000-case switch-heavy function
   took 15 s. Nothing in this corpus comes close.
 
-## L4 (to be added)
+## L4
 
-L4 (interprocedural SDG) results will be added here, over the same corpus and pinned commits, with
-the same reproduction harness (`scripts/eval_l3.sh --prepare`, then run). Planned measurements:
+L4 is the interprocedural system dependence graph (SDG). At `-a 4`, on top of L3, every callable
+gets `formal_in` / `formal_out` vertices, and every resolved call site gets `actual_in` /
+`actual_out` vertices. These are wired into the callable's `ddg` (`prov:["reaching-defs"]`). The
+application carries `param_in` / `param_out`, every call site carries `summary` edges, VTA adds
+dispatch targets to `call_graph` (`prov:["vta"]`), library callees get stand-in formals in
+`external_symbols[].body`, and a type-based may-alias oracle adds `ddg` edges with
+`prov:["points-to"]`. The semantics are in [`v2-l3-l4-dataflow.md`](../specs/v2-l3-l4-dataflow.md)
+§4.6–§4.16 and §6.
 
-- **The points-to delta.** `ddg` edges with `prov:["points-to"]` added on top of the L3 `ssa`
-  edges, which must be strictly additive (§4.10): count, share, per-app, and which access-path
-  shapes the type-based oracle links.
-- **Parameter wiring.** `@formal_in` / `@formal_out` vertices and the per-call-site actual
-  vertices (§4.6), and `GO_PARAM_IN` / `GO_PARAM_OUT` edges (§4.7). These are counted per callable
-  and per resolved call site, against L2's `call_graph` edges.
-- **Summary edges** (§4.9): count, SCC sizes, fixpoint iterations on recursive SCCs, and the
-  cost of the bottom-up pass.
-- **Library stand-ins** (§6): the number of external stand-ins with modelled bodies, and how many
-  `formal_in`/`formal_out` vertices they contribute.
-- **VTA dispatch** (§4.8): call edges added over the `go/types` call graph.
-- **Cost and size.** Wall time, RSS and `analysis.json` growth of `-a 4` over `-a 3`, plus the
-  `-j` determinism check, with Kubernetes as the scale benchmark.
-- **Consistency at scale.** Every param edge joins a real call site to a real formal, and every
-  summary edge spans a call site's actual-in to actual-out.
-- **Effect on the L3 caveats above.** Whether points-to edges make the weak-def tail denser, and
-  whether the protobuf-marshaller triangle compounds across `MarshalToSizedBuffer(dAtA[:i])`
-  calls once they are wired interprocedurally.
+- **When and where:** measured 2026-10-28 on the same host, an Apple M3 Max (16 cores, 64 GB,
+  macOS 15). The analyzer was built by `scripts/eval_l3.sh` with **go1.27.3** (`runtime.Version()`),
+  and every run used `GOTOOLCHAIN=go1.27.3`. Every number in this section is go1.27.3 unless it
+  says otherwise: figures quoted from earlier task reports carry their toolchain in parentheses.
+  Absolute RSS differs by about 1 GB between go1.26.4 and go1.27.3 on nats-server (Task 15b), so
+  do not compare figures across toolchains.
+- **Binary:** `feat/l4-sdg` at `98ebfef`, a clean tree: the final head of the branch, every
+  review fix included. The first L4 eval (2026-10-27, `c230592` on the pre-rebase branch; its
+  analyzer and scripts are `a2e7ea0` here) predates the final-review fixes (VTA through
+  wrappers, SSA for every package variant, the library-origin CHA complement); § What changed
+  since the earlier measurements compares the two.
+- **Protocol:** `CANGO_LEVELS="2 3 4" scripts/eval_l3.sh` over the same eight prepared trees and
+  pinned commits as the L3 sections. Each app runs the L3 sequence (§ How to reproduce) and then
+  the **`-a 4` triple**: `-a 4 -j 1 -v`, `-a 4 -j 16`, and a second `-a 4 -j 16`, all
+  `--eager`. The three `-a 4` files are compared byte for byte. Wall time, user CPU and peak RSS
+  come from `/usr/bin/time -l`. That peak is the **whole process**: load, L1–L3, SSA, VTA, the
+  L4 overlay and the streamed emission. L4 counts come from `scripts/l3_metrics.py` (its new `l4`
+  object) and the `-v` log.
+- **Gate (spec §8):** every app completes `-a 4` with no crash, and its three outputs are
+  byte-identical. Memory is **measured and reported, not gated** (D3, user ruling 2026-10-26):
+  L4 is whole-program, and the former "≤ 1.5× `-a 3`" budget is dropped. The table reports the
+  absolute peak and its ratio to `-a 3`.
+
+### Results at a glance (L4)
+
+| | 6 apps | Kubernetes (`kubernetes` + `k8s-api`) |
+|---|---|---|
+| `-a 4` complete, no crash | 6/6 | 2/2 |
+| `-j 1` = `-j 16` = `-j 16`, byte-identical | 6/6 | 2/2 |
+| wall `-a 3` → `-a 4`, `-j 1` | 12.7 → 48.0 s | 12.8 → 38.4 s / 5.2 → 10.6 s |
+| peak RSS `-a 4 -j 1` (× `-a 3`) | 287 MB (1.15×) to 5.9 GB (1.17×); nats-server 4.1 GB (3.77×) | **7.9 GB (0.99–1.13×)** / 2.5 GB (1.23×) |
+| `analysis.json` `-a 3` → `-a 4` | 263 MB → 2.83 GB (10.8×; nats-server alone 1.78 GB) | 343 MB → 1.43 GB (4.2×) / 193 → 360 MB (1.9×) |
+| vertices | 2.49M | 1.22M / 242k |
+| `param_in` / `param_out` | 1.24M / 0.77M | 495k / 432k / 91k / 88k |
+| `summary` | 3.79M | 1.36M / 206k |
+| port `ddg` (`reaching-defs`) / `points-to` `ddg` | 4.91M / 654k | 1.94M / 374k / 439k / 39k |
+| stand-ins (externals with a body) | 4,591 | 1,679 / 129 |
+| bound call sites with a VTA-only target | 2.8–13.0% | 13.5% (13,770) / 0.4% |
+| consistency checks (L3 and L4) | all PASS | all PASS |
+| degraded codes | `range_func` (5 apps), `unmapped_ssa` (4) | `range_func`, `unmapped_ssa` / none |
+
+**Key takeaways.**
+
+1. **The scale gate passes.** The Kubernetes root completes `-a 4` in 38.4 s at `-j 1` (36.2 s at
+   `-j 16`) with a whole-process peak of 7.9 GB, and its three outputs are byte-identical. Its
+   `-a 3` peak varies from run to run (7.0–8.0 GB over three runs, against a steady 7.9 GB at
+   `-a 4`), so the ratio is 0.99–1.13×; the `go/packages` load still dominates RSS. L4 adds
+   26 s of wall time: SSA takes 0.9 s, the CHA complement's library-origin fixpoint about 6 s,
+   VTA 2.4 s and the overlay 11.1 s, and the rest is emitting the 1.43 GB file.
+2. **Memory is not the problem L4 has; output size is.** RSS grows by 15–50% on five of the
+   six apps, by up to 13% on the Kubernetes root and by 23% on `k8s-api`. nats-server is the
+   outlier at 3.8× (4.1 GB). It has one giant recursive SCC whose global footprint (A4) gives
+   91% of its 1.59M vertices a `<global>:` `of`. The JSON grows
+   3–10× on the hand-written apps and 22.7× on nats-server (78 MB → 1.78 GB). Most of those
+   bytes are `<global>:` vertices, their port wiring, and param edges carrying full global ids.
+3. **Summaries are near all-to-all, as A15 predicts.** 74–94% of call sites with summary edges
+   have every `actual_in` → `actual_out` pair. At statement granularity the host already links
+   every use to every def (the L3 call rule), so a summary contributes the callee's global and
+   by-ref footprint, not intra-caller precision.
+4. **VTA matters on a small share of call sites, but they are the ones taint needs.** Of the call
+   sites that bind a target, 2.8–6.7% gain one that only VTA or the CHA complement found on five
+   of the six apps, 13.0% on openbao and 13.5% on the Kubernetes root: interface calls
+   (`store.Driver` in memos, `Repo` in the done fixture), function values, receivers that came
+   out of library code, and the D7 interface-method binding on top. `k8s-api`, generated
+   marshallers with no interfaces, has 0.4%.
+5. **The points-to delta is moderate and strictly additive.** It is 4–28% of the port `ddg` on
+   five of the six apps (nats-server 9.6%), 52% on cobra, whose port `ddg` is small, and 19% / 9%
+   on Kubernetes. The superset gate holds: every `-a 3` edge is in the `-a 4` file unchanged.
+6. **Global port wiring is the volume driver.** On nats-server, 2.87M of 3.09M port `ddg` edges
+   (93%) carry a global `var`. On listmonk, one function, `cmd.initHTTPHandlers` (a route table
+   that registers about 300 handlers), holds 475k of the app's 523k port edges (91%). It is the
+   host of hundreds of calls, each with the same global actuals, and the coarse host wiring
+   multiplies them: every host use feeds every `actual_in`. (Both splits are from the first L4
+   eval; neither app's port `ddg` has moved by more than 0.1% since.)
+7. **Degradation is reported, never silent.** Five of the six apps and the Kubernetes root use
+   range-over-func somewhere (`range_func`, D8). Four apps and the root carry `unmapped_ssa`,
+   which comes almost entirely from closures in package-level `var` initializers. No app hit
+   `no_ssa`, `no_vta`, `no_cha`, `partial_ssa`, `partial_types` or `l3_skipped`.
+
+### Per-app results (L4)
+
+Times are seconds, RSS is MB (2^20 bytes), and JSON is MB (10^6 bytes). Every row is
+go1.27.3, `--eager`, one timed run per configuration.
+
+| app | wall `-a 3 -j 1` | wall `-a 4 -j 1` | wall `-a 4 -j 16` | user CPU `-a 4 -j 1` | RSS `-a 3 -j 1` | RSS `-a 4 -j 1` | RSS × | JSON `-a 3` | JSON `-a 4` | JSON × | SSA | VTA | overlay | `-a 4` identical |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| cobra | 0.44 | 0.55 | 0.54 | 1.19 | 250 | 287 | 1.15 | 2.1 | 6.8 | 3.2 | 13 ms | 5 ms | 69 ms | yes |
+| listmonk | 0.90 | 2.37 | 2.38 | 5.85 | 912 | 1,369 | 1.50 | 10.6 | 103.3 | 9.8 | 35 ms | 29 ms | 1.00 s | yes |
+| memos | 2.48 | 5.05 | 4.79 | 13.52 | 2,319 | 2,894 | 1.25 | 43.2 | 184.6 | 4.3 | 190 ms | 144 ms | 1.29 s | yes |
+| nats-server | 2.29 | 23.82 | 23.26 | 43.53 | 1,110 | 4,182 | **3.77** | 78.2 | 1,776.7 | **22.7** | 217 ms | 182 ms | 14.68 s | yes |
+| openbao | 4.77 | 12.06 | 11.44 | 32.30 | 5,072 | 5,925 | 1.17 | 101.6 | 569.7 | 5.6 | 300 ms | 390 ms | 3.96 s | yes |
+| dae (linux) | 1.83 | 4.17 | 3.89 | 10.35 | 1,492 | 2,104 | 1.41 | 27.5 | 193.3 | 7.0 | 82 ms | 89 ms | 1.39 s | yes |
+| **kubernetes** | 12.75 | **38.37** | 36.16 | 79.10 | 8,103 | **8,076** | 1.00 | 343.2 | 1,425.8 | 4.2 | 935 ms | 2.44 s | 11.06 s | **yes** |
+| k8s-api | 5.22 | 10.58 | 9.50 | 24.87 | 2,052 | 2,533 | 1.23 | 192.8 | 360.2 | 1.9 | 443 ms | 295 ms | 3.41 s | yes |
+
+`-j 16` barely helps at `-a 4`, by at most 2.2 s: SSA, VTA, the CHA complement and the summary
+pass run serially by design (D2, `ssa.BuildSerially`; the SCC pass is serial for determinism),
+and emission is one stream.
+
+**Kubernetes RSS is noisy at `-a 3`.** Two repeat runs of the same binary, `-j 1 --eager`, gave
+`-a 3` 13.73 s / 7,139 MB and 13.57 s / 8,213 MB, and `-a 4` 40.08 s / 8,079 MB and 39.17 s /
+8,124 MB. The `-a 4` peak is steady at 7.9 GB; the `-a 3` peak moves by about 1 GB with GC
+timing during the load, so the ratio over the three paired runs is 0.99–1.13×.
+
+| app | vertices | `formal_in` / `formal_out` | `actual_in` / `actual_out` | `<global>:` share of vertices | `param_in` | `param_out` | `summary` | sites with summary: all-to-all | port `ddg` | `points-to` `ddg` | stand-ins (formals) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| cobra | 7,500 | 945 / 965 | 2,596 / 2,994 | 21.1% | 2,638 | 3,044 | 6,056 | 1,235: 74.2% | 10,799 | 5,637 | 91 (337) |
+| listmonk | 58,546 | 3,698 / 3,721 | 26,432 / 24,695 | 46.6% | 28,279 | 26,666 | 40,912 | 6,105: 80.3% | 522,668 | 20,767 | 506 (2,021) |
+| memos | 181,608 | 29,866 / 29,282 | 59,137 / 63,323 | 32.5% | 63,547 | 68,487 | 236,583 | 19,178: 85.5% | 250,469 | 68,956 | 834 (3,273) |
+| nats-server | 1,585,369 | 324,214 / 155,426 | 734,885 / 370,844 | **91.1%** | 864,091 | 433,667 | 2,577,267 | 30,005: 79.0% | 3,094,417 | 295,787 | 667 (2,503) |
+| openbao | 477,113 | 92,049 / 61,133 | 183,481 / 140,450 | 57.2% | 212,468 | 171,261 | 680,354 | 37,783: 81.7% | 724,250 | 195,336 | 1,646 (6,848) |
+| dae | 177,435 | 30,942 / 28,116 | 59,920 / 58,457 | 65.6% | 71,926 | 69,991 | 246,279 | 12,210: 81.6% | 311,385 | 67,149 | 847 (3,317) |
+| **kubernetes** | 1,215,278 | 241,510 / 205,241 | 416,744 / 351,783 | 43.1% | 495,377 | 431,709 | 1,361,329 | 99,349: 75.7% | 1,943,025 | 373,553 | 1,679 (6,456) |
+| k8s-api | 242,414 | 27,556 / 35,489 | 91,428 / 87,941 | 7.2% | 91,428 | 87,941 | 205,643 | 40,856: 93.7% | 439,414 | 38,963 | 129 (812) |
+
+Notes:
+- The `-v` log's "port edges" count includes the `points-to` edges. The table splits them:
+  port = `reaching-defs`, plus `points-to`.
+- A stand-in is an external with a `body`. Every external a call site targets has one, except
+  for the zero to thirteen per app whose formals are empty (`runtime.Gosched`).
+
+| app | call nodes | sites that bind a target | with a VTA-only target | with ≥ 2 targets | `call_graph` VTA edges | VTA function set (library targets) | VTA edges | sites with targets (log) | non-call capture sites | degraded |
+|---|---|---|---|---|---|---|---|---|---|---|
+| cobra | 1,474 | 1,243 | 35 (2.8%) | 14 | 45 | 411 (83) | 1,294 | 1,247 | 37 | none |
+| listmonk | 7,057 | 6,126 | 224 (3.7%) | 67 | 272 | 1,809 (640) | 7,304 | 6,194 | 47 | `range_func` (1 pkg, 1 callable) |
+| memos | 23,781 | 19,248 | 1,277 (6.6%) | 797 | 1,069 | 7,893 (1,443) | 21,417 | 19,475 | 380 | `range_func` (7, 10); `unmapped_ssa` (2 fn / 4 calls) |
+| nats-server | 38,335 | 30,134 | 1,800 (6.0%) | 1,069 | 2,133 | 10,473 (718) | 39,668 | 30,806 | 587 | `range_func` (2, 27); `unmapped_ssa` (25 / 4) |
+| openbao | 51,991 | 37,999 | 4,928 (13.0%) | 4,226 | 4,743 | 19,978 (3,181) | 58,876 | 39,232 | 822 | `range_func` (5, 6); `unmapped_ssa` (10 / 12) |
+| dae | 15,354 | 12,269 | 817 (6.7%) | 425 | 890 | 4,498 (1,286) | 14,104 | 12,645 | 263 | `range_func` (5, 5); `unmapped_ssa` (40 / 125) |
+| **kubernetes** | 193,481 | 101,948 | 13,770 (13.5%) | 5,514 | 15,943 | 94,601 (41,107) | 249,493 | 104,586 | 3,890 | `range_func` (26, 49); `unmapped_ssa` (3,720 / 39,700) |
+| k8s-api | 87,808 | 40,856 | 172 (0.4%) | 0 | 172 | 26,527 (8,570) | 52,526 | 40,856 | 175 | none |
+
+- **"Sites that bind a target"** are call nodes with at least one `param_in` from an `actual_in`.
+  A call node binds nothing when its callee has no formals (`runtime.Gosched`), when the CFG
+  pruned it, or when it is unresolved: a builtin, a conversion, or a function value VTA did not
+  resolve.
+- **"VTA-only"** means at least one bound target is not the call node's static `callee`. It
+  includes the CHA complement's targets (§ Limitations (L4)), which the dispatch adds before VTA.
+- **"Sites with targets (log)"** is the analyzer's own dispatch count. It also counts sites whose
+  only target has no formals.
+- **Degraded:** the `range_func` figures are (packages, callables) and the `unmapped_ssa`
+  figures are (functions / calls), from the `-v` line.
+
+### What changed since the earlier measurements
+
+**Since the first L4 eval (`c230592`, 2026-10-27, same host and toolchain).** The final-review
+fixes added dispatch targets, and every new target adds formals, actuals and their edges. The
+L3 part of every `-a 4` file is unchanged (its body, `cfg`, `cdg` and `ssa`-`ddg` counts equal the
+`-a 3` file's on all eight apps). Growth in vertices / `param_in` / `summary`, and in bound sites
+with a VTA-only target:
+
+| app | vertices | `param_in` | `summary` | VTA-only sites | wall `-a 4 -j 1` |
+|---|---|---|---|---|---|
+| cobra | +0.1% | +0.1% | +0.1% | 32 → 35 | 0.54 → 0.55 s |
+| listmonk | 0 | +0.03% | 0 | 220 → 224 | 2.37 → 2.37 s |
+| memos | +6.2% | +7.7% | +9.2% | 997 → 1,277 | 4.68 → 5.05 s |
+| nats-server | +0.03% | +0.15% | +0.01% | 1,633 → 1,800 | 23.48 → 23.82 s |
+| openbao | +18.5% | +29.4% | +23.6% | 2,461 → 4,928 | 10.77 → 12.06 s |
+| dae | +46.8% | +64.9% | +58.2% | 628 → 817 | 3.53 → 4.17 s |
+| kubernetes | +5.2% | +10.4% | +8.0% | 11,294 → 13,770 | 31.53 → 38.37 s |
+| k8s-api | 0 | 0 | 0 | 172 → 172 | 10.98 → 10.58 s |
+
+Bisected on openbao, dae and Kubernetes (a build at each fix commit, `-a 4 -j 1`):
+- **The library-origin CHA complement is most of the volume change.** Its intraprocedural first
+  round (`0a3ea12`) and its interprocedural fixpoint (`7762b6e`) take openbao from 402,746 to
+  412,702 to 477,113 vertices, dae from 121,056 to 147,785 to 177,435, and Kubernetes from
+  1,164,744 to 1,191,953 to 1,215,278. The earlier fixes (VTA through wrappers `4fb14b5`, SSA for
+  every package variant `3752427`, `call_graph` edges from VTA only `4a2121d`) add about 2.7k
+  `param_in` and no vertices on openbao, and 10k vertices on Kubernetes (1,154,746 → 1,164,744).
+- **The Kubernetes wall-time increase is the interprocedural fixpoint.** With timestamped `-v`
+  logs, the time between the SSA join and the VTA line is 8.7 s on `98ebfef` against 2.4 s on
+  `c230592`. VTA itself takes 2.3–2.4 s in both, so the complement takes about 6 s. The overlay
+  grows by 0.7 s with the extra vertices, and emission by 0.7 s. On the other apps the
+  complement takes 0.04–0.7 s (openbao 0.7 s, nats-server 0.5 s). It has no `-v` line of its
+  own. The bisect builds show the same step: Kubernetes `-a 4` goes from 32.4 s at `0a3ea12` to
+  37.7 s at `7762b6e`.
+
+**Against the task reports.** They measured nats-server at several points on the branch, at
+`-j 8`, on the toolchain given with each figure. On the eval binary, go1.27.3 `-j 1`:
+- **summary** is 2,577,267, against 2,547,371 after the Task 17 alias round (`a2be9a4`;
+  go1.26.4) (+1.2%);
+- **points-to** is 295,787, against 290,499 then and 292,707 after round 2 (`c74c11b`; both
+  go1.26.4);
+- **param_out** is 433,667, against 431k at Task 14 (go1.27.3).
+
+The growth since `c74c11b` comes from:
+- the reference-holding capture `formal_out` (`7ca9c57`, MR5);
+- the L3 host weak-def of every reference-holding capture (`40b03ea`);
+- the CHA complement (above).
+
+All add edges only. The L3 `ddg` on nats-server went from 345,318 (§ Per-app counts) to 358,979
+(+4.0%). That includes `40b03ea`'s capture weak defs (chi +0.26%, go1.26.4) and the D1 L3 fixes since the
+L3 sections were measured. Wall time and RSS in those reports were measured for one stage, not
+end to end, on another toolchain. Compare the numbers here only with each other.
+
+**`unmapped_ssa`, re-measured.** The Kubernetes root has 3,720 unmapped functions and 39,700
+unmapped calls, against 3,754 / 39,728 at Task 9 (go1.27.3). Classified from `-vv`:
+- 3,717 are closures in package-level `var` initializers (`init$N`; Ginkgo
+  `var _ = Describe(…, func(){…})`; 3,555 of them under `test/`);
+- 3 are a second `func init()` in one file (`init#N`).
+
+The "method declared above its receiver type" cause Task 9 found is gone (fixed in `c6f2bd4`).
+None of these is a join bug. The other apps have the same cause in smaller numbers (memos 2,
+dae 40, openbao 10, nats-server 25 functions).
+
+### Cost of the memory levers
+
+`sdg.Run` lowers the process GC target to 50 while it runs (Task 15b), and L1–L3 and the
+emission keep the default. Here is what that costs, measured end to end against a local build
+identical except for `l4GCPercent = 100` (not committed), on the first L4 eval's binary
+(`c230592`; not re-run on `98ebfef`). Both builds are go1.27.3, `-a 4 -j 1
+--eager`, two runs each, and every output is byte-identical to the eval's.
+
+| app | GC target in L4 | wall (s) | user CPU (s) | sys (s) | peak RSS (MB) |
+|---|---|---|---|---|---|
+| nats-server | 50 (shipped) | 23.69 / 23.56 | 43.26 / 43.19 | 2.19 / 2.29 | 3,951 / 4,157 |
+| nats-server | 100 | 23.40 / 23.00 | 34.80 / 34.61 | 1.87 / 2.16 | 4,463 / 4,563 |
+| kubernetes | 50 (shipped) | 31.66 / 31.74 | 67.36 / 67.53 | 12.60 / 16.49 | 7,713 / 7,742 |
+| kubernetes | 100 | 31.55 / 30.82 | 59.70 / 59.92 | 12.78 / 12.63 | 8,254 / 8,518 |
+
+- **CPU.** GOGC=50 costs **+24.6% user CPU** on nats-server (+8.5 s) and **+12.8%** on Kubernetes
+  (+7.6 s).
+- **Wall time.** It costs +0.4 s on nats-server and +0.5 s on Kubernetes, about 1–2%. The extra
+  GC work runs on idle cores of a 16-core host. **On a CPU-starved host the extra CPU becomes wall
+  time**, up to the user-CPU delta.
+- **Memory.** It saves 9–12% of peak RSS on nats-server (about 450 MB) and 7–9% on Kubernetes
+  (about 650 MB).
+- The other levers (per-SCC cache release, interned port names) have no CPU cost to report.
+  Task 15b measured them: nats-server's live heap after fill went from 1.81 to 1.45 GB
+  (go1.26.4).
+
+**Where the end-to-end peak sits.** With the levers on, the `-a 4` peak is no longer in `sdg.Run`.
+It is in the emission, which streams the envelope but builds each module's subtree whole before
+writing it. The largest L4 modules (`c230592`) are:
+
+| app | module | JSON |
+|---|---|---|
+| nats-server | `server/server.go` | 340 MB |
+| nats-server | `server/jetstream.go` | 164 MB |
+| nats-server | `server/client.go` | 131 MB |
+| kubernetes | `test/integration/dra/dra.go` | 66 MB |
+| listmonk | `cmd/handlers.go` | 58 MB |
+
+The application-scope `param_in` and `param_out` lists stream (nats-server: 368 MB and 180 MB of
+JSON). The next lever, if a larger app needs one, is to stream each callable within a module
+(spec §4.13, §11). It is not needed at this corpus's scale: Kubernetes is 0.99–1.13× its `-a 3`
+peak.
+
+### Consistency at scale (L4)
+
+`scripts/l3_metrics.py` runs its L4 checks on every callable and every edge of the eight `-a 4`
+files. It applies the L3 checks of § Internal-consistency checks to the L3 part of the body only,
+with vertices and port and points-to edges removed, so the L3 figures compare across levels.
+Every check passes on every app:
+
+| check | result |
+|---|---|
+| every `param_in` / `param_out` endpoint is a body node id (a callable's or a stand-in's) | 0 dangling, 8/8 apps |
+| every `summary` endpoint is a vertex of its callable | 0 failures |
+| no `summary` edge has `<global>:` vertices at both ends (#30) | 0 |
+| L3 checks over the L3 part of every `-a 4` body (one `@entry`/`@exit`, reachability, endpoints, `prov == ["ssa"]` on the L3 edges) | all PASS |
+| `-a 3` ⊆ `-a 4` | gated on the fixtures (`TestGateL4_SupersetOfL3`); on all eight apps the L3 `body` / `cfg` / `cdg` / `ssa`-`ddg` counts of the `-a 4` file equal the `-a 3` file's exactly (counts, not an edge-by-edge diff) |
+
+The Go-side gates do the arity and kind checks per edge on the fixtures
+(`TestGateL4_ArityMatchesFormals`, `TestGateL4_NoDanglingEndpoints`,
+`TestGateL4_VertexIdsAreGlobalOrdinals`). The HTTP → SQL "done" fixture
+(`testdata/dataflow/httpsql`, `TestGateL4_HTTPToSQLPath`) does a BFS over the emitted JSON graph.
+The handler's `r` reaches `database/sql.DB.Query`'s `query` formal through a VTA-bound `param_in`
+into `sqlRepo.Find`. A handler that never queries does not reach it, and neither does a separate
+entry, `Audit`, reach `Find`'s `id`. `TestGateL4_HTTPToSQLSanitizerIsSDKSemantics` pins the
+sanitizer variant (§ Limitations).
+
+**Metamorphic relations.** `scripts/metamorphic.sh` (memos, the default) passes on `98ebfef` with
+0 violations in all 14 relations. It covered 17–32 sites for MR1–MR6, MR14 and MR15, and 80M
+reachability pairs for MR5 and MR6 (15M for MR14). The run took 105 s. The last `--all` run
+(memos and nats-server, 0 violations, 23 min, 16.2 GB; go1.27.3, the script's `EVAL_GO`) is from
+Task 17b on `7c29d44` and `3331abe`.
+
+### Insights
+
+- **The coarse host wiring is cheap where calls are sparse, quadratic where they are dense.** A
+  statement that hosts n calls, each with g global actuals, gets about n·g port edges in each
+  direction, and a body that hosts many such statements multiplies that again. listmonk's
+  `initHTTPHandlers` (one function, 91% of the app's port edges) and nats-server's
+  `client.parse` (162k) are the extremes. Python's reaching-def-matched host wiring (spec §4.7,
+  optional) would cut this volume without losing a flow; it is not built.
+- **Globals are most of L4 on server-shaped code.** nats-server's `Server` methods form one large
+  recursive SCC. Every package variable any member reads or writes becomes a formal of every
+  member (A4, transitive), so 91% of its vertices are `<global>:` vertices. The cut of global →
+  global summaries (#30) already removed 98M summary edges there (Task 15, go1.27.3; spec §4.9). The vertices and
+  their port edges remain, and they are what sources and sinks can name.
+- **VTA is cheap.** About 2.4 s on Kubernetes, with a function set of 94,601, of which 41,107 are
+  target-only library functions. The SSA build is about 1 s. The CHA complement's
+  library-origin fixpoint costs more than VTA on Kubernetes (about 6 s) and under 1 s elsewhere.
+  The dominant L4 compute cost is the overlay: flow graphs, summaries and port wiring, where
+  `graphOf`/`bodyFlows` and GC dominate (Task 18a profile, go1.26.4). The dominant wall-time cost on the large files is emission.
+- **k8s-api is the counter-example.** Generated marshallers have few interface calls (0.4% VTA),
+  few globals (7% of vertices) and leaf-heavy call graphs. L4 adds only 1.9× bytes there, the
+  smallest growth in the corpus, because its L3 `ddg` already dominates the file.
+
+### Limitations (L4)
+
+These are known, by design or measured, and each is a source of noise (extra edges) or of a gap
+(no edge does not mean no flow). Under the anti-goal, every gap is either closed by
+over-approximation or reported as degraded.
+
+- **D7 noise: every interface call also binds the interface method.**
+  - Its pass-through summary is all-to-all, so an interface call with concrete VTA targets still
+    carries the all-to-all edges of the interface stand-in.
+  - Over-approximation by design: a call whose VTA set is empty still keeps its flow.
+  - Interfaces with no symbol-table node (the universe `error.Error()`, interface literals) get
+    no interface-method target. They keep only their VTA targets, and with none the L3 host
+    pass-through applies (spec §4.8). A sink cannot be named as `error.Error`.
+- **D8: range-over-func is not modelled.** `for v := range seq` routes the loop body through a
+  synthetic `yield`, so what the iterator passes to `yield` does not reach `v`
+  interprocedurally. Every program that uses it is degraded `range_func`: 5 of the 6 apps and
+  the Kubernetes root. The SDK then refuses to certify "no flow" over that graph (spec §4.15).
+  That is safe, but it means `exhausted` is never returned on most real apps until D8 is
+  modelled.
+- **Library models and sanitizers change summaries, not statement-level reachability**
+  [user, 2026-10-27].
+  - L4 is reaching-definitions data flow. In `n, err := strconv.Atoi(id)` the host statement
+    links `id` to `n` and `err` (the L3 call rule), and that is correct.
+  - `--library-models` `strconv/Atoi: []` removes only the Atoi call site's `summary` edges, so
+    the done fixture's sanitized path still reaches `DB.Query`.
+  - An SDK callable sanitizer cuts only nodes under the sanitizer's id, never the caller's host.
+  - A variable cut on `n` within `SanitizedFind` is bypassed three ways, each correct
+    dependence:
+    1. `err` → `if err != nil` → the Query statement (cdg, implicit flow);
+    2. `return nil, err` → the caller → the receiver `actual_in`;
+    3. the caller's host feeding `id` into the receiver `actual_in` (coarse host wiring).
+  - Sanitizer semantics are the SDK taint analysis's job: [codellm-devkit/.github#103](https://github.com/codellm-devkit/.github/issues/103).
+    `TestGateL4_HTTPToSQLSanitizerIsSDKSemantics` pins each fact.
+  - The same statement-level call rule exists in codeanalyzer-python
+    (`access_paths.py:500-501`, `:350-356`), so this is cross-language.
+- **Library callbacks are not edges.** In `sort.Slice(xs, less)` and `http.HandleFunc(path, h)`,
+  the function value flows into the stand-in, but the library calling it back is not modelled.
+  Taint that *starts* in a handler (its own parameters) is unaffected.
+- **Library-originated dynamic types (final review F3, round 2).** VTA sees no concrete type in
+  library code. An interface call whose receiver may carry a value that came out of library code
+  (`ctx.Value(k).(Store)`, `sync.Map.Load`, a library call's result, field or container element),
+  directly or through project code (results, parameters, closure captures, fields, globals,
+  container elements; a whole-program fixpoint), gets a CHA complement: every project type
+  implementing the interface. Storage is tracked field-insensitively by container type. CHA
+  targets added over no CHA (go1.27.3, `-j 8`; round 1 = intraprocedural origin):
+
+  | app | round 1: targets / sites | round 2: targets / sites | param_in, no CHA → round 2 | param_out, no CHA → round 2 | CHA time |
+  |---|---|---|---|---|---|
+  | chi | +54 / 15 | +168 / 75 | 1,895 → 2,431 (+28.3%) | 1,649 → 2,242 (+36.0%) | 6 ms |
+  | memos | +495 / 223 | +803 / 347 | 59,025 → 63,547 (+7.7%) | 64,804 → 68,487 (+5.7%) | 174 ms |
+  | nats-server | +317 / 63 | +2,290 / 883 | 862,765 → 864,091 (+0.15%) | 431,327 → 433,667 (+0.54%) | 456 ms |
+
+  Peak RSS and overlay time do not move measurably. The parameters of a handler that `net/http`
+  calls are **not** seeds (a handler's `w.Write` gains nothing). What drives the growth, measured
+  by ablating one seed kind or propagation rule at a time (a site counts for a rule when
+  disabling the rule removes some of its CHA targets; the kinds overlap, since several seeds
+  often reach one site):
+  - **chi** (75 sites): the seeds are type assertions (`ctx.Value(k).(*Context)`, `r.Context()`
+    values, `w.(http.Flusher)`; 69 sites with type assertions alone) and library call results
+    (46 alone). Their reach comes from the type-keyed storage cells: 39 sites (78 targets) need
+    the load through a closure capture of a pointer cell whose element type some LO store
+    marked (`any(T)`: the captured `next http.Handler` of each middleware closure, after an
+    LO `http.Handler` is stored anywhere), and 9 need a field read of an LO base. Most of these
+    sites are `next.ServeHTTP(w, r)` in middleware closures, which gain chi's 2 handler types.
+  - **memos** (347 sites): interface type assertions (needed by 281 sites), library call results
+    (34), field reads of an LO base (83).
+  - **nats-server** (883 sites): library call results (needed by 118), field reads of an LO base
+    (597), capture-cell loads (113); most sites have several sufficient seeds (concrete and
+    interface type assertions, library fields and globals, promoted library methods).
+- **A15: summaries are near all-to-all** (74–94% of sites, table above). Under the coarse host
+  wiring, a summary edge adds no reachability for the SDK's context-insensitive walk. It is a
+  shortcut hop, and a precondition for a future HRB two-phase walk (spec §11).
+- **#30: the global → global summary cut, and the depth-bounded slice caveat.**
+  - Summary edges with both ends `<global>:` are omitted [user, 2026-10-26]. Measured: 97.7% of
+    101M summary edges on nats-server (Task 14, go1.27.3).
+  - Reachability is unchanged. But python-sdk's slices and taint walks are depth-bounded
+    (`DEFAULT_DEPTH = 5` for slices). A dropped shortcut makes the remaining route longer (into
+    the callee's body and back), so a depth-bounded slice may stop short of a node it would
+    otherwise reach.
+  - They return with the HRB walk (codeanalyzer-go#30).
+- **Option A alias volume.**
+  - The one-level offset also applies to reference-compatible field types (`m := s.cache;
+    p := r.ptr`), not only to `&x.f` (Task 17 ruling). That is most of the `points-to` volume:
+    217k of 290k on nats-server at Task 17 (go1.26.4).
+  - `MayHoldRef` also admits value structs that hold a reference, so `s1.n` → `s2.n` between two
+    distinct value copies is a spurious edge.
+  - Both are sound over-approximations: 4–28% of port `ddg` here (52% on cobra's small one).
+- **One-level alias offsets only.**
+  - Not caught: offsets deeper than one step (`&x.f.g` against a `*G`), two prefixes of one base
+    that alias each other, and an interface holding a value struct whose reference field is
+    written through the interface (spec §4.10).
+  - These are false negatives of the type-based oracle that an Andersen points-to over `go/ssa`
+    would close (§11). They are the one class of L4 gap that is neither over-approximated nor
+    degraded.
+- **L3 capture weak-def breadth (`40b03ea`).**
+  - At L3, a closure's host weak-defines every reference-holding captured base, read-only
+    captures included. That is broader than needed: a read-only capture could weak-define
+    `x.*` without downgrading the base.
+  - Sound. It costs about 0.26% L3 `ddg` on chi (go1.26.4).
+- **The stored literal reached through an unresolved function value (Task 13).**
+  - A global written only inside a literal that is stored and later called through a function
+    value nothing resolves has no `param_out` from that write. Inside the encloser, the global's
+    `formal_out` is fed only by its `formal_in` (the identity edge).
+  - The flow is still reachable at the caller, whose host statement weak-defines the global.
+  - `TestGateL4_StoredLiteralGlobalReachable` pins both the reachable flow and the
+    intra-procedural gap, so the gap closing fails the test on purpose.
+- **#29: cgo.** cgo-generated wrapper functions have no L1 callable, so SSA functions and calls
+  inside them are `unmapped_ssa`. A flow through C is not modelled (non-goal). The fixture test
+  `TestJoin_CgoNamesIssue29` skips when cgo is off.
+- **#31: `base_types` / `interfaces`.**
+  - This predates L4 and is not an L4 change, but L4 consumers meet it. `base_types[]` holds raw
+    type strings, not type ids, so `GO_EMBEDS` never resolves, and `interfaces[]` is never
+    computed (`GO_SATISFIES` is empty).
+  - VTA does not need either; it reads `go/types` directly.
+- **Memory and size are reported, not bounded** (D3). The largest file in the corpus is 1.78 GB
+  (nats-server). Loading it whole in Python, as `scripts/l3_metrics.py` does, needs about
+  10–20 GB. The SDK's JSON backend loads it whole too. For apps that size the Neo4j backend is
+  the practical one.

@@ -14,9 +14,14 @@ package v2emit
 // fails here rather than only in an external CLI diff.
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"path/filepath"
+	"runtime"
 	"testing"
 
+	"github.com/codellm-devkit/codeanalyzer-go/internal/dataflow"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/schema"
 	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/semantic_analysis"
@@ -41,7 +46,7 @@ func TestDeterminism_CallGraphStableAcrossEmits(t *testing.T) {
 	// edges slice without a stable sort, repeated marshals still match (same
 	// slice), so to actually exercise order-independence we marshal a shuffled
 	// copy of the edge slice too.
-	first := mustMarshalCallGraph(t, Emit(app, "multipackage", dir, 2, "det-test", 0, nil))
+	first := mustMarshalCallGraph(t, Emit(app, "multipackage", dir, 2, "det-test", 0, nil, nil))
 
 	// Reverse the input edge order and re-emit: a correct emitter sorts, so the
 	// serialized call_graph must be unchanged.
@@ -50,7 +55,7 @@ func TestDeterminism_CallGraphStableAcrossEmits(t *testing.T) {
 		rev[len(edges)-1-i] = e
 	}
 	appRev := &schema.GoApplication{SymbolTable: st, CallGraph: rev}
-	second := mustMarshalCallGraph(t, Emit(appRev, "multipackage", dir, 2, "det-test", 0, nil))
+	second := mustMarshalCallGraph(t, Emit(appRev, "multipackage", dir, 2, "det-test", 0, nil, nil))
 
 	if first != second {
 		t.Errorf("call_graph not order-independent: emitCallGraph must sort edges to a total order\nfirst=%s\nsecond=%s", first, second)
@@ -73,4 +78,121 @@ func mustMarshalCallGraph(t *testing.T, out *v2.Analysis) string {
 		t.Fatalf("unmarshal failed: %v", err)
 	}
 	return string(c.Application.CallGraph)
+}
+
+// TestEncode_ByteIdenticalToMarshal locks the streaming writers to
+// json.Marshal byte for byte (#27): sorted map keys, omitempty / omitzero,
+// the call-node-only callee, HTML escaping (module sources carry `<-` and
+// `&`), and no trailing newline. Encode streams a built tree; EmitTo builds
+// and streams one module at a time. Both must equal json.Marshal(Emit(...)).
+func TestEncode_ByteIdenticalToMarshal(t *testing.T) {
+	for _, name := range []string{"chi", "dataflow", "generics"} {
+		_, thisFile, _, _ := runtime.Caller(0)
+		dir, err := filepath.Abs(filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "testdata", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b := syntactic_analysis.NewSymbolTableBuilder(dir)
+		st, err := b.Build(nil, true)
+		if err != nil {
+			t.Fatalf("%s: symbol table build failed: %v", name, err)
+		}
+		apps := map[int]*schema.GoApplication{1: {SymbolTable: st, CallGraph: []schema.GoCallEdge{}}}
+		check := func(level int, app *schema.GoApplication, l3 map[dataflow.L3Key]dataflow.Result) {
+			t.Run(fmt.Sprintf("%s/a%d", name, level), func(t *testing.T) {
+				tree := Emit(app, name, dir, level, "enc-test", 3, l3, nil)
+				want, err := json.Marshal(tree)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var enc bytes.Buffer
+				if err := Encode(&enc, tree); err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(enc.Bytes(), want) {
+					t.Errorf("Encode differs from json.Marshal at byte %d (len %d vs %d)", firstDiff(enc.Bytes(), want), enc.Len(), len(want))
+				}
+				var lazy bytes.Buffer
+				if err := EmitTo(&lazy, app, name, dir, level, "enc-test", 3, l3, nil); err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(lazy.Bytes(), want) {
+					t.Errorf("EmitTo differs from json.Marshal(Emit) at byte %d (len %d vs %d)", firstDiff(lazy.Bytes(), want), lazy.Len(), len(want))
+				}
+			})
+		}
+		check(1, apps[1], nil)
+		cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
+		edges := cg.Build(st)
+		app := &schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}
+		check(2, app, nil)
+		check(3, app, dataflow.Run(b.Fset(), b.L3Units(st), 3, 4))
+	}
+}
+
+func firstDiff(a, b []byte) int {
+	for i := 0; i < len(a) && i < len(b); i++ {
+		if a[i] != b[i] {
+			return i
+		}
+	}
+	return min(len(a), len(b))
+}
+
+// TestEncode_L4EnvelopeFieldsByteIdentical: the L4 envelope and tree fields
+// (degraded after application, param_in/out inside it, summary, of, receiver,
+// external body) go through the streaming writer's envelope split unchanged.
+func TestEncode_L4EnvelopeFieldsByteIdentical(t *testing.T) {
+	call := "x"
+	a := &v2.Analysis{
+		SchemaVersion: v2.SchemaVersion, Language: v2.Language, MaxLevel: 4, KLimit: 3,
+		Analyzer: v2.AnalyzerTag{Name: "codeanalyzer-go", Version: "t"},
+		Degraded: []v2.Degraded{{Code: "ssa_build", Detail: `has "symbol_table":{} & <x>`, Packages: []string{"p"}, Callables: []string{"c"}}},
+		Application: v2.Application{
+			ID: "can://app", Kind: "application",
+			SymbolTable: map[string]v2.Module{
+				"a.go": {ID: "m", Functions: map[string]v2.Callable{"f": {
+					ID: "f", Summary: []v2.SummaryEdge{{Src: "a", Dst: "b"}},
+					Body: map[string]v2.BodyNode{
+						"@fin": {Kind: "formal_in", Of: "p0"},
+						"c1":   {Kind: "call", Callee: &call},
+					},
+				}}},
+			},
+			ExternalSymbols: map[string]v2.ExternalSymbol{"e": {
+				ID: "e", Kind: "external",
+				Receiver: &v2.ExternalParameter{Name: "_recv", Type: "*strings.Builder"},
+				Body:     map[string]v2.BodyNode{"@entry": {Kind: "entry"}},
+			}},
+			ParamIn:  []v2.ParamEdge{{Src: "s", Dst: "d", Var: "v"}},
+			ParamOut: []v2.ParamEdge{{Src: "d", Dst: "s", Var: "<return>"}},
+		},
+	}
+	want, err := json.Marshal(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{`"degraded":`, `"param_in":`, `"param_out":`, `"summary":`, `"of":"p0"`, `"receiver":`} {
+		if !bytes.Contains(want, []byte(k)) {
+			t.Errorf("marshalled tree lacks %s", k)
+		}
+	}
+	var enc bytes.Buffer
+	if err := Encode(&enc, a); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(enc.Bytes(), want) {
+		t.Errorf("Encode differs from json.Marshal at byte %d", firstDiff(enc.Bytes(), want))
+	}
+	// And absent when empty.
+	plain, _ := json.Marshal(&v2.Analysis{})
+	for _, k := range []string{"degraded", "param_in", "param_out", "summary", `"of"`, "receiver"} {
+		if bytes.Contains(plain, []byte(k)) {
+			t.Errorf("empty analysis serialises %s", k)
+		}
+	}
+	n, _ := json.Marshal(v2.BodyNode{Kind: "statement"})
+	if bytes.Contains(n, []byte(`"of"`)) {
+		t.Errorf("empty Of serialised: %s", n)
+	}
 }

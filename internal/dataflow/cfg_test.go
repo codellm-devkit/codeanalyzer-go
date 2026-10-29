@@ -9,12 +9,14 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 
 	"golang.org/x/tools/go/cfg"
 	"golang.org/x/tools/go/packages"
 
+	"github.com/codellm-devkit/codeanalyzer-go/internal/astwalk"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/dataflow"
 	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
 )
@@ -768,28 +770,23 @@ func gateOne(t *testing.T, name string, nodes []dataflow.Node, es []dataflow.Cfg
 	return chain
 }
 
-// gateCallKeys lists the key of every call in body in the L1 recording order
-// (pre-order, an outer call before its nested calls; no function literal
-// bodies), as
-// v2.CallBodyKeys assigns them from each call's (line-directive adjusted)
-// position.
-func gateCallKeys(fset *token.FileSet, body *ast.BlockStmt) []string {
-	var calls []*ast.CallExpr
-	ast.Inspect(body, func(n ast.Node) bool {
-		switch n := n.(type) {
-		case *ast.FuncLit:
-			return false
-		case *ast.CallExpr:
-			calls = append(calls, n)
-		}
-		return true
-	})
+// gateCallKeys lists the L1 call node of every call in body in the L1
+// recording order (astwalk.Calls), each keyed as v2.CallBodyKeys assigns it
+// from the call's real (not //line-adjusted) position and carrying its
+// Lparen.
+func gateCallKeys(fset *token.FileSet, body *ast.BlockStmt) []dataflow.UnitCall {
+	calls := astwalk.Calls(body)
 	pos := make([][2]int, len(calls))
 	for i, c := range calls {
-		p := fset.Position(c.Pos())
+		p := fset.PositionFor(c.Expr.Pos(), false)
 		pos[i] = [2]int{p.Line, p.Column}
 	}
-	return v2.CallBodyKeys(pos)
+	keys := v2.CallBodyKeys(pos)
+	out := make([]dataflow.UnitCall, len(calls))
+	for i, c := range calls {
+		out[i] = dataflow.UnitCall{Key: keys[i], Lparen: c.Expr.Lparen}
+	}
+	return out
 }
 
 // ---- canPanic rules (spec §4.3.2) ----
@@ -1300,4 +1297,67 @@ func TestCFG_DifferentialCatchesMissingEdge(t *testing.T) {
 	if !strings.Contains(strings.Join(errs, "\n"), lbInit+" → "+lbRet) {
 		t.Errorf("differential missed the cut edges; got %v", errs)
 	}
+}
+
+// TestCFG_RangeIntAndRangeFunc (#28): exact CFGs for the Go 1.23 range forms
+// in testdata/rangefunc (a go 1.23 module: testdata/dataflow is go 1.21). A
+// range over an integer is a plain loop header; a range over an iterator
+// function calls the iterator on every trip, so its header may panic as well
+// (canPanic): an exception edge to @exit. Both agree with go/cfg.
+func TestCFG_RangeIntAndRangeFunc(t *testing.T) {
+	_, thisFile, _, _ := runtime.Caller(0)
+	fset, cases := loadDiffCases(t, filepath.Join(filepath.Dir(thisFile), "..", "..", "testdata", "rangefunc"))
+	want := map[string][]dataflow.CfgEdge{
+		"example.com/rangefunc.RangeInt": {
+			e(entry, "8:2", "fallthrough"),
+			e("8:2", "9:2", "fallthrough"),
+			e("9:2", "10:3", "true"),
+			e("9:2", "12:2", "false"),
+			e("10:3", "9:2", "loop_back"),
+			e("12:2", exit, "return"),
+		},
+		"example.com/rangefunc.RangeFunc": {
+			e(entry, "18:2", "fallthrough"),
+			e("18:2", "19:2", "fallthrough"),
+			e("19:2", "20:3", "true"),
+			e("19:2", "22:2", "false"),
+			e("19:2", exit, "exception"),
+			e("20:3", "19:2", "loop_back"),
+			e("22:2", exit, "return"),
+		},
+	}
+	seen := 0
+	for _, c := range cases {
+		w, ok := want[c.name]
+		if !ok {
+			continue
+		}
+		seen++
+		nodes, keyOf := dataflow.BuildNodes(fset, c.body, gateCallKeys(fset, c.body))
+		kept, got := dataflow.BuildCFG(nodes, keyOf, c.body, c.info)
+		checkContract(t, c.name, kept, got)
+		sortCfg(w) // BuildCFG orders by (src, dst, kind) as strings
+		if !reflect.DeepEqual(got, w) {
+			t.Errorf("%s:\n got %v\nwant %v", c.name, got, w)
+		}
+		if diffOne(t.Errorf, c.name, c.body, c.info, keyOf, got) == 0 {
+			t.Errorf("%s: differential checked no pairs", c.name)
+		}
+	}
+	if seen != len(want) {
+		t.Errorf("rangefunc: found %d of %d functions", seen, len(want))
+	}
+}
+
+func sortCfg(es []dataflow.CfgEdge) {
+	sort.Slice(es, func(i, j int) bool {
+		a, b := es[i], es[j]
+		if a.Src != b.Src {
+			return a.Src < b.Src
+		}
+		if a.Dst != b.Dst {
+			return a.Dst < b.Dst
+		}
+		return a.Kind < b.Kind
+	})
 }

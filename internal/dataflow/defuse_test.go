@@ -163,13 +163,15 @@ func TestDefUse_FieldDefIsPrefixDef(t *testing.T) {
 func TestDefUse_CallWeakDefsRefArgs(t *testing.T) {
 	fx := loadDU(t)
 	du, _ := fx.du(t, "Calls", "mut(&req", 0)
-	wantDU(t, "mut(...)", du, nil, ss("m.*", "p.*", "req.*", "s.*"), ss("m", "p", "req", "s", "t"))
+	// t is a value T, whose field s is a slice: it may hold a reference, so
+	// the callee may write through it (D1 gap 2).
+	wantDU(t, "mut(...)", du, nil, ss("m.*", "p.*", "req.*", "s.*", "t.*"), ss("m", "p", "req", "s", "t"))
 	du, _ = fx.du(t, "Calls", "t.Ptr()", 0)
 	wantDU(t, "t.Ptr()", du, nil, ss("t.*"), ss("t"))
 	du, _ = fx.du(t, "Calls", "p.Ptr()", 0)
 	wantDU(t, "p.Ptr()", du, nil, ss("p.*"), ss("p"))
 	du, _ = fx.du(t, "Calls", "t.Val()", 0)
-	wantDU(t, "t.Val()", du, nil, nil, ss("t"))
+	wantDU(t, "t.Val()", du, nil, ss("t.*"), ss("t")) // value receiver holding T.s (D1 gap 2)
 	du, _ = fx.du(t, "Calls", "n := len(s)", 0)
 	wantDU(t, "n := len(s)", du, ss("n"), nil, ss("s"))
 	du, _ = fx.du(t, "Calls", "s = append(s, n)", 0)
@@ -267,12 +269,14 @@ func TestDefUse_DeferRegistrationCarriesArgs(t *testing.T) {
 	wantDU(t, "mu.Unlock() (deferred)", call, nil, ss("mu.*"), ss(d, "err", "mu.*", "n"))
 
 	// defer func(){…}(): nothing is evaluated at registration but the func
-	// value; the deferred call uses what the closure captures.
+	// value; the deferred call uses what the closure captures and (D1 gap 1)
+	// weak-defines what it writes of them: err = nil, and err.* (an
+	// interface may hold a reference: hostWrites).
 	reg, _ = fx.du(t, "Defers", "defer func() {", 0)
 	call, ck = fx.du(t, "Defers", "defer func() {", len("defer "))
 	d = "<defer>:" + ck
 	wantDU(t, "defer func(){…}", reg, nil, ss(d), nil)
-	wantDU(t, "func(){…}() (deferred)", call, nil, nil, ss(d, "err", "n", "x"))
+	wantDU(t, "func(){…}() (deferred)", call, nil, ss("err", "err.*"), ss(d, "err", "n", "x"))
 
 	reg, _ = fx.du(t, "Defers", "defer mut2(s, x)", 0)
 	call, ck = fx.du(t, "Defers", "defer mut2(s, x)", len("defer "))
@@ -329,7 +333,7 @@ func TestDefUse_EntryDefinesParamsReceiverNamedResults(t *testing.T) {
 		t.Errorf("EntryBases(closure) = %v, want %v", names, want)
 	}
 	h, _ := fx.du(t, "Entry", "h := func", 0)
-	wantDU(t, "h := func…", h, ss("h"), nil, ss("a", "r"))
+	wantDU(t, "h := func…", h, ss("h"), ss("r.*"), ss("a", "r"))
 
 	// A flow-fixture function with no package vars: params only.
 	wantDU(t, "Bump @entry", flowDU(t, "Bump", dataflow.EntryKey), ss("n"), nil, nil)
@@ -392,7 +396,7 @@ func TestDefUse_ReferenceTypedReceiverIsWeakDefined(t *testing.T) {
 	du, _ = fx.du(t, "Recv", "h.Set(", 0)
 	wantDU(t, "h.Set(...)", du, nil, ss("h.*"), ss("h"))
 	du, _ = fx.du(t, "Recv", "\tt.Val()\n}\n\nfunc IfShadow", 1)
-	wantDU(t, "t.Val() value struct", du, nil, nil, ss("t"))
+	wantDU(t, "t.Val() value struct", du, nil, ss("t.*"), ss("t")) // T.s is a slice (D1 gap 2)
 }
 
 func TestDefUse_IfInitShadows(t *testing.T) {
@@ -418,4 +422,191 @@ func TestDefUse_SubsliceArgs(t *testing.T) {
 	wantDU(t, "copy(dst[i:], src)", flowDU(t, "CopyInto", "501:2"), nil, ss("dst[*]"), ss("dst", "i", "src"))
 	wantDU(t, "clear(m)", flowDU(t, "ClearAll", "507:2"), nil, ss("m[*]"), ss("m"))
 	wantDU(t, "clear(s[:n])", flowDU(t, "ClearAll", "508:2"), nil, ss("s[*]"), ss("n", "s"))
+}
+
+// firstLit is the first function literal in fn's body (outermost first).
+func firstLit(t *testing.T, fn string) *ast.FuncLit {
+	t.Helper()
+	var lit *ast.FuncLit
+	ast.Inspect(loadFlow(t).decl(t, fn).Body, func(n ast.Node) bool {
+		if f, ok := n.(*ast.FuncLit); ok && lit == nil {
+			lit = f
+		}
+		return lit == nil
+	})
+	if lit == nil {
+		t.Fatalf("%s: no function literal", fn)
+	}
+	return lit
+}
+
+// TestDefUse_CaptureWrites (D1 gap 1): CaptureWrites is what a literal or a
+// literal nested in it may write of the literal's free variables; the host
+// weak-defines it, and a strong def of a captured-and-written base is weak.
+func TestDefUse_CaptureWrites(t *testing.T) {
+	fx := loadFlow(t)
+	// CaptureNested's f: the nested literal's x = y (y is f's own), and the
+	// fill(buf) write through buf; z is only read.
+	wantSet(t, "CaptureWrites(CaptureNested f)", dataflow.CaptureWrites(firstLit(t, "CaptureNested"), fx.info, kTest), "buf.*", "x")
+	wantSet(t, "CaptureWrites(Closure h)", dataflow.CaptureWrites(firstLit(t, "Closure"), fx.info, kTest))
+
+	wantDU(t, "CaptureNested 613:2", flowDU(t, "CaptureNested", "613:2"), ss("f"), ss("buf.*", "x"), ss("buf", "x", "z"))
+	// x, z := 0, 0: x is written by the literal, so its def is weak; z stays.
+	wantDU(t, "CaptureNested 612:2", flowDU(t, "CaptureNested", "612:2"), ss("z"), ss("x"), nil)
+	wantDU(t, "CaptureWrite 564:2", flowDU(t, "CaptureWrite", "564:2"), nil, ss("x"), ss("x"))
+	wantDU(t, "CaptureThenReassign 573:2", flowDU(t, "CaptureThenReassign", "573:2"), nil, ss("x"), nil)
+	wantDU(t, "OnceDo 588:2", flowDU(t, "OnceDo", "588:2"), nil, ss("cfg", "once.*"), ss("cfg", "once"))
+	// The deferred closure call node is the host, not the registration:
+	// err = wrapErr(err) writes err, and err.* through the interface argument.
+	wantDU(t, "DeferWrap 557:2", flowDU(t, "DeferWrap", "557:2"), nil, ss("<defer>:557:8"), nil)
+	wantDU(t, "DeferWrap 557:8", flowDU(t, "DeferWrap", "557:8"), nil, ss("err", "err.*"), ss("<defer>:557:8", "err"))
+	wantDU(t, "DeferWrap 555:2", flowDU(t, "DeferWrap", "555:2"), nil, ss("err"), nil)
+	// go func(){ x = <-ch }(): the go node is the host; ch, a channel, may
+	// hold a reference, so it weak-defines ch.* too (hostWrites).
+	wantDU(t, "CaptureGo 627:5", flowDU(t, "CaptureGo", "627:5"), nil, ss("ch.*", "x"), ss("ch", "x"))
+	wantDU(t, "CaptureGo 626:2", flowDU(t, "CaptureGo", "626:2"), nil, ss("x"), nil)
+}
+
+// TestDefUse_AppendOntoIsShallow (#28): s = append(s, n) strong-defines s
+// Shallow (it kills s, not s[*]) besides append's s[*] weak def.
+func TestDefUse_AppendOntoIsShallow(t *testing.T) {
+	du := flowDU(t, "AppendKeepsElems", "604:2")
+	wantDU(t, "AppendKeepsElems 604:2", du, ss("s"), ss("s[*]"), ss("n", "s"))
+	wantSet(t, "AppendKeepsElems 604:2 Shallow", du.Shallow, "s")
+	// out := append(dst[:0], x): the LHS is not the destination.
+	wantSet(t, "AppendReuse 541:2 Shallow", flowDU(t, "AppendReuse", "541:2").Shallow)
+}
+
+// TestDefUse_DeferOperandWrites (D1 gap 3): a node writing a base the
+// registered defer fill(b) takes as an operand also weak-defines its pseudo
+// path; the registration and the deferred call node are unchanged.
+func TestDefUse_DeferOperandWrites(t *testing.T) {
+	wantDU(t, "DeferReassign 596:2", flowDU(t, "DeferReassign", "596:2"), nil, ss("<defer>:595:8", "b[*]"), ss("b", "s"))
+	wantDU(t, "DeferReassign 597:2", flowDU(t, "DeferReassign", "597:2"), ss("b"), ss("<defer>:595:8"), ss("o"))
+	wantDU(t, "DeferReassign 595:2", flowDU(t, "DeferReassign", "595:2"), nil, ss("<defer>:595:8"), ss("b"))
+	wantDU(t, "DeferReassign 595:8", flowDU(t, "DeferReassign", "595:8"), nil, ss("b.*"), ss("<defer>:595:8", "b.*"))
+	wantDU(t, "DeferReassign @entry", flowDU(t, "DeferReassign", dataflow.EntryKey), ss("b", "o", "s"), nil, nil)
+}
+
+// TestMayHoldRef (D1 gap 2): the reference kinds, and structs and arrays
+// whose fields or elements transitively may hold one, through named types,
+// cycle-safe; a reference-free struct or array, a string and a basic do not.
+func TestMayHoldRef(t *testing.T) {
+	i := types.Typ[types.Int]
+	sl := types.NewSlice(i)
+	st := func(ts ...types.Type) *types.Struct {
+		var fs []*types.Var
+		for n, ft := range ts {
+			fs = append(fs, types.NewField(0, nil, "f"+string(rune('a'+n)), ft, false))
+		}
+		return types.NewStruct(fs, nil)
+	}
+	named := func(name string, u types.Type) *types.Named {
+		n := types.NewNamed(types.NewTypeName(0, nil, name, nil), nil, nil)
+		if u != nil {
+			n.SetUnderlying(u)
+		}
+		return n
+	}
+	empty := types.NewInterfaceType(nil, nil)
+	tp := types.NewTypeParam(types.NewTypeName(0, nil, "P", nil), empty)
+
+	// A cycle through value types only (invalid Go, but go/types builds it in
+	// a package with type errors): A{b B}, B{a A, n int}.
+	a, b := named("A", nil), named("B", nil)
+	a.SetUnderlying(st(b))
+	b.SetUnderlying(st(a, i))
+	// The same cycle with a slice two levels down: C{d D}, D{c C, s []int}.
+	c, d := named("C", nil), named("D", nil)
+	c.SetUnderlying(st(d))
+	d.SetUnderlying(st(c, sl))
+
+	for _, tc := range []struct {
+		name string
+		t    types.Type
+		want bool
+	}{
+		{"pointer", types.NewPointer(i), true},
+		{"slice", sl, true},
+		{"map", types.NewMap(i, i), true},
+		{"chan", types.NewChan(types.SendRecv, i), true},
+		{"func", types.NewSignatureType(nil, nil, nil, nil, nil, false), true},
+		{"interface", empty, true},
+		{"type parameter", tp, true},
+		{"int", i, false},
+		{"string", types.Typ[types.String], false},
+		{"nil", nil, false},
+		{"plain struct", st(i, types.Typ[types.String]), false},
+		{"struct with slice", st(i, sl), true},
+		{"named struct with slice", named("Cfg", st(sl)), true},
+		{"struct nesting a struct with a map", st(st(i, types.NewMap(i, i))), true},
+		{"array of int", types.NewArray(i, 2), false},
+		{"array of slices", types.NewArray(sl, 2), true},
+		{"array of structs with a pointer", types.NewArray(st(types.NewPointer(i)), 3), true},
+		{"struct of arrays of int", st(types.NewArray(i, 4)), false},
+		{"value cycle, no reference", a, false},
+		{"value cycle, reference below", c, true},
+	} {
+		if got := dataflow.MayHoldRef(tc.t); got != tc.want {
+			t.Errorf("MayHoldRef(%s) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestDefUse_ValueStructMayHoldRef (D1 gap 2): a value argument or receiver
+// that may hold a reference weak-defines a.* (whole base, never per field);
+// a reference-free one is only read.
+func TestDefUse_ValueStructMayHoldRef(t *testing.T) {
+	wantDU(t, "FillCfg 651:2", flowDU(t, "FillCfg", "651:2"), nil, ss("c.*"), ss("c"))
+	wantDU(t, "ValueRefs 659:2", flowDU(t, "ValueRefs", "659:2"), nil, ss("c.*"), ss("c"))
+	wantDU(t, "ValueRefs 660:2", flowDU(t, "ValueRefs", "660:2"), nil, nil, ss("p"))
+	wantDU(t, "ValueRefs 661:2", flowDU(t, "ValueRefs", "661:2"), nil, ss("a.*", "n.*"), ss("a", "b", "n"))
+	// A value receiver holding no reference is a copy: read only.
+	wantDU(t, "PlainRecv 698:2", flowDU(t, "PlainRecv", "698:2"), nil, nil, ss("p"))
+}
+
+// TestDefUse_SatelliteParents (#28): a call in a folded for init, cond or
+// post, a case list, a select comm clause (send value, receive operand) or a
+// range key or expression is a satellite of the header or clause head that
+// expression folds into, and carries an empty DefUse.
+func TestDefUse_SatelliteParents(t *testing.T) {
+	_, byKey, _ := build(t, "SatParents")
+	want := map[string]string{
+		"674:11": "674:2", "674:21": "674:2", "674:31": "674:2", // for init, cond, post
+		"678:7": "678:2", "678:13": "678:2", // case f(1), g(2):
+		"682:13": "682:2",                    // case ch <- f(s):
+		"683:14": "683:2",                    // case v := <-chanOf(ch):
+		"687:9":  "687:2", "687:26": "687:2", // for xs[f(2)], x = range ids(xs)
+	}
+	calls := 0
+	for k, n := range byKey {
+		if n.Kind != dataflow.KindCall {
+			continue
+		}
+		calls++
+		p, ok := want[k]
+		if !ok {
+			t.Errorf("SatParents: unexpected call node %s (parent %q)", k, n.Parent)
+			continue
+		}
+		if n.Parent != p {
+			t.Errorf("SatParents: call %s Parent = %q, want %q", k, n.Parent, p)
+		}
+		wantDU(t, "SatParents "+k, flowDU(t, "SatParents", k), nil, nil, nil)
+	}
+	if calls != len(want) {
+		t.Errorf("SatParents: %d call nodes, want %d", calls, len(want))
+	}
+	// The hosts carry their satellites' flow.
+	wantKind(t, "SatParents", byKey, "674:2", dataflow.KindLoop)
+	wantKind(t, "SatParents", byKey, "678:2", dataflow.KindStatement)
+	wantKind(t, "SatParents", byKey, "682:2", dataflow.KindStatement)
+	wantKind(t, "SatParents", byKey, "683:2", dataflow.KindStatement)
+	wantKind(t, "SatParents", byKey, "687:2", dataflow.KindLoop)
+	wantDU(t, "SatParents 682:2", flowDU(t, "SatParents", "682:2"), nil, ss("ch[*]"), ss("ch", "s"))
+	// <-chanOf(ch) receives from a call, not a path: the call reads ch and
+	// writes through it.
+	wantDU(t, "SatParents 683:2", flowDU(t, "SatParents", "683:2"), ss("v"), ss("ch.*"), ss("ch"))
+	// `=` range: weak key and value; ids(xs) writes through xs.
+	wantDU(t, "SatParents 687:2", flowDU(t, "SatParents", "687:2"), nil, ss("x", "xs.*", "xs[*]"), ss("xs"))
 }

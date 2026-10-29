@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"sort"
 )
 
 // The call rule of DefUseOf (spec §4.5), split into what a call reads and
@@ -30,12 +31,13 @@ func (c *collector) callReads(call *ast.CallExpr, captures bool) {
 	}
 }
 
-// callWrites collects the weak defs of call itself: a.* for each
-// reference-typed argument (&x gives x.*), recv.* for a reference-typed
-// receiver or a pointer-receiver method, and the element writes of append,
-// copy, delete and clear. append(dst, …) may write into dst's backing array
-// (spare capacity, or dst[:0]), so it weak-defines dst[*] besides its result
-// flowing to the assignment. Conversions and other builtins write nothing.
+// callWrites collects the weak defs of call itself: a.* for each argument
+// that may hold a reference (MayHoldRef: &x gives x.*), recv.* for a
+// receiver that may hold one or is bound to a pointer-receiver method, and
+// the element writes of append, copy, delete and clear. append(dst, …) may
+// write into dst's backing array (spare capacity, or dst[:0]), so it
+// weak-defines dst[*] besides its result flowing to the assignment.
+// Conversions and other builtins write nothing.
 func (c *collector) callWrites(call *ast.CallExpr) {
 	if isType(call.Fun, c.info) {
 		return
@@ -54,16 +56,25 @@ func (c *collector) callWrites(call *ast.CallExpr) {
 	}
 	if sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr); ok {
 		if s := c.info.Selections[sel]; s != nil && s.Kind() == types.MethodVal {
-			if ptrRecv(s.Obj()) || refTyped(c.info.TypeOf(sel.X)) {
+			if ptrRecv(s.Obj()) || c.holdsRef(c.info.TypeOf(sel.X)) {
 				c.writeThrough(sel.X)
 			}
 		}
 	}
 	for _, a := range call.Args {
-		if refTyped(c.info.TypeOf(a)) {
+		if c.holdsRef(c.info.TypeOf(a)) {
 			c.writeThrough(a)
 		}
 	}
+}
+
+// holdsRef is the call rule's write-through predicate: MayHoldRef, or the
+// reference kinds alone (refTyped) for the pre-D1 gate sets.
+func (c *collector) holdsRef(t types.Type) bool {
+	if c.preD1 {
+		return refTyped(t)
+	}
+	return MayHoldRef(t)
 }
 
 // writeThrough weak-defines a.* (x.* for &x) when a is a path, and base[*]
@@ -149,13 +160,117 @@ func isPointer(t types.Type) bool {
 	return ok
 }
 
-// refTyped reports whether a value of type t lets a callee write state the
-// caller sees: pointer, slice, map, chan, func or interface (a type
-// parameter's underlying type is its constraint interface, so it counts).
+// refTyped reports whether t is itself a reference kind: pointer, slice,
+// map, chan, func or interface (a type parameter's underlying type is its
+// constraint interface, so it counts).
 func refTyped(t types.Type) bool {
 	switch underlying(t).(type) {
 	case *types.Pointer, *types.Slice, *types.Map, *types.Chan, *types.Signature, *types.Interface:
 		return true
 	}
 	return false
+}
+
+// MayHoldRef reports whether a value of type t, passed by value, lets a
+// callee write state the caller sees (spec §4.5 Calls, D1 gap 2): t is a
+// reference kind (refTyped), or a struct or array any of whose fields or
+// elements, transitively through named types, may hold one (a value
+// cfg{items []int} shares items' backing array with its copy). A struct or
+// array that holds no reference is copied whole and is false. Cycle-safe: a
+// named type already on the walk is not re-entered (a value-only cycle,
+// possible only in a package with type errors, holds nothing new). The call
+// rule and the L4 by-ref formal_out rule share it.
+//
+// Only a struct or array needs the walk and its cycle set: every other type
+// is decided by refTyped alone, with no allocation.
+func MayHoldRef(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	if refTyped(t) {
+		return true
+	}
+	switch t.Underlying().(type) {
+	case *types.Struct, *types.Array:
+		return mayHoldRef(t, map[*types.Named]bool{})
+	}
+	return false
+}
+
+func mayHoldRef(t types.Type, seen map[*types.Named]bool) bool {
+	if t == nil {
+		return false
+	}
+	if n, ok := types.Unalias(t).(*types.Named); ok {
+		if seen[n] {
+			return false
+		}
+		seen[n] = true
+	}
+	if refTyped(t) {
+		return true
+	}
+	switch u := t.Underlying().(type) {
+	case *types.Struct:
+		for i := 0; i < u.NumFields(); i++ {
+			if mayHoldRef(u.Field(i).Type(), seen) {
+				return true
+			}
+		}
+	case *types.Array:
+		return mayHoldRef(u.Elem(), seen)
+	}
+	return false
+}
+
+// deferOperandBases maps each operand base of every `defer` in body (not in a
+// nested function literal) to the defers' "<defer>:<call-key>" pseudo paths,
+// sorted: the base of a method value's receiver and of each argument path
+// (sliceBase and & stripped; a non-path argument has none). A function
+// literal's captures are not operands: the deferred call node already uses
+// them at exit. A defer keyOf does not name is skipped.
+func deferOperandBases(body *ast.BlockStmt, info *types.Info, keyOf map[ast.Node]string) map[types.Object][]string {
+	out := map[types.Object][]string{}
+	add := func(e ast.Expr, spell string) {
+		e, _ = sliceBase(e)
+		e = ast.Unparen(e)
+		if u, ok := e.(*ast.UnaryExpr); ok && u.Op == token.AND {
+			e = u.X
+		}
+		b, ok := pathOf(e, info)
+		if !ok || b.base == nil {
+			return
+		}
+		for _, s := range out[b.base] {
+			if s == spell {
+				return
+			}
+		}
+		out[b.base] = append(out[b.base], spell)
+	}
+	ast.Inspect(body, func(n ast.Node) bool {
+		switch d := n.(type) {
+		case *ast.FuncLit:
+			return false
+		case *ast.DeferStmt:
+			key, ok := keyOf[d.Call]
+			if !ok {
+				return true
+			}
+			spell := DeferPrefix + key
+			if sel, ok := ast.Unparen(d.Call.Fun).(*ast.SelectorExpr); ok {
+				if s := info.Selections[sel]; s != nil && s.Kind() == types.MethodVal {
+					add(sel.X, spell)
+				}
+			}
+			for _, a := range d.Call.Args {
+				add(a, spell)
+			}
+		}
+		return true
+	})
+	for _, ss := range out {
+		sort.Strings(ss)
+	}
+	return out
 }

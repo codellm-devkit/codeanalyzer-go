@@ -120,6 +120,30 @@ func TestMergeEdges_OrderPreserved(t *testing.T) {
 	}
 }
 
+// TestMergeEdges_KeepsDeclaringFilesApart: two inits (one signature, two
+// files) calling one callee are two edges, and so are two VTA edges to the
+// same-signature closures of two files' inits; the same file pair merges.
+func TestMergeEdges_KeepsDeclaringFilesApart(t *testing.T) {
+	at := func(e schema.GoCallEdge, src, dst string) schema.GoCallEdge {
+		e.SourcePath, e.TargetPath = src, dst
+		return e
+	}
+	primary := []schema.GoCallEdge{at(edge("p.init", "p.setup", 1, "go/types"), "a.go", "")}
+	secondary := []schema.GoCallEdge{
+		at(edge("p.init", "p.setup", 1, "go/types"), "b.go", ""),
+		at(edge("p.Run", "p.init.closure_1", 1, "vta"), "a.go", "a.go"),
+		at(edge("p.Run", "p.init.closure_1", 1, "vta"), "a.go", "b.go"),
+		at(edge("p.init", "p.setup", 1, "vta"), "a.go", ""),
+	}
+	result := semantic_analysis.MergeEdges(primary, secondary)
+	if len(result) != 4 {
+		t.Fatalf("got %d edges, want 4: %+v", len(result), result)
+	}
+	if result[0].Weight != 2 || len(result[0].Provenance) != 2 {
+		t.Errorf("a.go init edge = %+v, want weight 2, prov [go/types vta]", result[0])
+	}
+}
+
 // ── Call-site index ───────────────────────────────────────────────────────────
 
 // TestCallGraph_IndexMatchesWalk locks the chi edge set (see chiGoldenEdges for the delta vs the walk) after
@@ -160,4 +184,65 @@ func firstDiff(a, b []string) string {
 		}
 	}
 	return fmt.Sprintf("length differs (%d vs %d)", len(a), len(b))
+}
+
+// TestCallGraph_ClosureSitesResolve: call sites inside function literals are
+// backfilled and produce edges whose source is the closure signature and whose
+// SourcePath is the declaring file (#17).
+func TestCallGraph_ClosureSitesResolve(t *testing.T) {
+	dir, err := filepath.Abs("../../testdata/dataflow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := syntactic_analysis.NewSymbolTableBuilder(dir)
+	st, err := b.Build(nil, true)
+	if err != nil {
+		t.Fatalf("symbol table build failed: %v", err)
+	}
+	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
+	edges := cg.Build(st)
+
+	const outer = "example.com/dataflow/flow.Closure"
+	lit, ok := st["flow/flow.go"].Functions[outer].InnerCallables["closure_1"]
+	if !ok {
+		t.Fatal("Closure has no closure_1")
+	}
+	if lit.Path != "flow/flow.go" {
+		t.Errorf("closure Path = %q, want flow/flow.go", lit.Path)
+	}
+	if len(lit.CallSites) != 1 || lit.CallSites[0].CalleeSignature == nil ||
+		*lit.CallSites[0].CalleeSignature != "example.com/dataflow/flow.f" {
+		t.Fatalf("closure call site not resolved: %+v", lit.CallSites)
+	}
+	for _, e := range edges {
+		if e.Source == outer+".closure_1" && e.Target == "example.com/dataflow/flow.f" {
+			if e.SourcePath != "flow/flow.go" {
+				t.Errorf("edge SourcePath = %q, want flow/flow.go", e.SourcePath)
+			}
+			return
+		}
+	}
+	t.Error("no edge from the closure to flow.f")
+}
+
+// TestLibraryByPath: the no-source-file fallback classifies by the module
+// path prefix when go.mod names one (so an unloaded project package is still
+// project code), else by whether the package was loaded.
+func TestLibraryByPath(t *testing.T) {
+	for _, c := range []struct {
+		pkg, mod string
+		loaded   bool
+		want     bool
+	}{
+		{"example.com/app", "example.com/app", false, false},
+		{"example.com/app/internal/x", "example.com/app", false, false}, // unloaded project package
+		{"example.com/application", "example.com/app", true, true},      // prefix is segment-wise
+		{"fmt", "example.com/app", false, true},
+		{"example.com/app/x", "", true, false}, // no go.mod: loaded = project
+		{"example.com/app/x", "", false, true},
+	} {
+		if got := semantic_analysis.LibraryByPath(c.pkg, c.mod, c.loaded); got != c.want {
+			t.Errorf("LibraryByPath(%q, %q, %v) = %v, want %v", c.pkg, c.mod, c.loaded, got, c.want)
+		}
+	}
 }

@@ -138,6 +138,46 @@ func TestSchemaDocument_RoundTrips(t *testing.T) {
 func TestConformance_ProjectorEmitsOnlyDeclared(t *testing.T) {
 	t.Run("L2", func(t *testing.T) { checkConformance(t, Project(buildMultipackageL2(t))) })
 	t.Run("L3", func(t *testing.T) { checkConformance(t, Project(buildDataflowL3(t))) })
+	t.Run("L4", func(t *testing.T) { checkConformance(t, Project(buildDataflowL4(t))) })
+}
+
+// unproducedRels are the declared relationships whose facts the Go analyzer
+// does not produce yet, so no fixture can emit a row of them (declared
+// contract, empty projection — CLAUDE.md § Repository-artifact layer):
+// the neutral repository layer and its two GO_ resolution claims, and the
+// inheritance pair (base_types[] are type strings, not type ids, so the
+// deferred GO_EMBEDS never resolves; interfaces[] is not computed).
+var unproducedRels = map[string]bool{
+	RelHasArtifact: true, RelDeclaresDependency: true, RelLocks: true, RelDefinesConfig: true,
+	RelProvides: true, RelUnresolvedImport: true,
+	RelEmbeds: true, RelSatisfies: true,
+}
+
+// TestConformance_EveryDeclaredRelEmitted: the -a 4 projection of the
+// dataflow fixture emits at least one row of every declared relationship
+// the analyzer produces facts for — the L4 overlay (GO_PARAM_IN,
+// GO_PARAM_OUT, GO_SUMMARY) included — and none of a Reserved one.
+func TestConformance_EveryDeclaredRelEmitted(t *testing.T) {
+	rows := Project(buildDataflowL4(t))
+	for _, r := range Rels {
+		n := countEdges(rows, r.Type)
+		switch {
+		case r.Reserved && n > 0:
+			t.Errorf("%s is Reserved but has %d rows", r.Type, n)
+		case !r.Reserved && !unproducedRels[r.Type] && n == 0:
+			t.Errorf("%s is declared but the fixture emits no row of it", r.Type)
+		}
+	}
+}
+
+// TestContract_L4OverlayNotReserved: the L4 overlay is live — no declared
+// relationship is Reserved any more.
+func TestContract_L4OverlayNotReserved(t *testing.T) {
+	for _, r := range Rels {
+		if r.Reserved {
+			t.Errorf("%s is still Reserved", r.Type)
+		}
+	}
 }
 
 func checkConformance(t *testing.T, rows GraphRows) {
@@ -218,7 +258,7 @@ func checkConformance(t *testing.T, rows GraphRows) {
 func TestContract_L3OverlayNotReserved(t *testing.T) {
 	want := map[string]bool{
 		RelCFGNext: false, RelCDG: false, RelDDG: false,
-		RelParamIn: true, RelParamOut: true, RelSummary: true,
+		RelParamIn: false, RelParamOut: false, RelSummary: false,
 	}
 	for _, r := range Rels {
 		if res, ok := want[r.Type]; ok {
@@ -249,6 +289,37 @@ func TestContract_L3OverlayNotReserved(t *testing.T) {
 			if !have["var"] || !have["call_node"] {
 				t.Errorf(":GoBodyNode props %v lack var/call_node", n.Props)
 			}
+		}
+	}
+}
+
+// TestContract_L4RelsCarryVar: the L4 param relationships declare the `var`
+// property they carry; :GoApplication declares degraded_json for the
+// degradation marker.
+func TestContract_L4RelsCarryVar(t *testing.T) {
+	seen := map[string]bool{}
+	for _, r := range Rels {
+		switch r.Type {
+		case RelParamIn, RelParamOut:
+			seen[r.Type] = true
+			if len(r.Props) != 1 || r.Props[0] != "var" {
+				t.Errorf("%s Props = %v, want [var]", r.Type, r.Props)
+			}
+		}
+	}
+	if len(seen) != 2 {
+		t.Errorf("param relationships declared: %v", seen)
+	}
+	for _, n := range Nodes {
+		if n.Label != LabelApplication {
+			continue
+		}
+		found := false
+		for _, p := range n.Props {
+			found = found || p == "degraded_json"
+		}
+		if !found {
+			t.Errorf(":GoApplication props %v lack degraded_json", n.Props)
 		}
 	}
 }

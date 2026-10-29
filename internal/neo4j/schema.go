@@ -125,8 +125,9 @@ const (
 	RelCDG     = "GO_CDG"
 	RelDDG     = "GO_DDG"
 
-	// Reserved L4 overlay — declared NOW, emits ZERO rows until L4 lands
-	// (CLAUDE.md). The projector fills these with no schema-contract change.
+	// L4 overlay (LIVE at -a 4): interprocedural edges between :GoBodyNode
+	// vertex ids (GO_PARAM_IN/OUT carry var) and call-site summary edges.
+	// Declared since L1 and filled with no schema-contract change.
 	RelParamIn  = "GO_PARAM_IN"
 	RelParamOut = "GO_PARAM_OUT"
 	RelSummary  = "GO_SUMMARY"
@@ -175,8 +176,8 @@ type RelSpec struct {
 	// present in the graph: it is emitted via the RowBuilder's edge-only-when-
 	// resolved path and kept at finish() only if the target was emitted.
 	Deferred bool
-	// Reserved marks the L4 overlay edges: declared now, emits zero rows at
-	// the current max level (L3).
+	// Reserved marks an edge declared ahead of the level that fills it: it
+	// emits zero rows. None is Reserved today (the L4 overlay is live).
 	Reserved bool
 }
 
@@ -184,7 +185,7 @@ type RelSpec struct {
 var Nodes = []NodeSpec{
 	{
 		Label: LabelApplication, MergeLabel: LabelApplication, Key: "id", CanNode: true,
-		Props: []string{"schema_version", "language", "max_level", "analyzer_name", "analyzer_version"},
+		Props: []string{"schema_version", "language", "max_level", "analyzer_name", "analyzer_version", "degraded_json"},
 	},
 	{
 		Label: LabelModule, MergeLabel: LabelModule, Key: "id", CanNode: true,
@@ -207,11 +208,13 @@ var Nodes = []NodeSpec{
 	},
 	{
 		Label: LabelBodyNode, MergeLabel: LabelBodyNode, Key: "id", CanNode: true,
-		// kind "call" at L1, statement|branch|loop|switch|return|entry|exit at L3;
-		// is_goroutine/is_deferred pruned when false. call_node = the enclosing
-		// statement's LOCAL key (JSON `parent` verbatim, resolved against the
-		// owning callable; Python parity); var = JSON `of` (L4 — absent at L3).
-		// span_json absent on the synthetic entry/exit nodes.
+		// kind "call" at L1, statement|branch|loop|switch|return|entry|exit at L3,
+		// formal_in|formal_out|actual_in|actual_out at L4; is_goroutine /
+		// is_deferred pruned when false. call_node = the enclosing statement's
+		// (an actual vertex's: its call's) LOCAL key — JSON `parent` verbatim,
+		// resolved against the owning callable or stand-in; Python parity.
+		// var = JSON `of` (L4 vertices only). span_json absent on the
+		// synthetic entry/exit nodes and on vertices.
 		Props: []string{"kind", "is_goroutine", "is_deferred", "span_json", "call_node", "var"},
 	},
 	{
@@ -268,8 +271,8 @@ var Rels = []RelSpec{
 	{Type: RelCDG, From: []string{LabelBodyNode}, To: []string{LabelBodyNode}},
 	{Type: RelDDG, From: []string{LabelBodyNode}, To: []string{LabelBodyNode}, Props: []string{"var", "prov"}, Discriminant: "var|prov"},
 
-	// Reserved L4 overlay (zero rows until L4 lands).
-	{Type: RelParamIn, From: []string{LabelBodyNode}, To: []string{LabelBodyNode}, Reserved: true},
-	{Type: RelParamOut, From: []string{LabelBodyNode}, To: []string{LabelBodyNode}, Reserved: true},
-	{Type: RelSummary, From: []string{LabelBodyNode}, To: []string{LabelBodyNode}, Reserved: true},
+	// L4 overlay (live at -a 4).
+	{Type: RelParamIn, From: []string{LabelBodyNode}, To: []string{LabelBodyNode}, Props: []string{"var"}},
+	{Type: RelParamOut, From: []string{LabelBodyNode}, To: []string{LabelBodyNode}, Props: []string{"var"}},
+	{Type: RelSummary, From: []string{LabelBodyNode}, To: []string{LabelBodyNode}},
 }

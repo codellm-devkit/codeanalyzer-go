@@ -42,7 +42,7 @@ func buildMultipackageL2(t *testing.T) *v2.Analysis {
 	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 	edges := cg.Build(st) // mutates st in place: backfills callee_signature
 	app := &schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}
-	return Emit(app, "multipackage", dir, 2, "gate-test", 0, nil)
+	return Emit(app, "multipackage", dir, 2, "gate-test", 0, nil, nil)
 }
 
 // allCallableIDs collects every callable/type id in the emitted tree.
@@ -189,12 +189,12 @@ func TestGateL2_SupersetOfL1(t *testing.T) {
 		t.Fatalf("symbol table build failed: %v", err)
 	}
 	// L1 snapshot BEFORE the resolver mutates call sites.
-	l1 := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: nil}, "multipackage", dir, 1, "gate-test", 0, nil)
+	l1 := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: nil}, "multipackage", dir, 1, "gate-test", 0, nil, nil)
 
 	// Now run the resolver (mutates st) and emit L2.
 	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 	edges := cg.Build(st)
-	l2 := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges}, "multipackage", dir, 2, "gate-test", 0, nil)
+	l2 := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges}, "multipackage", dir, 2, "gate-test", 0, nil, nil)
 
 	if len(l1.Application.SymbolTable) != len(l2.Application.SymbolTable) {
 		t.Fatalf("module count changed L1->L2: %d vs %d",
@@ -337,6 +337,26 @@ func F() string {
 	if len(sym.Parameters) != 1 || sym.Parameters[0].Name != "s" {
 		t.Errorf("params = %+v, want exactly [s] (receiver excluded)", sym.Parameters)
 	}
+	if sym.Receiver == nil || sym.Receiver.Name != "b" || sym.Receiver.Type != "*strings.Builder" {
+		t.Errorf("receiver = %+v, want {b *strings.Builder}", sym.Receiver)
+	}
+}
+
+// TestGateL2_ExternalFunctionHasNoReceiver: only methods carry a receiver.
+func TestGateL2_ExternalFunctionHasNoReceiver(t *testing.T) {
+	out := emitTemp(t, `package p
+
+import "strings"
+
+func F() string { return strings.ToUpper("x") }
+`)
+	sym, ok := out.Application.ExternalSymbols[v2.ExternalID(out.Application.ID, "strings", "ToUpper")]
+	if !ok {
+		t.Fatalf("external_symbols missing strings.ToUpper")
+	}
+	if sym.Receiver != nil {
+		t.Errorf("function has receiver %+v", sym.Receiver)
+	}
 }
 
 // TestGateL2_ConversionIsNotACall locks that a type conversion is not minted as
@@ -390,7 +410,7 @@ func emitTemp(t *testing.T, src string) *v2.Analysis {
 	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 	edges := cg.Build(st)
 	app := &schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}
-	return Emit(app, "p", dir, 2, "gate-test", 0, nil)
+	return Emit(app, "p", dir, 2, "gate-test", 0, nil, nil)
 }
 
 // TestGateL2_ExternalParamsHaveNoSpan locks that external parameters serialize
@@ -422,7 +442,7 @@ func TestGateL2_GenericLibraryMethodUsesDeclaredSignature(t *testing.T) {
 		}
 		cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 		edges := cg.Build(st)
-		out := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}, "dataflow", dir, 2, "gate-test", 0, nil)
+		out := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}, "dataflow", dir, 2, "gate-test", 0, nil, nil)
 		ext := v2.ExternalID(out.Application.ID, "sync/atomic", "Pointer.Store")
 		sym, ok := out.Application.ExternalSymbols[ext]
 		if !ok {
@@ -446,7 +466,7 @@ func TestGateL2_IncrementalModeKeepsProjectCalleesInternal(t *testing.T) {
 	}
 	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 	edges := cg.Build(st)
-	out := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}, "multipackage", dir, 2, "gate-test", 0, nil)
+	out := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}, "multipackage", dir, 2, "gate-test", 0, nil, nil)
 
 	const projectModule = "example.com/multipackage"
 	for id, sym := range out.Application.ExternalSymbols {
@@ -472,7 +492,7 @@ func TestGateL2_VendoredCalleeIsExternal(t *testing.T) {
 	}
 	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 	edges := cg.Build(st)
-	out := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}, "dataflow", dir, 2, "gate-test", 0, nil)
+	out := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}, "dataflow", dir, 2, "gate-test", 0, nil, nil)
 
 	ext := v2.ExternalID(out.Application.ID, "example.com/vlib", "F")
 	sym, ok := out.Application.ExternalSymbols[ext]
@@ -490,10 +510,11 @@ func TestGateL2_VendoredCalleeIsExternal(t *testing.T) {
 	}
 }
 
-// TestGateL2_LineDirectiveCallsResolve (I1): L1 records call sites through
-// fset.Position, which applies //line directives, so a site under a directive
-// names a virtual line:col (here line 900 of a 17-line file). The resolver
-// must find it by that same key and backfill its callee and edge.
+// TestGateL2_LineDirectiveCallsResolve (I1, #26): L1 records call sites at
+// their real file positions, never the //line-adjusted ones, so a site under
+// a directive keeps its real line:col (here 13:2, which the directive maps
+// to virtual.y:900). The resolver must find it by that same key and backfill
+// its callee and edge.
 func TestGateL2_LineDirectiveCallsResolve(t *testing.T) {
 	out := buildDataflowL2Fresh(t)
 	fn := functionByName(t, mustModule(t, out, "linedir/linedir.go"), "Caller")
@@ -511,8 +532,8 @@ func TestGateL2_LineDirectiveCallsResolve(t *testing.T) {
 		}
 		callees[*n.Callee] = true
 	}
-	if _, virtual := fn.Body["900:2"]; !virtual {
-		t.Fatalf("no call node at the virtual 900:2; body %v", keys(fn.Body))
+	if _, real := fn.Body["13:2"]; !real {
+		t.Fatalf("no call node at the real 13:2; body %v", keys(fn.Body))
 	}
 	edges := map[string]bool{}
 	for _, e := range out.Application.CallGraph {
@@ -543,7 +564,7 @@ func TestGateL2_ExternalUnnamedParamsArePositional(t *testing.T) {
 	}
 	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 	edges := cg.Build(st)
-	out := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}, "dataflow", dir, 2, "gate-test", 0, nil)
+	out := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}, "dataflow", dir, 2, "gate-test", 0, nil, nil)
 
 	for sig, want := range map[string][]string{"G": {"_0", "_1"}, "H": {"_0", "n"}} {
 		ext := v2.ExternalID(out.Application.ID, "example.com/vlib", sig)
@@ -560,4 +581,144 @@ func TestGateL2_ExternalUnnamedParamsArePositional(t *testing.T) {
 			t.Errorf("%s parameter names = %v, want %v", sig, got, want)
 		}
 	}
+}
+
+// emitDirL2 builds dir through the real builder + resolver and emits v2 at L2.
+func emitDirL2(t *testing.T, dir, app string) *v2.Analysis {
+	t.Helper()
+	b := syntactic_analysis.NewSymbolTableBuilder(dir)
+	st, err := b.Build(nil, true)
+	if err != nil {
+		t.Fatalf("symbol table build failed: %v", err)
+	}
+	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
+	edges := cg.Build(st)
+	return Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}, app, dir, 2, "gate-test", 0, nil, nil)
+}
+
+// assertNoDanglingEdges fails when an edge endpoint is neither a callable id
+// nor an external_symbols key.
+func assertNoDanglingEdges(t *testing.T, out *v2.Analysis) {
+	t.Helper()
+	ids := allCallableIDs(out)
+	for id := range out.Application.ExternalSymbols {
+		ids[id] = true
+	}
+	for i, e := range out.Application.CallGraph {
+		if !ids[e.Src] || !ids[e.Dst] {
+			t.Errorf("edge[%d] dangles: %s -> %s", i, e.Src, e.Dst)
+		}
+	}
+}
+
+// TestGateL2_ClosureCallSitesResolve: a call inside a function literal resolves
+// like any other (#17). flow.Closure's literal calls f(x) at 217:10.
+func TestGateL2_ClosureCallSitesResolve(t *testing.T) {
+	out := buildDataflowL2Fresh(t)
+	mod := mustModule(t, out, "flow/flow.go")
+	closure := functionByName(t, mod, "Closure")
+	if len(closure.Callables) != 1 {
+		t.Fatalf("Closure has %d closures, want 1", len(closure.Callables))
+	}
+	var lit v2.Callable
+	for _, c := range closure.Callables {
+		lit = c
+	}
+	wantCallee := functionByName(t, mod, "f").ID
+
+	n, ok := lit.Body["217:10"]
+	if !ok {
+		t.Fatalf("closure body has no 217:10 call; keys=%v", keys(lit.Body))
+	}
+	if n.Callee == nil || *n.Callee != wantCallee {
+		t.Errorf("closure call 217:10 callee = %v, want %s", n.Callee, wantCallee)
+	}
+	found := false
+	for _, e := range out.Application.CallGraph {
+		if e.Src == lit.ID && e.Dst == wantCallee {
+			found = true
+			if len(e.Prov) != 1 || e.Prov[0] != "go/types" {
+				t.Errorf("closure edge prov = %v, want [go/types]", e.Prov)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("call_graph has no edge %s -> %s", lit.ID, wantCallee)
+	}
+	assertNoDanglingEdges(t, out)
+}
+
+// TestGateL2_ChiClosureCallsResolve: on chi, closure call nodes resolve and no
+// edge dangles.
+func TestGateL2_ChiClosureCallsResolve(t *testing.T) {
+	out := buildChiL2Fresh(t, chiDir(t))
+	resolved := 0
+	var walk func(c v2.Callable, inClosure bool)
+	walk = func(c v2.Callable, inClosure bool) {
+		if inClosure {
+			for _, n := range c.Body {
+				if n.Kind == "call" && n.Callee != nil {
+					resolved++
+				}
+			}
+		}
+		for _, in := range c.Callables {
+			walk(in, true)
+		}
+	}
+	for _, mod := range out.Application.SymbolTable {
+		for _, fn := range mod.Functions {
+			walk(fn, false)
+		}
+		for _, ty := range mod.Types {
+			for _, m := range ty.Callables {
+				walk(m, false)
+			}
+		}
+	}
+	if resolved == 0 {
+		t.Error("no closure call node has a callee on chi")
+	}
+	t.Logf("chi closure call nodes with a callee: %d", resolved)
+	assertNoDanglingEdges(t, out)
+}
+
+// TestGateL2_CrossFileMethodClosureEdge: a closure inside a method declared in a
+// different file than its receiver type nests under the type's module but is
+// declared in the method's file. Its edge must resolve to the closure's id.
+func TestGateL2_CrossFileMethodClosureEdge(t *testing.T) {
+	dir := t.TempDir()
+	for name, src := range map[string]string{
+		"go.mod": "module example.com/p\n\ngo 1.21\n",
+		"a.go":   "package p\n\ntype T struct{}\n",
+		"b.go":   "package p\n\nfunc helper() {}\n\nfunc (t *T) Run() {\n\tfn := func() {\n\t\tinner := func() { helper() }\n\t\tinner()\n\t\thelper()\n\t}\n\tfn()\n}\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out := emitDirL2(t, dir, "p")
+	run := mustModule(t, out, "a.go").Types["T"].Callables["example.com/p.T.Run"]
+	if len(run.Callables) != 1 {
+		t.Fatalf("Run has %d closures, want 1", len(run.Callables))
+	}
+	helper := functionByName(t, mustModule(t, out, "b.go"), "helper").ID
+	var fn v2.Callable
+	for _, c := range run.Callables {
+		fn = c
+	}
+	var inner v2.Callable
+	for _, c := range fn.Callables {
+		inner = c
+	}
+	has := map[[2]string]bool{}
+	for _, e := range out.Application.CallGraph {
+		has[[2]string{e.Src, e.Dst}] = true
+	}
+	for _, c := range []v2.Callable{fn, inner} {
+		if c.ID == "" || !has[[2]string{c.ID, helper}] {
+			t.Errorf("missing edge %s -> %s", c.ID, helper)
+		}
+	}
+	assertNoDanglingEdges(t, out)
 }

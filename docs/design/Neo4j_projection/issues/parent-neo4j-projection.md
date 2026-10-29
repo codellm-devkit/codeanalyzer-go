@@ -43,7 +43,8 @@ Children (filed just-in-time on their repos, attached as sub-issues of this one)
 `N="Go"`/`P="GO_"`; one `:GoType` + `kind` property; `GO_EMBEDS` vs `GO_SATISFIES`;
 flattened `source_file`/`error_channel`/`is_goroutine`/`is_deferred`; narrower label set (no
 decorator/attribute/variable); neutral repo layer reused verbatim; full L3/L4 overlay
-vocabulary declared now, zero rows until the levels land; type-centric SDK facade.
+vocabulary declared now, zero rows until the levels land (*status 2026-10-27: the L3 and L4
+overlays are now live; `--emit neo4j` projects L4*); type-centric SDK facade.
 
 **Describe alternatives you've considered**
 

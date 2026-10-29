@@ -2,9 +2,11 @@ package dataflow_test
 
 import (
 	"go/ast"
+	"go/parser"
 	"go/token"
 	"go/types"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sync"
 	"testing"
@@ -63,17 +65,21 @@ func loadFlow(t *testing.T) *flowFixture {
 }
 
 // callKeys builds the L1 call-node keys exactly as the driver does: keys from
-// v2.CallBodyKeys over the call sites' [line, col], in recording order.
-// BuildNodes pairs them with the AST calls by index (ruling R5), never by
-// rebuilding a token.Pos.
-func (fx *flowFixture) callKeys(t *testing.T, fn string) []string {
+// v2.CallBodyKeys over the call sites' [line, col], in recording order, each
+// with its site's Lparen. BuildNodes pairs them with the AST calls by Lparen.
+func (fx *flowFixture) callKeys(t *testing.T, fn string) []dataflow.UnitCall {
 	t.Helper()
 	sites := fx.sites[fn]
 	pos := make([][2]int, len(sites))
 	for i, cs := range sites {
 		pos[i] = [2]int{cs.StartLine, cs.StartColumn}
 	}
-	return v2.CallBodyKeys(pos)
+	keys := v2.CallBodyKeys(pos)
+	out := make([]dataflow.UnitCall, len(sites))
+	for i, cs := range sites {
+		out[i] = dataflow.UnitCall{Key: keys[i], Lparen: cs.Lparen}
+	}
+	return out
 }
 
 func (fx *flowFixture) decl(t *testing.T, fn string) *ast.FuncDecl {
@@ -222,8 +228,8 @@ func TestBodyNodes_KindsPerConstruct(t *testing.T) {
 func TestBodyNodes_BareCallSharesKey(t *testing.T) {
 	fx := loadFlow(t)
 	l1 := map[string]bool{}
-	for _, k := range fx.callKeys(t, "EarlyReturnDefer") {
-		l1[k] = true
+	for _, c := range fx.callKeys(t, "EarlyReturnDefer") {
+		l1[c.Key] = true
 	}
 	_, byKey, keyOf := build(t, "EarlyReturnDefer")
 	n := wantKind(t, "EarlyReturnDefer", byKey, "131:2", dataflow.KindCall)
@@ -353,9 +359,9 @@ func TestBodyNodes_CallKeysMatchL1(t *testing.T) {
 	fx := loadFlow(t)
 	for fn := range fx.decls {
 		_, byKey, _ := build(t, fn)
-		for _, k := range fx.callKeys(t, fn) {
-			if n, ok := byKey[k]; !ok || n.Kind != dataflow.KindCall {
-				t.Errorf("%s: L1 call key %s has no call node", fn, k)
+		for _, c := range fx.callKeys(t, fn) {
+			if n, ok := byKey[c.Key]; !ok || n.Kind != dataflow.KindCall {
+				t.Errorf("%s: L1 call key %s has no call node", fn, c.Key)
 			}
 		}
 	}
@@ -368,5 +374,104 @@ func TestBodyNodes_BodylessCallableEmitsNothing(t *testing.T) {
 	}
 	if nodes == nil || keyOf == nil {
 		t.Errorf("nil body: want empty (non-nil) slice and map")
+	}
+}
+
+// TestBuildNodes_PairsByLparenNotIndex: BuildNodes pairs each L1 call key
+// with the call whose Lparen it carries, so the order of the calls slice is
+// irrelevant: a permuted slice keys every call exactly as the recording-order
+// slice does — co-positioned chained calls (s.A().B() at l:c, s.A() at
+// l:c/2) included.
+func TestBuildNodes_PairsByLparenNotIndex(t *testing.T) {
+	fx := loadFlow(t)
+	for _, fn := range []string{"EarlyReturnDefer", "GoArgs", "Chain", "Nested", "Spawn"} {
+		body := fx.decl(t, fn).Body
+		calls := fx.callKeys(t, fn)
+		if len(calls) < 2 {
+			t.Fatalf("%s: %d calls, want ≥ 2 to permute", fn, len(calls))
+		}
+		rev := make([]dataflow.UnitCall, len(calls))
+		for i, c := range calls {
+			rev[len(calls)-1-i] = c
+		}
+		nodes, keyOf := dataflow.BuildNodes(fx.fset, body, calls)
+		nodes2, keyOf2 := dataflow.BuildNodes(fx.fset, body, rev)
+		if !reflect.DeepEqual(nodes, nodes2) || !reflect.DeepEqual(keyOf, keyOf2) {
+			t.Errorf("%s: permuted calls build different nodes", fn)
+		}
+		want := map[token.Pos]string{}
+		for _, c := range calls {
+			want[c.Lparen] = c.Key
+		}
+		n := 0
+		for node, key := range keyOf2 {
+			if call, ok := node.(*ast.CallExpr); ok {
+				n++
+				if want[call.Lparen] != key {
+					t.Errorf("%s: call at %v keyed %s, want %s", fn, fx.fset.Position(call.Pos()), key, want[call.Lparen])
+				}
+			}
+		}
+		if n != len(calls) {
+			t.Errorf("%s: %d call expressions keyed, want %d", fn, n, len(calls))
+		}
+	}
+}
+
+// TestBuildNodes_EndClampedToFile (#28): in testdata/malformed the parser
+// recovers from each syntax error with nodes whose End lies one past the end
+// of the file: in the shared FileSet it has no file (the last file) or is the
+// next file's base. BuildNodes clamps such an End to the end of Pos's file
+// (and an End before Pos to Pos), so every node's [StartLC, EndLC] is a
+// non-inverted range inside the node's own file.
+func TestBuildNodes_EndClampedToFile(t *testing.T) {
+	_, thisFile, _, _ := runtime.Caller(0)
+	dir := filepath.Join(filepath.Dir(thisFile), "..", "..", "testdata", "malformed")
+	fset := token.NewFileSet()
+	// Parse in name order into one FileSet, as go/packages does, so a bad
+	// End of one file is the next file's base.
+	var files []*ast.File
+	for _, name := range []string{"case.go", "doc.go", "if.go", "range.go", "recv.go"} {
+		f, _ := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.SkipObjectResolution)
+		if f == nil {
+			t.Fatalf("parse %s: no file", name)
+		}
+		files = append(files, f)
+	}
+	bad, checked := 0, 0
+	for _, f := range files {
+		tf := fset.File(f.Pos())
+		for _, d := range f.Decls {
+			fd, ok := d.(*ast.FuncDecl)
+			if !ok || fd.Body == nil {
+				continue
+			}
+			if fset.File(fd.End()) != tf {
+				bad++
+			}
+			nodes, _ := dataflow.BuildNodes(fset, fd.Body, gateCallKeys(fset, fd.Body))
+			for _, n := range nodes {
+				if n.Pos == token.NoPos {
+					continue
+				}
+				checked++
+				p := fset.PositionFor(n.Pos, false)
+				if fset.File(n.End) != tf && n.End != tf.Pos(tf.Size()) {
+					t.Errorf("%s %s: End %v is outside Pos's file", p.Filename, n.Key, n.End)
+				}
+				if n.End < n.Pos {
+					t.Errorf("%s %s: End %v before Pos %v", p.Filename, n.Key, n.End, n.Pos)
+				}
+				if n.EndLC[0] < n.StartLC[0] || n.EndLC[0] == n.StartLC[0] && n.EndLC[1] < n.StartLC[1] {
+					t.Errorf("%s %s: EndLC %v before StartLC %v", p.Filename, n.Key, n.EndLC, n.StartLC)
+				}
+				if n.EndLC[0] > tf.LineCount() || n.EndLC[0] == 0 {
+					t.Errorf("%s %s: EndLC %v outside the file's %d lines", p.Filename, n.Key, n.EndLC, tf.LineCount())
+				}
+			}
+		}
+	}
+	if bad < 4 || checked == 0 {
+		t.Errorf("malformed fixture: %d functions with a bad End, %d nodes checked; want ≥ 4 and > 0", bad, checked)
 	}
 }

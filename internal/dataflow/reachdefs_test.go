@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"sort"
 	"testing"
 
@@ -15,15 +16,10 @@ import (
 
 func dd(src, dst, v string) dataflow.DdgEdge { return dataflow.DdgEdge{Src: src, Dst: dst, Var: v} }
 
-// duMap is DefUseOf for every node of the pruned set, keyed by node Key —
-// BuildDDG's input, computed the way the analyzer computes it.
+// duMap is DefUses of the pruned set, keyed by node Key — BuildDDG's input,
+// computed the way the analyzer computes it.
 func duMap(nodes []dataflow.Node, info *types.Info, fn ast.Node, keyOf map[ast.Node]string) map[string]dataflow.DefUse {
-	bases := dataflow.EntryBases(fn, info)
-	out := map[string]dataflow.DefUse{}
-	for _, n := range nodes {
-		out[n.Key] = dataflow.DefUseOf(n, info, kTest, bases, fn, keyOf)
-	}
-	return out
+	return dataflow.DefUses(nodes, info, kTest, dataflow.EntryBases(fn, info), fn, keyOf)
 }
 
 // ddgOf builds fn's pruned nodes, CFG, CDG and DDG from the flow fixture with
@@ -340,12 +336,13 @@ func TestSlice_BackwardExact(t *testing.T) {
 // TestDDG_CorpusGate runs BuildDDG over every function and function literal
 // body in testdata/dataflow and testdata/chi: no panic, the output contract
 // (checkDDG: endpoints are pruned non-satellite nodes, sorted, deduped), two
-// builds deep-equal, and the result independent of input order (nodes, CFG
-// edges and every DefUse list reversed).
+// builds deep-equal, the result independent of input order (nodes, CFG
+// edges and every DefUse list reversed), and a superset of the DDG of the
+// pre-D1 def/use sets (the D1 rules only add edges).
 func TestDDG_CorpusGate(t *testing.T) {
 	_, thisFile, _, _ := runtime.Caller(0)
 	root := filepath.Join(filepath.Dir(thisFile), "..", "..", "testdata")
-	total, edges := 0, 0
+	total, edges, oldEdges := 0, 0, 0
 	for _, dir := range []string{"dataflow", "chi"} {
 		fset, cases := loadDiffCases(t, filepath.Join(root, dir))
 		for _, c := range cases {
@@ -357,6 +354,14 @@ func TestDDG_CorpusGate(t *testing.T) {
 			checkDDG(t, c.name, kept, got)
 			edges += len(got)
 
+			// DefUseOf (callable facts derived per call) agrees with DefUses.
+			bases := dataflow.EntryBases(c.fn, c.info)
+			for _, n := range kept {
+				if one := dataflow.DefUseOf(n, c.info, kTest, bases, c.fn, keyOf); !reflect.DeepEqual(one, du[n.Key]) {
+					t.Errorf("%s %s: DefUseOf %+v != DefUses %+v", c.name, n.Key, one, du[n.Key])
+				}
+			}
+
 			if again := dataflow.BuildDDG(kept, es, duMap(kept, c.info, c.fn, keyOf)); !reflect.DeepEqual(got, again) {
 				t.Errorf("%s: two builds differ", c.name)
 			}
@@ -366,17 +371,31 @@ func TestDDG_CorpusGate(t *testing.T) {
 			reverse(re)
 			rdu := map[string]dataflow.DefUse{}
 			for k, v := range du {
-				rdu[k] = dataflow.DefUse{Defs: reversed(v.Defs), WeakDefs: reversed(v.WeakDefs), Uses: reversed(v.Uses)}
+				rdu[k] = dataflow.DefUse{Defs: reversed(v.Defs), WeakDefs: reversed(v.WeakDefs), Uses: reversed(v.Uses), Shallow: reversed(v.Shallow)}
 			}
 			if perm := dataflow.BuildDDG(rn, re, rdu); !reflect.DeepEqual(got, perm) {
 				t.Errorf("%s: DDG depends on input order", c.name)
 			}
+
+			// The D1 rules (#22, #28) only add edges: every edge of the
+			// pre-D1 def/use sets is still there.
+			have := map[dataflow.DdgEdge]bool{}
+			for _, g := range got {
+				have[g] = true
+			}
+			old := dataflow.BuildDDG(kept, es, dataflow.DefUsesPreD1(kept, c.info, kTest, dataflow.EntryBases(c.fn, c.info), c.fn, keyOf))
+			for _, o := range old {
+				if !have[o] {
+					t.Errorf("%s: D1 rules dropped pre-D1 ddg %s→%s on %q", c.name, o.Src, o.Dst, o.Var)
+				}
+			}
+			oldEdges += len(old)
 		}
 	}
 	if total < 100 || edges < 1000 {
 		t.Errorf("ddg gate covered only %d bodies / %d edges", total, edges)
 	}
-	t.Logf("ddg gate: %d bodies, %d edges", total, edges)
+	t.Logf("ddg gate: %d bodies, %d edges (%d pre-D1, all kept)", total, edges, oldEdges)
 }
 
 func reverse[T any](s []T) {
@@ -435,11 +454,430 @@ func TestDDG_AppendWritesDstBackingArray(t *testing.T) {
 // chain is return 558:2 → 557:8 (err = wrapErr(err)) → 556:8 (observe(err))
 // → @exit. A deferred call node never strong-defines, so err = wrapErr(nil)
 // (555:2) reaches the return, the rewriting closure and, through it, the
-// observer at the end of the chain.
+// observer at the end of the chain. The rewriting closure weak-defines its
+// captured err (D1 gap 1), so its write reaches the observer too.
 func TestDDG_DeferredNamedResultWriteNeverKills(t *testing.T) {
 	hasDDG(t, "DeferWrap",
 		dd("555:2", "558:2", "err"), // the bare return reads the named result
 		dd("555:2", "557:8", "err"), // the rewriting closure reads it at exit
 		dd("555:2", "556:8", "err"), // and the def survives past it
+		dd("557:8", "556:8", "err"), // the rewrite's capture write (D1 gap 1)
 	)
+}
+
+// TestDDG_ClosureCaptureWrites (D1 gap 1): the node hosting a function literal
+// weak-defines what the literal may write of its captures, and every strong
+// def of a captured-and-written variable in the callable is weak, so the
+// closure's write reaches the later read.
+func TestDDG_ClosureCaptureWrites(t *testing.T) {
+	// func(){ x = 1 }() at 564:2 → return x.
+	hasDDG(t, "CaptureWrite", dd("564:2", "565:2", "x"))
+	// h := func(){ x = 1 } at 572:2; x = 2 (573:2) does not kill it.
+	hasDDG(t, "CaptureThenReassign", dd("572:2", "575:2", "x"))
+	// once.Do(func(){ cfg = load() }) at 588:2 → return cfg.
+	hasDDG(t, "OnceDo", dd("588:2", "589:2", "cfg"))
+	// f := func(){ func(){ x = y }() } at 613:2: the nested literal's write.
+	hasDDG(t, "CaptureNested", dd("613:2", "620:2", "x"))
+	// go func(){ x = <-ch }() at 627:5: the go node hosts the literal.
+	hasDDG(t, "CaptureGo", dd("627:5", "628:2", "x"))
+	// func(){ q := p; q.n = 1 }() at 716:2 writes through p by an alias:
+	// no path of p, but p may hold a reference, so the host weak-defines
+	// p.*, which reaches return p.n (found by metamorphic relation MR5).
+	hasDDG(t, "CaptureAliasWrite", dd("716:2", "717:2", "p.n"))
+}
+
+// TestDDG_DeferOperandAfterReassign (D1 gap 3): in `defer fill(b); b[0] = s;
+// b = o` the element write also weak-defines the defer's pseudo path, which
+// b = o does not kill, so it reaches the deferred fill (595:8).
+func TestDDG_DeferOperandAfterReassign(t *testing.T) {
+	hasDDG(t, "DeferReassign", dd("596:2", "595:8", "<defer>:595:8"))
+}
+
+// TestDDG_AppendKeepsElementDefs (#28): s = append(s, n) may keep s's backing
+// array, so it does not kill the earlier s[0] = 5.
+func TestDDG_AppendKeepsElementDefs(t *testing.T) {
+	hasDDG(t, "AppendKeepsElems", dd("603:2", "605:2", "s[*]"))
+}
+
+// TestDDG_ValueStructWithSliceIsWrittenThrough (D1 gap 2): fillCfg(c) with a
+// value struct c whose field items is a slice may write c.items[*]; the call
+// weak-defines c.*, which reaches the later read of c.items[0].
+func TestDDG_ValueStructWithSliceIsWrittenThrough(t *testing.T) {
+	wantDDG(t, "FillCfg",
+		dd(entry, "651:2", "c"),
+		dd(entry, "652:2", "c.items[*]"),
+		dd("651:2", "652:2", "c.items[*]"),
+	)
+	// A value receiver over a slice field (c.reset()) and value arguments
+	// that may hold a reference (n nests one, a is an array of slices) are
+	// written through; p (ints only) and b ([2]int) are not.
+	hasDDG(t, "ValueRefs",
+		dd("659:2", "662:2", "c.items[*]"),
+		dd("661:2", "662:2", "n.in.items[*]"),
+		dd("661:2", "662:2", "a[*][*]"),
+	)
+	_, _, got := ddgOf(t, "ValueRefs")
+	for _, g := range got {
+		if g.Src != entry && (g.Var == "p.a" || g.Var == "b[*]") {
+			t.Errorf("ValueRefs: a reference-free value operand is written through: %v", g)
+		}
+	}
+}
+
+// flatDef is a definition of the flat reference: a node and a path.
+type flatDef struct {
+	Node string
+	Path dataflow.Path
+}
+
+// flatReaching is a reference reaching-definitions fixpoint with the kill
+// rule of BuildDDG tested against every definition of the body (no
+// bucketing), on plain map sets: IN of every CFG node.
+func flatReaching(nodes []dataflow.Node, cfg []dataflow.CfgEdge, du map[string]dataflow.DefUse) map[string]map[flatDef]bool {
+	type def = flatDef
+	isNode := map[string]bool{}
+	for _, n := range nodes {
+		if n.Parent == "" {
+			isNode[n.Key] = true
+		}
+	}
+	pred := map[string][]string{}
+	for _, e := range cfg {
+		if isNode[e.Src] && isNode[e.Dst] {
+			pred[e.Dst] = append(pred[e.Dst], e.Src)
+		}
+	}
+	var all []def
+	for k := range isNode {
+		d := du[k]
+		for _, list := range [][]dataflow.Path{d.Defs, d.WeakDefs} {
+			for _, p := range list {
+				all = append(all, def{k, p})
+			}
+		}
+	}
+	killed := func(k string, d def) bool {
+		shallow := map[dataflow.Path]bool{}
+		for _, p := range du[k].Shallow {
+			shallow[p] = true
+		}
+		for _, p := range du[k].Defs {
+			if p == d.Path || !shallow[p] && p.Covers(d.Path) {
+				return true
+			}
+		}
+		return false
+	}
+	in, out := map[string]map[def]bool{}, map[string]map[def]bool{}
+	for k := range isNode {
+		in[k], out[k] = map[def]bool{}, map[def]bool{}
+	}
+	for changed := true; changed; {
+		changed = false
+		for k := range isNode {
+			for _, p := range pred[k] {
+				for d := range out[p] {
+					in[k][d] = true
+				}
+			}
+			next := map[def]bool{}
+			for d := range in[k] {
+				if !killed(k, d) {
+					next[d] = true
+				}
+			}
+			for _, d := range all {
+				if d.Node == k {
+					next[d] = true
+				}
+			}
+			if len(next) != len(out[k]) {
+				changed = true
+			} else {
+				for d := range next {
+					if !out[k][d] {
+						changed = true
+						break
+					}
+				}
+			}
+			out[k] = next
+		}
+	}
+	return in
+}
+
+// flatDDG is the reference DDG over flatReaching: each use links from each
+// reaching def it interferes with. TestDDG_KillBucketsMatchFlat compares
+// BuildDDG against it.
+func flatDDG(nodes []dataflow.Node, cfg []dataflow.CfgEdge, du map[string]dataflow.DefUse) []dataflow.DdgEdge {
+	return flatDDGAlias(nodes, cfg, du, nil)
+}
+
+// anyBase is the broadest oracle: any two resolved bases may alias. The flat
+// alias gate uses it so that the matching, not the oracle, is under test.
+func anyBase(a, b dataflow.Path) bool { return a.Base != nil && b.Base != nil }
+
+// flatDDGAlias is BuildDDGAlias's reference, formulated independently: over
+// flatReaching, a use u also links from a reaching def d of another base
+// when mayAlias(d, u) and, dropping at most one leading step from each, d's
+// remaining steps rebased onto u's base interfere with u's remaining steps
+// rebased likewise (Covers either way). nil mayAlias is flatDDG.
+func flatDDGAlias(nodes []dataflow.Node, cfg []dataflow.CfgEdge, du map[string]dataflow.DefUse, mayAlias func(a, b dataflow.Path) bool) []dataflow.DdgEdge {
+	edges := map[dataflow.DdgEdge]bool{}
+	for k, ins := range flatReaching(nodes, cfg, du) {
+		for d := range ins {
+			for _, u := range du[k].Uses {
+				if d.Path.Covers(u) || u.Covers(d.Path) {
+					edges[dataflow.DdgEdge{Src: d.Node, Dst: k, Var: u.Spell}] = true
+					continue
+				}
+				if mayAlias == nil || d.Path.Base == nil || u.Base == d.Path.Base {
+					continue
+				}
+				if flatWindow(d.Path, u) && mayAlias(d.Path, u) {
+					edges[dataflow.DdgEdge{Src: d.Node, Dst: k, Var: u.Spell}] = true
+				}
+			}
+		}
+	}
+	res := []dataflow.DdgEdge{}
+	for e := range edges {
+		res = append(res, e)
+	}
+	sort.Slice(res, func(i, j int) bool { return ddgLess(res[i], res[j]) })
+	return res
+}
+
+// flatWindow is the one-step offset window on spellings: both suffixes,
+// each with up to one leading step dropped, rebased onto u's base.
+func flatWindow(d, u dataflow.Path) bool {
+	tails := func(p dataflow.Path) []string {
+		suf := p.Spell[len(dataflow.SpellBase(p.Spell)):]
+		out := []string{suf}
+		if steps := dataflow.PathSteps(p.Spell); len(steps) > 0 {
+			out = append(out, suf[len(steps[0]):])
+		}
+		return out
+	}
+	head := dataflow.SpellBase(u.Spell)
+	for _, ds := range tails(d) {
+		for _, us := range tails(u) {
+			a := dataflow.Path{Base: u.Base, Spell: head + ds}
+			b := dataflow.Path{Base: u.Base, Spell: head + us}
+			if a.Covers(b) || b.Covers(a) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// TestDDG_KillBucketsMatchFlat (#27 item 1): BuildDDG tests kills only within
+// the bucket of a def's base (nil-base paths by spelling head); it equals the
+// flat reference over the whole flow and chi corpus and over a hand-built
+// line mixing shadowed bases, unresolved (nil-base) paths sharing a spelling
+// with a real base, and pseudo paths.
+func TestDDG_KillBucketsMatchFlat(t *testing.T) {
+	_, thisFile, _, _ := runtime.Caller(0)
+	root := filepath.Join(filepath.Dir(thisFile), "..", "..", "testdata")
+	total, aliased := 0, 0
+	for _, dir := range []string{"dataflow", "chi"} {
+		fset, cases := loadDiffCases(t, filepath.Join(root, dir))
+		for _, c := range cases {
+			nodes, keyOf := dataflow.BuildNodes(fset, c.body, gateCallKeys(fset, c.body))
+			kept, es := dataflow.BuildCFG(nodes, keyOf, c.body, c.info)
+			du := duMap(kept, c.info, c.fn, keyOf)
+			got, want := dataflow.BuildDDG(kept, es, du), flatDDG(kept, es, du)
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("%s: bucketed DDG (%d edges) != flat (%d edges)", c.name, len(got), len(want))
+			}
+			total += len(got)
+			gotA, wantA := dataflow.BuildDDGAlias(kept, es, du, anyBase), flatDDGAlias(kept, es, du, anyBase)
+			if !reflect.DeepEqual(gotA, wantA) {
+				t.Errorf("%s: bucketed alias DDG (%d edges) != flat (%d edges)", c.name, len(gotA), len(wantA))
+			}
+			aliased += len(gotA) - len(got)
+		}
+	}
+	if total < 1000 {
+		t.Errorf("kill-bucket gate covered only %d edges", total)
+	}
+	if aliased < 100 {
+		t.Errorf("alias gate covered only %d alias edges", aliased)
+	}
+
+	// Hand-built: x (outer), x (shadowing inner, same spelling), the
+	// unresolved x and u (nil base), and a <defer>: pseudo path.
+	xo := types.NewVar(token.NoPos, nil, "x", types.Typ[types.Int])
+	xi := types.NewVar(token.NoPos, nil, "x", types.Typ[types.Int])
+	P := func(b types.Object, s ...string) []dataflow.Path {
+		var out []dataflow.Path
+		for _, sp := range s {
+			out = append(out, dataflow.Path{Base: b, Spell: sp})
+		}
+		return out
+	}
+	cat := func(ps ...[]dataflow.Path) []dataflow.Path {
+		var out []dataflow.Path
+		for _, p := range ps {
+			out = append(out, p...)
+		}
+		return out
+	}
+	keys := []string{entry, "1:1", "1:2", "1:3", "1:4", "1:5", "1:6", exit}
+	var nodes []dataflow.Node
+	var cfg []dataflow.CfgEdge
+	for i, k := range keys {
+		nodes = append(nodes, dataflow.Node{Key: k})
+		if i > 0 {
+			cfg = append(cfg, dataflow.CfgEdge{Src: keys[i-1], Dst: k, Kind: "fallthrough"})
+		}
+	}
+	cfg = append(cfg, dataflow.CfgEdge{Src: "1:5", Dst: "1:2", Kind: "loop_back"})
+	du := map[string]dataflow.DefUse{
+		entry: {Defs: cat(P(xo, "x"), P(xi, "x.f"))},
+		"1:1": {Defs: P(nil, "x", "u.f"), WeakDefs: P(nil, "<defer>:9:9", "u.*")},
+		"1:2": {Defs: P(xi, "x"), Uses: cat(P(xo, "x"), P(nil, "x", "u"))},
+		"1:3": {Defs: P(nil, "u.f"), Uses: cat(P(xi, "x.f"), P(nil, "u.f.g"))},
+		"1:4": {Defs: cat(P(xo, "x"), P(nil, "<defer>:9:9", "u")), Shallow: P(xo, "x"), WeakDefs: P(xo, "x[*]")},
+		"1:5": {Uses: cat(P(xo, "x[*]"), P(nil, "x", "u", "<defer>:9:9"), P(xi, "x"))},
+		"1:6": {Defs: P(nil, "u"), Uses: cat(P(xo, "x"), P(nil, "u.f", "<defer>:9:9"))},
+	}
+	got, want := dataflow.BuildDDG(nodes, cfg, du), flatDDG(nodes, cfg, du)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("hand-built kills:\n got %v\nwant %v", got, want)
+	}
+	if gotA, wantA := dataflow.BuildDDGAlias(nodes, cfg, du, anyBase), flatDDGAlias(nodes, cfg, du, anyBase); !reflect.DeepEqual(gotA, wantA) {
+		t.Errorf("hand-built alias kills:\n got %v\nwant %v", gotA, wantA)
+	}
+	// The unresolved u (1:4) kills u.f of 1:1 and 1:3 by spelling head: only
+	// 1:4's own u reaches 1:6's u.f.
+	for _, g := range got {
+		if g.Dst == "1:6" && g.Var == "u.f" && g.Src != "1:4" {
+			t.Errorf("hand-built kills: %v survives the unresolved u = … at 1:4", g)
+		}
+	}
+}
+
+// TestDDGAlias_Rule pins BuildDDGAlias on a hand-built line, with p and q
+// pointers of one type and v an int, under an oracle that, like the L4
+// typeOracle, lets only a write through a pointer (a def with a step) alias:
+//
+//	@entry  defines p, q, v
+//	1:1     p.f = v
+//	1:2     q.f = v; q.g.h = v (strong defs through q: kill q.f…, q.g.h… only)
+//	1:3     use p.f, q.f.g, q, p.g, p.h.f.k, p.k.m
+//	1:4     q = nil            (a bare def: rebinds q, writes no aliased memory)
+//	1:5     use p.f
+//
+// 1:1's p.f reaches 1:2's bare use q. At 1:3, by alias: 1:2's q.f may have
+// written p.f, yet 1:1's p.f still reaches by its own base (alias never
+// kills); 1:1's p.f reaches q.f.g (its suffix covers) and the bare use q.
+// The one-step offset window admits p.g and p.k.m against q.f (one leading
+// step dropped from each leaves [] against [] or [.m]: q.f's storage may be
+// what p.k points to), and p.h.f.k against q.f (.h dropped); the oracle
+// decides them (yes). p.k.m against q.g.h is outside the window ([.h]
+// against [.m] at best): the oracle is never asked about that pair. At 1:5 nothing aliases: 1:4
+// killed q's defs by its own base, and its bare def of q aliases nothing,
+// like @entry's.
+func TestDDGAlias_Rule(t *testing.T) {
+	ptr := types.NewPointer(types.NewStruct(nil, nil))
+	p := types.NewVar(token.NoPos, nil, "p", ptr)
+	q := types.NewVar(token.NoPos, nil, "q", ptr)
+	v := types.NewVar(token.NoPos, nil, "v", types.Typ[types.Int])
+	P := func(b types.Object, s string) dataflow.Path { return dataflow.Path{Base: b, Spell: s} }
+	keys := []string{entry, "1:1", "1:2", "1:3", "1:4", "1:5", exit}
+	var nodes []dataflow.Node
+	var cfg []dataflow.CfgEdge
+	for i, k := range keys {
+		nodes = append(nodes, dataflow.Node{Key: k})
+		if i > 0 {
+			cfg = append(cfg, dataflow.CfgEdge{Src: keys[i-1], Dst: k, Kind: "fallthrough"})
+		}
+	}
+	du := map[string]dataflow.DefUse{
+		entry: {Defs: []dataflow.Path{P(p, "p"), P(q, "q"), P(v, "v")}},
+		"1:1": {Defs: []dataflow.Path{P(p, "p.f")}, Uses: []dataflow.Path{P(p, "p"), P(v, "v")}},
+		"1:2": {Defs: []dataflow.Path{P(q, "q.f"), P(q, "q.g.h")}, Uses: []dataflow.Path{P(q, "q"), P(v, "v")}},
+		"1:3": {Uses: []dataflow.Path{P(p, "p.f"), P(q, "q.f.g"), P(q, "q"), P(p, "p.g"), P(p, "p.h.f.k"), P(p, "p.k.m")}},
+		"1:4": {Defs: []dataflow.Path{P(q, "q")}},
+		"1:5": {Uses: []dataflow.Path{P(p, "p.f")}},
+	}
+	asked := map[[2]string]bool{}
+	mayAlias := func(a, b dataflow.Path) bool {
+		asked[[2]string{a.Spell, b.Spell}] = true
+		return a.Base != v && b.Base != v && a.Base != nil && b.Base != nil && len(dataflow.PathSteps(a.Spell)) > 0
+	}
+	base := dataflow.BuildDDG(nodes, cfg, du)
+	got := dataflow.BuildDDGAlias(nodes, cfg, du, mayAlias)
+	ddg, alias := dataflow.BuildDDGSplit(nodes, cfg, du, mayAlias)
+	if !reflect.DeepEqual(ddg, base) {
+		t.Errorf("split ddg != BuildDDG:\n got %v\nwant %v", ddg, base)
+	}
+	var plain []dataflow.DdgEdge
+	for _, e := range alias {
+		if e.Def != "" {
+			t.Errorf("%v: Def set off @entry", e)
+		}
+		plain = append(plain, e.DdgEdge)
+	}
+	want := []dataflow.DdgEdge{
+		dd("1:1", "1:2", "q"), // the bare use q at 1:2 reads the object p.f is in
+		dd("1:1", "1:3", "q"),
+		dd("1:1", "1:3", "q.f.g"),
+		dd("1:2", "1:3", "p.f"),
+		dd("1:2", "1:3", "p.g"),
+		dd("1:2", "1:3", "p.h.f.k"),
+		dd("1:2", "1:3", "p.k.m"),
+	}
+	if !reflect.DeepEqual(plain, want) {
+		t.Errorf("alias edges:\n got %v\nwant %v", plain, want)
+	}
+	if asked[[2]string{"q.g.h", "p.k.m"}] {
+		t.Errorf("oracle asked about q.g.h, p.k.m outside the window")
+	}
+	if !asked[[2]string{"q.f", "p.k.m"}] {
+		t.Errorf("oracle not asked about q.f, p.k.m inside the window")
+	}
+	for _, e := range base {
+		if !slices.Contains(got, e) {
+			t.Errorf("BuildDDGAlias lost BuildDDG edge %v", e)
+		}
+	}
+	if len(got) != len(base)+len(alias) {
+		t.Errorf("BuildDDGAlias = %d edges, want BuildDDG %d + alias %d", len(got), len(base), len(alias))
+	}
+	for _, e := range []dataflow.DdgEdge{dd("1:1", "1:3", "p.f"), dd("1:1", "1:5", "p.f")} {
+		if !slices.Contains(base, e) {
+			t.Errorf("%v: q.f = v killed p.f across bases: %v", e, base)
+		}
+	}
+	if nilA := dataflow.BuildDDGAlias(nodes, cfg, du, nil); !reflect.DeepEqual(nilA, base) {
+		t.Errorf("nil oracle: got %v, want BuildDDG %v", nilA, base)
+	}
+}
+
+// TestDDGAlias_EntryDefKept (fix round 2, N1): @entry defines both r (a
+// value whose address may be taken) and q (a pointer); 1:1 reads q.f. The
+// base edge @entry → 1:1 (q.f) is q's own; the alias edge from r's def on
+// the same triple is a different def (another formal_in at L4), so it is
+// kept with Def "r". An oracle aliasing q with itself adds nothing.
+func TestDDGAlias_EntryDefKept(t *testing.T) {
+	r := types.NewVar(token.NoPos, nil, "r", types.NewStruct(nil, nil))
+	q := types.NewVar(token.NoPos, nil, "q", types.NewPointer(r.Type()))
+	nodes := []dataflow.Node{{Key: entry}, {Key: "1:1"}, {Key: exit}}
+	cfg := []dataflow.CfgEdge{{Src: entry, Dst: "1:1", Kind: "fallthrough"}, {Src: "1:1", Dst: exit, Kind: "fallthrough"}}
+	du := map[string]dataflow.DefUse{
+		entry: {Defs: []dataflow.Path{{Base: r, Spell: "r"}, {Base: q, Spell: "q"}}},
+		"1:1": {Uses: []dataflow.Path{{Base: q, Spell: "q.f"}}},
+	}
+	ddg, alias := dataflow.BuildDDGSplit(nodes, cfg, du, func(a, b dataflow.Path) bool { return true })
+	if want := []dataflow.DdgEdge{dd(entry, "1:1", "q.f")}; !reflect.DeepEqual(ddg, want) {
+		t.Errorf("ddg = %v, want %v", ddg, want)
+	}
+	want := []dataflow.AliasEdge{{DdgEdge: dd(entry, "1:1", "q.f"), Def: "r"}}
+	if !reflect.DeepEqual(alias, want) {
+		t.Errorf("alias = %+v, want %+v", alias, want)
+	}
 }

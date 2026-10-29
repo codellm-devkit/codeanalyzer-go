@@ -549,11 +549,170 @@ func observe(err error) { _ = err }
 
 // DeferWrap has a deferred closure that rewrites the named result err (R11).
 // The chain runs the rewrite, then the observer, then @exit. Deferred nodes
-// never strong-define, and L3 records no def for the closure's write to its
-// captured err, so the earlier def of err still reaches the observer.
+// never strong-define; the rewrite weak-defines its captured err (D1), so the
+// earlier def of err and the rewrite both reach the observer.
 func DeferWrap() (err error) {
 	err = wrapErr(nil)
 	defer func() { observe(err) }()
 	defer func() { err = wrapErr(err) }()
 	return
+}
+
+// CaptureWrite calls a literal that writes the captured x (D1 gap 1).
+func CaptureWrite() int {
+	x := 0
+	func() { x = 1 }()
+	return x
+}
+
+// CaptureThenReassign stores a literal that writes x, rebinds x, then calls
+// the literal: x = 2 must not kill the closure's write.
+func CaptureThenReassign() int {
+	x := 0
+	h := func() { x = 1 }
+	x = 2
+	h()
+	return x
+}
+
+type onceT struct{}
+
+func (o *onceT) Do(f func()) { f() }
+
+func load() int { return 1 }
+
+// OnceDo writes cfg through a literal passed to a method.
+func OnceDo() int {
+	var once onceT
+	var cfg int
+	once.Do(func() { cfg = load() })
+	return cfg
+}
+
+// DeferReassign writes an element of b after registering fill(b), then
+// rebinds b (D1 gap 3): the element write still reaches the deferred fill.
+func DeferReassign(b, o []byte, s byte) {
+	defer fill(b)
+	b[0] = s
+	b = o
+}
+
+// AppendKeepsElems writes an element, then appends in place (#28): append may
+// keep the backing array, so the s[0] def survives s = append(s, n).
+func AppendKeepsElems(s []int, n int) int {
+	s[0] = 5
+	s = append(s, n)
+	return s[0]
+}
+
+// CaptureNested writes x from a literal nested in the stored one, and buf's
+// elements through a call. y is the outer literal's own variable and z is
+// only read: neither is a capture write.
+func CaptureNested(buf []byte) int {
+	x, z := 0, 0
+	f := func() {
+		y := 0
+		func() { x = y; y = 1 }()
+		fill(buf)
+		_ = z
+	}
+	f()
+	return x
+}
+
+// CaptureGo launches a literal that writes the captured x: the go node is
+// its host.
+func CaptureGo(ch chan int) int {
+	x := 0
+	go func() { x = <-ch }()
+	return x
+}
+
+type cfg struct{ items []int }
+
+func fillCfg(c cfg) { c.items[0] = 1 }
+
+func (c cfg) reset() { c.items[0] = 0 }
+
+type plain struct{ a, b int }
+
+func usePlain(p plain) { _ = p }
+
+type nest struct {
+	in  cfg
+	arr [2][]int
+}
+
+func useNest(n nest, a [2][]int, b [2]int) { _, _, _ = n, a, b }
+
+// FillCfg passes a value struct holding a slice (D1 gap 2): the callee may
+// write c.items[*], so the call weak-defines c.*, which reaches the read.
+func FillCfg(c cfg) int {
+	fillCfg(c)
+	return c.items[0]
+}
+
+// ValueRefs passes value operands that may hold a reference (a value
+// receiver over a slice field, a struct nesting one, an array of slices) and
+// two that cannot (a struct and an array of ints).
+func ValueRefs(c cfg, p plain, n nest, a [2][]int, b [2]int) int {
+	c.reset()
+	usePlain(p)
+	useNest(n, a, b)
+	return c.items[0] + p.a + n.in.items[0] + a[0][0] + b[0]
+}
+
+func chanOf(ch chan int) chan int { return ch }
+
+func ids(xs []int) []int { return xs }
+
+// SatParents puts calls in a folded for init and post, a case list, select
+// comm clauses and a range key and expression (#28): each call is a
+// satellite of the header or clause head its expression folds into.
+func SatParents(n int, ch chan int, xs []int) int {
+	s := 0
+	for i := f(0); i < g(n); i = f(i) + 1 {
+		s += i
+	}
+	switch n {
+	case f(1), g(2):
+		s++
+	}
+	select {
+	case ch <- f(s):
+	case v := <-chanOf(ch):
+		s += v
+	}
+	var x int
+	for xs[f(2)], x = range ids(xs) {
+		s += x
+	}
+	return s
+}
+
+func (p plain) sum() int { return p.a + p.b }
+
+// PlainRecv calls a value-receiver method on a struct that holds no
+// reference: a copy, so nothing is written through it.
+func PlainRecv(p plain) int {
+	p.sum()
+	return p.a
+}
+
+// Bump is a method declared above its receiver type (L1 used to drop it).
+func (e *early) Bump() int { return f(e.n) }
+
+type early struct{ n int }
+
+// aliasT has a scalar field n.
+type aliasT struct{ n int }
+
+// CaptureAliasWrite writes through a local alias of the captured pointer p
+// inside a literal called in place: the literal writes no path of p, but p
+// may hold a reference, so its host weak-defines p.* and the write reaches
+// the later read of p.n (found by metamorphic relation MR5).
+func CaptureAliasWrite() int {
+	p := &aliasT{}
+	func() { q := p; q.n = 1 }()
+	return p.n
 }

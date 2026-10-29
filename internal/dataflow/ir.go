@@ -39,8 +39,9 @@ const (
 //   - Key is the local key: "l:c" (v2.LocalID of the node's anchor position),
 //     "l:c/2", … for co-positioned nodes, or EntryKey / ExitKey.
 //   - Pos/End is the span of Stmt; NoPos for synthetic nodes. StartLC/EndLC
-//     are their [line, col] (fset.Position, so //line directives apply, as
-//     they do to the L1 call-site positions); zero for synthetic nodes.
+//     are their real [line, col] (fset.PositionFor(p, false): //line
+//     directives are not applied, as they are not to the L1 call-site
+//     positions); zero for synthetic nodes.
 //   - Stmt is the AST node the body node stands for:
 //     a statement (*ast.ExprStmt for a bare call, *ast.GoStmt for a `go` call),
 //     a clause head (*ast.CaseClause / *ast.CommClause),
@@ -75,9 +76,20 @@ type CdgEdge struct{ Src, Dst string }
 type DdgEdge struct{ Src, Dst, Var string }
 
 // Result is the L3 overlay of one callable body.
+//
+// DefUse and CallKeys are side tables for L4 (ruling R-P2), filled only by
+// RunWithSideTables and dropped by Release; the emitters never read them:
+//
+//   - DefUse is DefUses over Nodes, keyed by node key.
+//   - CallKeys maps the raw Lparen of every call the body pairs with an L1
+//     call key to that key: the SSA join's call key (CallCommon.Pos() is the
+//     CallExpr's Lparen).
 type Result struct {
 	Nodes []Node
 	Cfg   []CfgEdge
 	Cdg   []CdgEdge
 	Ddg   []DdgEdge
+
+	DefUse   map[string]DefUse
+	CallKeys map[token.Pos]string
 }
