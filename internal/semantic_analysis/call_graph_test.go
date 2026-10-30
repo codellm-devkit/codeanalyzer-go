@@ -246,3 +246,33 @@ func TestLibraryByPath(t *testing.T) {
 		}
 	}
 }
+
+// TestCallGraph_SamePositionInSiblingFiles: HelpX (types.go) and the method P
+// (methods.go, filed under T in types.go) each make one call at the same
+// line:col. Each must resolve its own callee; resolving by position over the
+// whole package attributed right to HelpX (#32).
+func TestCallGraph_SamePositionInSiblingFiles(t *testing.T) {
+	dir, err := filepath.Abs("../../testdata/callsite_collision")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := syntactic_analysis.NewSymbolTableBuilder(dir)
+	st, err := b.Build(nil, true)
+	if err != nil {
+		t.Fatalf("symbol table build failed: %v", err)
+	}
+	edges := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs()).Build(st)
+
+	got := make([]string, 0, len(edges))
+	for _, e := range edges {
+		got = append(got, e.Source+" -> "+e.Target)
+	}
+	sort.Strings(got)
+	want := []string{
+		"example.com/callsitecollision.HelpX -> example.com/callsitecollision.wrong",
+		"example.com/callsitecollision.T.P -> example.com/callsitecollision.right",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("edges = %q, want %q", got, want)
+	}
+}
