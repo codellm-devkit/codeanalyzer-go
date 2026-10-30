@@ -40,7 +40,7 @@ func TestCompareOrdinal_MatchesMintedIds(t *testing.T) {
 // the clash is warned once, naming both ids.
 func TestL4Overlay_DuplicateKeyKeepsSmallerID(t *testing.T) {
 	key := dataflow.L3Key{Path: "a.go", Signature: "example.com/a.F"}
-	small, big := "can://app/go/a.go/example.com/a.F", "can://app/go/b.go/example.com/a.F"
+	small, big := "can://app/app/go/a.go/example.com/a.F", "can://app/app/go/b.go/example.com/a.F"
 	var warned []string
 	prev := warnf
 	warnf = func(format string, args ...any) { warned = append(warned, fmt.Sprintf(format, args...)) }

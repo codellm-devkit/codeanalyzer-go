@@ -289,7 +289,7 @@ func TestCaching_CacheFileWritten(t *testing.T) {
 	if _, err := core.New(opts).Analyze(); err != nil {
 		t.Fatalf("Analyze: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(cacheDir, "analysis_cache.json")); err != nil {
+	if _, err := os.Stat(identityCacheFile(t, cacheDir)); err != nil {
 		t.Fatalf("analysis_cache.json not written to CacheDir: %v", err)
 	}
 }
@@ -306,7 +306,7 @@ func TestCaching_CacheContentsRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Analyze: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(cacheDir, "analysis_cache.json"))
+	data, err := os.ReadFile(identityCacheFile(t, cacheDir))
 	if err != nil {
 		t.Fatalf("reading analysis_cache.json: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestCaching_EagerForcesRebuild(t *testing.T) {
 	if _, err := core.New(opts).Analyze(); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
-	cachePath := filepath.Join(cacheDir, "analysis_cache.json")
+	cachePath := identityCacheFile(t, cacheDir)
 	info1, err := os.Stat(cachePath)
 	if err != nil {
 		t.Fatalf("cache not written after first run: %v", err)
@@ -389,4 +389,39 @@ func keys[K comparable, V any](m map[K]V) []K {
 		out = append(out, k)
 	}
 	return out
+}
+
+func identityCacheFile(t *testing.T, dir string) string {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(dir, "identity-v2-*", "analysis_cache.json"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("identity cache files: %v %v", files, err)
+	}
+	return files[0]
+}
+func TestCaching_NamespaceIsolation(t *testing.T) {
+	dir := t.TempDir()
+	for _, ns := range []string{"team-a", "team-b"} {
+		opts := options.AnalysisOptions{InputPath: greeterDir(t), AppName: "greeter", Namespace: &ns, Level: options.LevelSymbolTable, SkipTests: true, CacheDir: dir}
+		if _, err := core.New(opts).Analyze(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files, err := filepath.Glob(filepath.Join(dir, "identity-v2-*", "analysis_cache.json"))
+	if err != nil || len(files) != 2 {
+		t.Fatalf("cache scopes: %v %v", files, err)
+	}
+}
+
+func TestAnalyzeInvalidNamespaceReadOnly(t *testing.T) {
+	ns := ""
+	dir := t.TempDir()
+	opts := options.AnalysisOptions{InputPath: greeterDir(t), AppName: "greeter", Namespace: &ns, Level: options.LevelSymbolTable, CacheDir: dir}
+	if _, err := core.New(opts).Analyze(); err == nil {
+		t.Fatal("accepted empty namespace")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("cache changed: %v %v", entries, err)
+	}
 }

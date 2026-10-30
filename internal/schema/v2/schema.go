@@ -27,7 +27,7 @@ import "encoding/json"
 // SchemaVersion is the canonical schema major this package targets.
 const SchemaVersion = "2.0.0"
 
-// Language is the analyzer's language tag in the manifest and `can://<app>/<lang>/…`.
+// Language is the analyzer's language tag in the manifest and `can://<namespace>/<app>/<lang>/…`.
 const Language = "go"
 
 // ─── Positioning ───────────────────────────────────────────────────────────
@@ -51,12 +51,13 @@ type Span struct {
 // rather than sniffing for keys. k_limit (the field-path depth bound of the
 // L3 and L4 access paths) is present only at max_level >= 3.
 type Analysis struct {
-	SchemaVersion string      `json:"schema_version"`
-	Language      string      `json:"language"`
-	MaxLevel      int         `json:"max_level"`
-	KLimit        int         `json:"k_limit,omitempty"`
-	Analyzer      AnalyzerTag `json:"analyzer"`
-	Application   Application `json:"application"`
+	IdentityVersion int         `json:"identity_version"`
+	SchemaVersion   string      `json:"schema_version"`
+	Language        string      `json:"language"`
+	MaxLevel        int         `json:"max_level"`
+	KLimit          int         `json:"k_limit,omitempty"`
+	Analyzer        AnalyzerTag `json:"analyzer"`
+	Application     Application `json:"application"`
 	// Degraded records the L4 degradation markers (spec §4.15); absent when
 	// the run degraded nothing and below -a 4.
 	Degraded []Degraded `json:"degraded,omitempty"`
@@ -80,7 +81,10 @@ type AnalyzerTag struct {
 
 // Application is the root node of the containment tree.
 type Application struct {
-	// ID is `can://<app>` — the app segment is outermost, so a polyglot
+	IdentityVersion   int    `json:"identity_version"`
+	ApplicationName   string `json:"application_name"`
+	IdentityNamespace string `json:"identity_namespace"`
+	// ID is `can://<namespace>/<app>` — the app segment is outermost, so a polyglot
 	// app shares one prefix across languages. <app> is the --app-name value (default: input dir base name).
 	ID   string `json:"id"`
 	Kind string `json:"kind"` // always "application"
@@ -90,7 +94,7 @@ type Application struct {
 	// at L1.
 	CallGraph []Edge `json:"call_graph"`
 	// ExternalSymbols holds the out-of-project (library) callables the call graph
-	// reaches, keyed by their `can://<app>/@external/<import-path>/<sig>` id.
+	// reaches, keyed by their `can://<namespace>/<app>/@external/<import-path>/<sig>` id.
 	// Absent when the analysis saw no library call.
 	ExternalSymbols map[string]ExternalSymbol `json:"external_symbols,omitempty"`
 	// ParamIn and ParamOut are the L4 interprocedural parameter edges between

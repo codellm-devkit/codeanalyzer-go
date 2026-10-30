@@ -3,22 +3,22 @@ package v2
 import "testing"
 
 func TestAppID(t *testing.T) {
-	if got, want := AppID("myapp"), "can://myapp"; got != want {
+	if got, want := AppID("myapp", "myapp"), "can://myapp/myapp"; got != want {
 		t.Errorf("AppID = %q, want %q", got, want)
 	}
 }
 
 func TestDurableIDChain(t *testing.T) {
 	// Reproduces the keystone worked example, segment by segment.
-	app := AppID("myapp")
+	app := AppID("myapp", "myapp")
 	mod := ModuleID(app, "src/util.go")
 	typ := TypeID(mod, "Hasher")
 	call := CallableID(typ, "Hash(string)uint64")
 
 	cases := []struct{ got, want string }{
-		{mod, "can://myapp/go/src/util.go"},
-		{typ, "can://myapp/go/src/util.go/Hasher"},
-		{call, "can://myapp/go/src/util.go/Hasher/Hash(string)uint64"},
+		{mod, "can://myapp/myapp/go/src/util.go"},
+		{typ, "can://myapp/myapp/go/src/util.go/Hasher"},
+		{call, "can://myapp/myapp/go/src/util.go/Hasher/Hash(string)uint64"},
 	}
 	for _, c := range cases {
 		if c.got != c.want {
@@ -28,27 +28,27 @@ func TestDurableIDChain(t *testing.T) {
 }
 
 func TestModuleIDNormalizesPath(t *testing.T) {
-	app := AppID("myapp")
+	app := AppID("myapp", "myapp")
 	// Backslashes become forward slashes; a leading slash is trimmed.
-	if got, want := ModuleID(app, "\\pkg\\a.go"), "can://myapp/go/pkg/a.go"; got != want {
+	if got, want := ModuleID(app, "\\pkg\\a.go"), "can://myapp/myapp/go/pkg/a.go"; got != want {
 		t.Errorf("ModuleID = %q, want %q", got, want)
 	}
-	if got, want := ModuleID(app, "/pkg/a.go"), "can://myapp/go/pkg/a.go"; got != want {
+	if got, want := ModuleID(app, "/pkg/a.go"), "can://myapp/myapp/go/pkg/a.go"; got != want {
 		t.Errorf("ModuleID = %q, want %q", got, want)
 	}
 }
 
 func TestModuleLevelFunctionParent(t *testing.T) {
 	// A module-level function hangs off the module id, not a type.
-	mod := ModuleID(AppID("myapp"), "src/util.go")
+	mod := ModuleID(AppID("myapp", "myapp"), "src/util.go")
 	fn := CallableID(mod, "New64()")
-	if want := "can://myapp/go/src/util.go/New64()"; fn != want {
+	if want := "can://myapp/myapp/go/src/util.go/New64()"; fn != want {
 		t.Errorf("CallableID = %q, want %q", fn, want)
 	}
 }
 
 func TestOrdinalAndTagIDs(t *testing.T) {
-	call := "can://myapp/go/src/util.go/Hasher/Hash(string)uint64"
+	call := "can://myapp/myapp/go/src/util.go/Hasher/Hash(string)uint64"
 	if got, want := OrdinalID(call, 15, 2), call+"@15:2"; got != want {
 		t.Errorf("OrdinalID = %q, want %q", got, want)
 	}
@@ -93,11 +93,11 @@ func TestItoa(t *testing.T) {
 }
 
 func TestIDs_AppOutermost(t *testing.T) {
-	app := AppID("shop")
+	app := AppID("shop", "shop")
 	cases := []struct{ got, want string }{
-		{app, "can://shop"},
-		{ModuleID(app, "pkg/a.go"), "can://shop/go/pkg/a.go"},
-		{ExternalID(app, "database/sql", "DB.Query"), "can://shop/@external/database/sql/DB.Query"},
+		{app, "can://shop/shop"},
+		{ModuleID(app, "pkg/a.go"), "can://shop/shop/go/pkg/a.go"},
+		{ExternalID(app, "database/sql", "DB.Query"), "can://shop/shop/@external/database/sql/DB.Query"},
 		{GlobalOrdinal("X/F", "@entry"), "X/F@entry"},
 		{GlobalOrdinal("X/F", "12:3"), "X/F@12:3"},
 	}

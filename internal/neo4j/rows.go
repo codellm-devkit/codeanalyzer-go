@@ -1,6 +1,7 @@
 package neo4j
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -67,13 +68,13 @@ type GraphRows struct {
 // ─── RowBuilder ──────────────────────────────────────────────────────────────
 
 // RowBuilder accumulates nodes and edges with in-memory MERGE semantics. Nodes
-// dedup on (labels[0], value); edges are append-only (per-pair facts that must
-// not duplicate need an explicit guard in the projector). Edges whose target
+// dedup on canonical ID; exact edge facts dedup while preserving kind, site,
+// key and properties. Edges whose target
 // may be external/library code are DEFERRED and kept at finish() only if the
 // target node was actually emitted — the edge-only-when-resolved rule, so an
 // unresolved target degrades to a source-node property instead of a dangling edge.
 type RowBuilder struct {
-	nodeIndex map[string]int // (labels[0] + "\x00" + value) -> index into nodes
+	nodeIndex map[string]int // canonical ID (label/value for non-can nodes) -> row
 	nodes     []NodeRow
 	edges     []EdgeRow
 	deferred  []EdgeRow
@@ -84,7 +85,7 @@ func NewRowBuilder() *RowBuilder {
 	return &RowBuilder{nodeIndex: make(map[string]int)}
 }
 
-// Node upserts a node keyed on (labels[0], value). Re-seeing the same identity
+// Node upserts a node keyed on canonical ID (label/value for non-can nodes). Re-seeing the same identity
 // MERGES props (last-write-wins) and UNIONs labels — a hot external symbol
 // collapses to one row. Returns a NodeRef edges can address it by. nil props
 // are pruned on the way in.
@@ -93,6 +94,9 @@ func (b *RowBuilder) Node(labels []string, keyProp, value string, props Props, m
 		panic("neo4j: Node requires at least one label (labels[0] is the MERGE label)")
 	}
 	k := labels[0] + "\x00" + value
+	if strings.HasPrefix(value, "can://") {
+		k = value
+	}
 	if i, ok := b.nodeIndex[k]; ok {
 		existing := &b.nodes[i]
 		existing.Labels = unionLabels(existing.Labels, labels)
@@ -119,7 +123,7 @@ func (b *RowBuilder) Node(labels []string, keyProp, value string, props Props, m
 }
 
 // Edge appends a relationship whose endpoints are known to exist this run.
-// Append-only — not deduped.
+// Exact duplicate facts are collapsed at Finish.
 func (b *RowBuilder) Edge(relType string, from, to NodeRef, props Props, key string) {
 	b.edges = append(b.edges, EdgeRow{Type: relType, From: from, To: to, Props: prune(props), Key: key})
 }
@@ -145,7 +149,9 @@ func (b *RowBuilder) EdgeToSymbol(relType string, from NodeRef, targetLabel, tar
 func (b *RowBuilder) Finish() GraphRows {
 	emitted := make(map[string]bool, len(b.nodes))
 	for _, n := range b.nodes {
-		emitted[n.Labels[0]+"\x00"+n.Value] = true
+		for _, label := range n.Labels {
+			emitted[label+"\x00"+n.Value] = true
+		}
 	}
 	for _, e := range b.deferred {
 		if emitted[e.To.Label+"\x00"+e.To.Value] {
@@ -153,6 +159,17 @@ func (b *RowBuilder) Finish() GraphRows {
 		}
 	}
 
+	seenEdges := map[string]bool{}
+	unique := b.edges[:0]
+	for _, e := range b.edges {
+		props, _ := json.Marshal(e.Props)
+		key := e.Type + "\x00" + e.From.Value + "\x00" + e.To.Value + "\x00" + e.Key + "\x00" + string(props)
+		if !seenEdges[key] {
+			seenEdges[key] = true
+			unique = append(unique, e)
+		}
+	}
+	b.edges = unique
 	sort.Slice(b.nodes, func(i, j int) bool {
 		if b.nodes[i].Labels[0] != b.nodes[j].Labels[0] {
 			return b.nodes[i].Labels[0] < b.nodes[j].Labels[0]
@@ -169,13 +186,14 @@ func (b *RowBuilder) Finish() GraphRows {
 // edgeSortKey is the total order for edges: type, then endpoints, then the _k
 // discriminant (so parallel edges per pair order stably).
 func edgeSortKey(e EdgeRow) string {
-	return strings.Join([]string{e.Type, e.From.Label, e.From.Value, e.To.Label, e.To.Value, e.Key}, "\x00")
+	props, _ := json.Marshal(e.Props)
+	return strings.Join([]string{e.Type, e.From.Label, e.From.Value, e.To.Label, e.To.Value, e.Key, string(props)}, "\x00")
 }
 
 // ─── scoping helpers ──────────────────────────────────────────────────────────
 
 // applicationPrefix returns the bare application id used to scope destructive
-// statements. It REFUSES anything that is not a bare can://<app> id (an
+// statements. It REFUSES anything that is not a canonical can://<namespace>/<app> id (an
 // empty or deeper id would silently widen or narrow the blast radius): it
 // returns ("", false) so a hand-built GraphRows with no proper application root
 // gets NO destructive statement. The app segment is the outermost, so one
@@ -186,8 +204,9 @@ func applicationPrefix(appID string) (string, bool) {
 		return "", false
 	}
 	rest := strings.TrimPrefix(appID, scheme)
-	// A bare app id is exactly <app> — one non-empty segment, no deeper.
-	if rest == "" || strings.Contains(rest, "/") {
+	// A bare app id is exactly two non-empty encoded segments, no deeper.
+	parts := strings.Split(rest, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return "", false
 	}
 	return appID, true

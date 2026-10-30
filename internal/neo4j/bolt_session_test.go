@@ -35,12 +35,12 @@ func (consumedResult) Consume(context.Context) (neo4j.ResultSummary, error) { re
 // TRANSACTIONS inside an explicit transaction (what ExecuteWrite opens), so
 // the batched eager purge must go through the session's implicit Run path.
 func TestEagerPurge_RunsAsImplicitTransaction(t *testing.T) {
-	if q, _ := eagerPurgeQuery("can://app"); !strings.Contains(q, "IN TRANSACTIONS") {
+	if q, _ := eagerPurgeQuery("can://app/app"); !strings.Contains(q, "IN TRANSACTIONS") {
 		t.Fatalf("eagerPurgeQuery is not batched: %q", q)
 	}
 	s := &recordingSession{}
 	w := &boltWriter{ctx: context.Background(), session: s}
-	if err := w.eagerPurge("can://app"); err != nil {
+	if err := w.eagerPurge("can://app/app"); err != nil {
 		t.Fatal(err)
 	}
 	if s.explicit != 0 {
@@ -84,8 +84,10 @@ type fakeDB struct {
 	level  int64
 	// rawLevel, when non-nil, is the stored max_level returned verbatim
 	// (any type), overriding level.
-	rawLevel any
-	writes   []fakeStmt
+	missingIdentity bool
+	rawIdentity     any
+	rawLevel        any
+	writes          []fakeStmt
 }
 
 type fakeStmt struct {
@@ -121,7 +123,14 @@ func (tx fakeTx) Run(_ context.Context, q string, params map[string]any) (neo4j.
 		if tx.db.rawLevel != nil {
 			lvl = tx.db.rawLevel
 		}
-		return &fakeResult{rec: &neo4j.Record{Keys: []string{"v", "l"}, Values: []any{SchemaVersion, lvl}}}, nil
+		identity := any(int64(2))
+		if tx.db.missingIdentity {
+			identity = nil
+		}
+		if tx.db.rawIdentity != nil {
+			identity = tx.db.rawIdentity
+		}
+		return &fakeResult{rec: &neo4j.Record{Keys: []string{"v", "l", "iv"}, Values: []any{SchemaVersion, lvl, identity}}}, nil
 	case strings.Contains(q, "m.content_hash"):
 		h, ok := tx.db.hashes[params["id"].(string)]
 		if !ok {
@@ -384,5 +393,29 @@ func TestBolt_CleanPushClearsDegradedJSON(t *testing.T) {
 	}
 	if v := appProps(rows)["degraded_json"]; v != `[{"code":"no_vta"}]` {
 		t.Errorf("degraded push: degraded_json = %v, want the JSON string", v)
+	}
+}
+
+func TestIncompatibleIdentityReadOnly(t *testing.T) {
+	for _, iv := range []any{int64(1), "2", float64(2), true} {
+		db := &fakeDB{rawIdentity: iv}
+		w := &boltWriter{ctx: context.Background(), session: db, appID: "can://team/app"}
+		if err := w.run(); err == nil {
+			t.Errorf("accepted %v", iv)
+		}
+		if len(db.writes) != 0 {
+			t.Fatal("wrote before identity gate")
+		}
+	}
+}
+
+func TestMissingStoredIdentityReadOnly(t *testing.T) {
+	db := &fakeDB{missingIdentity: true}
+	w := &boltWriter{ctx: context.Background(), session: db, appID: "can://team/app"}
+	if err := w.run(); err == nil {
+		t.Fatal("accepted legacy anchor")
+	}
+	if len(db.writes) != 0 {
+		t.Fatal("wrote before rejecting legacy anchor")
 	}
 }

@@ -23,7 +23,7 @@ import (
 // an id-keyed :GoExternal ghost — nothing dangles.
 
 // Project is the pure (tree) → GraphRows function. appID is analysis.Application.ID
-// (the can://<app> root); it is read from the envelope, never recomposed.
+// (the can://<namespace>/<app> root); it is read from the envelope, never recomposed.
 func Project(a *v2.Analysis) GraphRows {
 	p := &projector{
 		b:        NewRowBuilder(),
@@ -56,7 +56,7 @@ func (p *projector) projectApplication() {
 		[]string{LabelApplication, MarkerLabel},
 		"id", a.Application.ID,
 		Props{
-			"schema_version":   a.SchemaVersion,
+			"identity_version": a.IdentityVersion, "application_name": a.Application.ApplicationName, "identity_namespace": a.Application.IdentityNamespace, "schema_version": a.SchemaVersion,
 			"language":         a.Language,
 			"max_level":        a.MaxLevel,
 			"analyzer_name":    a.Analyzer.Name,

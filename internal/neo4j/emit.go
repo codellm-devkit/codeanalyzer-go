@@ -23,6 +23,9 @@ const GraphFileName = "graph.cypher"
 // a self-contained graph.cypher snapshot into outputDir (default: current dir).
 // It returns a short human-readable description of what was written.
 func EmitNeo4j(ctx context.Context, a *v2.Analysis, outputDir string, cfg BoltConfig) (string, error) {
+	if a == nil || a.IdentityVersion != 2 || a.Application.IdentityVersion != 2 {
+		return "", fmt.Errorf("incompatible identity_version")
+	}
 	rows := Project(a)
 	appID := a.Application.ID
 
@@ -33,6 +36,10 @@ func EmitNeo4j(ctx context.Context, a *v2.Analysis, outputDir string, cfg BoltCo
 		return fmt.Sprintf("pushed %d nodes, %d relationships to %s", len(rows.Nodes), len(rows.Edges), cfg.URI), nil
 	}
 
+	script, err := RenderCypher(rows, appID)
+	if err != nil {
+		return "", err
+	}
 	if outputDir == "" {
 		outputDir = "."
 	}
@@ -40,7 +47,6 @@ func EmitNeo4j(ctx context.Context, a *v2.Analysis, outputDir string, cfg BoltCo
 		return "", fmt.Errorf("create output dir %q: %w", outputDir, err)
 	}
 	path := filepath.Join(outputDir, GraphFileName)
-	script := RenderCypher(rows, appID)
 	if err := os.WriteFile(path, []byte(script), 0o644); err != nil {
 		return "", fmt.Errorf("write %s: %w", path, err)
 	}

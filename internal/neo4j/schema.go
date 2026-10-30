@@ -185,7 +185,7 @@ type RelSpec struct {
 var Nodes = []NodeSpec{
 	{
 		Label: LabelApplication, MergeLabel: LabelApplication, Key: "id", CanNode: true,
-		Props: []string{"schema_version", "language", "max_level", "analyzer_name", "analyzer_version", "degraded_json"},
+		Props: []string{"identity_version", "application_name", "identity_namespace", "schema_version", "language", "max_level", "analyzer_name", "analyzer_version", "degraded_json"},
 	},
 	{
 		Label: LabelModule, MergeLabel: LabelModule, Key: "id", CanNode: true,

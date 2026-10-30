@@ -1,6 +1,9 @@
 package neo4j
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -13,7 +16,11 @@ func renderFixture(t *testing.T) string {
 	t.Helper()
 	a := buildMultipackageL2(t)
 	rows := Project(a)
-	return RenderCypher(rows, a.Application.ID)
+	script, err := RenderCypher(rows, a.Application.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return script
 }
 
 func TestCypher_HasDDLWipeAndBatches(t *testing.T) {
@@ -34,8 +41,14 @@ func TestCypher_HasDDLWipeAndBatches(t *testing.T) {
 
 func TestCypher_Deterministic(t *testing.T) {
 	a := buildMultipackageL2(t)
-	s1 := RenderCypher(Project(a), a.Application.ID)
-	s2 := RenderCypher(Project(a), a.Application.ID)
+	s1, err := RenderCypher(Project(a), a.Application.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2, err := RenderCypher(Project(a), a.Application.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if s1 != s2 {
 		t.Error("graph.cypher is not byte-identical across runs")
 	}
@@ -45,10 +58,10 @@ func TestCypher_WipeIsPrefixScopedAndAnchored(t *testing.T) {
 	script := renderFixture(t)
 	// The wipe must match on the :GoCanNode marker and the can://<app>/ prefix,
 	// never a bare label like (:GoModule) or the whole store.
-	if !strings.Contains(script, "MATCH (n:GoCanNode) WHERE n.id STARTS WITH 'can://multipackage/'") {
+	if !strings.Contains(script, "MATCH (n:GoCanNode) WHERE n.id STARTS WITH 'can://multipackage/multipackage/'") {
 		t.Errorf("wipe not anchored on :GoCanNode + descendant prefix:\n%s", wipeBlock(script))
 	}
-	if !strings.Contains(script, "MATCH (n:GoCanNode) WHERE n.id = 'can://multipackage'") {
+	if !strings.Contains(script, "MATCH (n:GoCanNode) WHERE n.id = 'can://multipackage/multipackage'") {
 		t.Errorf("wipe does not match the root id separately:\n%s", wipeBlock(script))
 	}
 	// A destructive statement must never be unscoped.
@@ -63,13 +76,9 @@ func TestCypher_NoRootEmitsNoWipe(t *testing.T) {
 	// A hand-built bag with no bare application id must emit NO destructive
 	// statement — the applicationPrefix refusal in action.
 	b := NewRowBuilder()
-	b.Node([]string{LabelCallable, SymbolLabel}, "id", "can://app/go/x.go/f", nil, "x.go")
-	script := RenderCypher(b.Finish(), "can://app/go/x.go/f") // not a bare app id
-	if strings.Contains(script, "DETACH DELETE") {
-		t.Errorf("a bag with no bare application root must emit no wipe:\n%s", script)
-	}
-	if !strings.Contains(script, "scoped wipe SKIPPED") {
-		t.Error("the skipped wipe should be visible in a comment")
+	b.Node([]string{LabelCallable, SymbolLabel}, "id", "can://app/app/go/x.go/f", nil, "x.go")
+	if _, err := RenderCypher(b.Finish(), "can://app/app/go/x.go/f"); err == nil {
+		t.Fatal("accepted missing anchor")
 	}
 }
 
@@ -96,4 +105,29 @@ func wipeBlock(script string) string {
 		end = len(script) - start
 	}
 	return script[start : start+end]
+}
+
+func TestCypherRejectsInvalidIdentity(t *testing.T) {
+	a := buildMultipackageL2(t)
+	a.IdentityVersion = 0
+	if _, err := RenderCypher(Project(a), a.Application.ID); err == nil {
+		t.Fatal("accepted missing identity marker")
+	}
+}
+
+func TestEmitNeo4jInvalidIdentityLeavesOutput(t *testing.T) {
+	a := buildMultipackageL2(t)
+	a.Application.IdentityVersion = 1
+	dir := t.TempDir()
+	path := filepath.Join(dir, GraphFileName)
+	if err := os.WriteFile(path, []byte("original"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EmitNeo4j(context.Background(), a, dir, BoltConfig{}); err == nil {
+		t.Fatal("accepted mismatched app marker")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil || string(b) != "original" {
+		t.Fatalf("output changed: %s %v", b, err)
+	}
 }

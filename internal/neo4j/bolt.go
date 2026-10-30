@@ -41,7 +41,7 @@ import (
 // is additive: a stale L4 row stays until an --eager push.
 //
 // A push NEVER deletes by default (#171): steps 4/6/8 run under --eager only.
-// Every destructive statement is scoped on the can://<app>/ id prefix (#173),
+// Every destructive statement is scoped on the can://<namespace>/<app>/ id prefix (#173),
 // anchored on :GoCanNode so it seeks an index.
 
 // BoltConfig carries the connection + behavior knobs (populated by the facade
@@ -62,6 +62,9 @@ type BoltConfig struct {
 // WriteBolt pushes rows into the live DB per BoltConfig. appID scopes every
 // destructive statement; it must be the application root id.
 func WriteBolt(ctx context.Context, rows GraphRows, appID string, cfg BoltConfig) error {
+	if err := validateIdentity(rows, appID); err != nil {
+		return err
+	}
 	driver, err := neo4j.NewDriverWithContext(cfg.URI, neo4j.BasicAuth(cfg.User, cfg.Password, ""))
 	if err != nil {
 		return fmt.Errorf("neo4j driver: %w", err)
@@ -87,9 +90,6 @@ type boltWriter struct {
 }
 
 func (w *boltWriter) run() error {
-	if err := w.ensureDDL(); err != nil {
-		return err
-	}
 
 	// Stored-application gate: a producer/consumer version mismatch, or a
 	// graph pushed at a lower level, forces a full re-upsert (it never
@@ -101,6 +101,9 @@ func (w *boltWriter) run() error {
 		return err
 	}
 
+	if err := w.ensureDDL(); err != nil {
+		return err
+	}
 	root, scoped := applicationPrefix(w.appID)
 	if w.shouldEagerPurge(scoped) {
 		if err := w.eagerPurge(root); err != nil {
@@ -206,12 +209,16 @@ func (w *boltWriter) storedAppStale() (bool, error) {
 	haveLevel, badLevel := false, false
 	err := w.read(func(tx neo4j.ManagedTransaction) error {
 		res, err := tx.Run(w.ctx,
-			"MATCH (a:GoApplication {id: $id}) RETURN a.schema_version AS v, a.max_level AS l",
+			"MATCH (a:GoApplication {id: $id}) RETURN a.schema_version AS v, a.max_level AS l, a.identity_version AS iv",
 			map[string]any{"id": w.appID})
 		if err != nil {
 			return err
 		}
 		if res.Next(w.ctx) {
+			iv, _ := res.Record().Get("iv")
+			if n, ok := iv.(int64); !ok || n != 2 {
+				return fmt.Errorf("incompatible stored identity_version: %v", iv)
+			}
 			if v, ok := res.Record().Get("v"); ok && v != nil {
 				stored, _ = v.(string)
 			}

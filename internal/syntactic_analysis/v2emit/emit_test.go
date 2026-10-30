@@ -37,7 +37,7 @@ func buildGreeter(t *testing.T) (*schema.GoApplication, string) {
 
 func TestEmit_Envelope(t *testing.T) {
 	app, dir := buildGreeter(t)
-	out := Emit(app, "greeter", dir, 1, "test", 0, nil, nil)
+	out := Emit(app, testIdentity("greeter"), dir, 1, "test", 0, nil, nil)
 
 	if out.SchemaVersion != "2.0.0" {
 		t.Errorf("schema_version = %q, want 2.0.0", out.SchemaVersion)
@@ -48,8 +48,8 @@ func TestEmit_Envelope(t *testing.T) {
 	if out.MaxLevel != 1 {
 		t.Errorf("max_level = %d, want 1", out.MaxLevel)
 	}
-	if out.Application.ID != "can://greeter" {
-		t.Errorf("application.id = %q, want can://greeter", out.Application.ID)
+	if out.Application.ID != "can://greeter/greeter" {
+		t.Errorf("application.id = %q, want can://greeter/greeter", out.Application.ID)
 	}
 	if out.Application.Kind != "application" {
 		t.Errorf("application.kind = %q, want application", out.Application.Kind)
@@ -61,7 +61,7 @@ func TestEmit_Envelope(t *testing.T) {
 
 func TestEmit_ModuleSourceAndIDs(t *testing.T) {
 	app, dir := buildGreeter(t)
-	out := Emit(app, "greeter", dir, 1, "test", 0, nil, nil)
+	out := Emit(app, testIdentity("greeter"), dir, 1, "test", 0, nil, nil)
 
 	mod, ok := out.Application.SymbolTable["main.go"]
 	if !ok {
@@ -70,8 +70,8 @@ func TestEmit_ModuleSourceAndIDs(t *testing.T) {
 	if mod.Kind != "module" {
 		t.Errorf("module.kind = %q, want module", mod.Kind)
 	}
-	if mod.ID != "can://greeter/go/main.go" {
-		t.Errorf("module.id = %q, want can://greeter/go/main.go", mod.ID)
+	if mod.ID != "can://greeter/greeter/go/main.go" {
+		t.Errorf("module.id = %q, want can://greeter/greeter/go/main.go", mod.ID)
 	}
 	if !strings.HasPrefix(mod.Source, "package main") {
 		t.Errorf("module.source should hold the file text; got prefix %q", head(mod.Source, 20))
@@ -84,7 +84,7 @@ func TestEmit_ModuleSourceAndIDs(t *testing.T) {
 
 func TestEmit_CallableBodyAndSpanSlice(t *testing.T) {
 	app, dir := buildGreeter(t)
-	out := Emit(app, "greeter", dir, 1, "test", 0, nil, nil)
+	out := Emit(app, testIdentity("greeter"), dir, 1, "test", 0, nil, nil)
 
 	mod := out.Application.SymbolTable["main.go"]
 	var main v2.Callable
@@ -123,7 +123,7 @@ func TestEmit_CallableBodyAndSpanSlice(t *testing.T) {
 
 func TestEmit_CalleeSerializesAsNull(t *testing.T) {
 	app, dir := buildGreeter(t)
-	out := Emit(app, "greeter", dir, 1, "test", 0, nil, nil)
+	out := Emit(app, testIdentity("greeter"), dir, 1, "test", 0, nil, nil)
 	data, err := json.Marshal(out)
 	if err != nil {
 		t.Fatalf("marshal failed: %v", err)
@@ -144,7 +144,7 @@ func TestEmit_CalleeSerializesAsNull(t *testing.T) {
 
 func TestEmit_TypeKindAndMethods(t *testing.T) {
 	app, dir := buildGreeter(t)
-	out := Emit(app, "greeter", dir, 1, "test", 0, nil, nil)
+	out := Emit(app, testIdentity("greeter"), dir, 1, "test", 0, nil, nil)
 
 	// Find the Greeter type wherever it lives; assert struct kind + methods.
 	var found bool
@@ -182,4 +182,12 @@ func keys[V any](m map[string]V) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+func testIdentity(name string) v2.Identity {
+	i, e := v2.ResolveIdentity(name, nil)
+	if e != nil {
+		panic(e)
+	}
+	return i
 }

@@ -11,7 +11,7 @@ import (
 
 func TestRowBuilder_NodeMergeDedupsAndUnionsLabels(t *testing.T) {
 	b := NewRowBuilder()
-	id := "can://app/go/x.go/T"
+	id := "can://app/app/go/x.go/T"
 	b.Node([]string{SymbolLabel, LabelType}, "id", id, Props{"kind": "struct"}, "x.go")
 	// Re-see the same identity with an extra label + an extra prop.
 	b.Node([]string{SymbolLabel, MarkerLabel}, "id", id, Props{"signature": "T"}, "x.go")
@@ -34,7 +34,7 @@ func TestRowBuilder_NodeMergeDedupsAndUnionsLabels(t *testing.T) {
 
 func TestRowBuilder_PropLastWriteWins(t *testing.T) {
 	b := NewRowBuilder()
-	id := "can://app/go/x.go/T"
+	id := "can://app/app/go/x.go/T"
 	b.Node([]string{LabelType}, "id", id, Props{"kind": "struct"}, "")
 	b.Node([]string{LabelType}, "id", id, Props{"kind": "interface"}, "")
 	rows := b.Finish()
@@ -45,9 +45,9 @@ func TestRowBuilder_PropLastWriteWins(t *testing.T) {
 
 func TestRowBuilder_DeferredEdgeDroppedWhenTargetAbsent(t *testing.T) {
 	b := NewRowBuilder()
-	src := b.Node([]string{SymbolLabel, LabelType}, "id", "can://app/go/x.go/T", nil, "x.go")
+	src := b.Node([]string{SymbolLabel, LabelType}, "id", "can://app/app/go/x.go/T", nil, "x.go")
 	// Target never emitted as a node.
-	b.EdgeToSymbol(RelEmbeds, src, SymbolLabel, "id", "can://app/go/y.go/Missing", nil, "")
+	b.EdgeToSymbol(RelEmbeds, src, SymbolLabel, "id", "can://app/app/go/y.go/Missing", nil, "")
 	rows := b.Finish()
 	if len(rows.Edges) != 0 {
 		t.Errorf("deferred edge to an unemitted target must be dropped; got %d edges", len(rows.Edges))
@@ -56,8 +56,8 @@ func TestRowBuilder_DeferredEdgeDroppedWhenTargetAbsent(t *testing.T) {
 
 func TestRowBuilder_DeferredEdgeKeptWhenTargetEmitted(t *testing.T) {
 	b := NewRowBuilder()
-	src := b.Node([]string{SymbolLabel, LabelType}, "id", "can://app/go/x.go/T", nil, "x.go")
-	target := "can://app/go/y.go/Base"
+	src := b.Node([]string{SymbolLabel, LabelType}, "id", "can://app/app/go/x.go/T", nil, "x.go")
+	target := "can://app/app/go/y.go/Base"
 	b.Node([]string{SymbolLabel, LabelType}, "id", target, nil, "y.go")
 	b.EdgeToSymbol(RelEmbeds, src, SymbolLabel, "id", target, nil, "")
 	rows := b.Finish()
@@ -100,15 +100,15 @@ func TestPrune_AllEmptyReturnsNil(t *testing.T) {
 
 func TestApplicationPrefix_RefusesNonBareID(t *testing.T) {
 	cases := map[string]bool{
-		"can://app":           true,  // bare — accepted
-		"can://my-app":        true,  //
-		"":                    false, // empty
-		"can://":              false, // missing app segment
-		"can://app/go/x.go":   false, // too deep (a module id)
-		"can://app/go/x.go/T": false, // deeper still
-		"go/app":              false, // no scheme
-		"can://app/":          false, // trailing empty segment
-		"can://app//":         false, // empty segments
+		"can://app/app":           true,  // bare — accepted
+		"can://my-app/my-app":     true,  //
+		"":                        false, // empty
+		"can://":                  false, // missing app segment
+		"can://app/app/go/x.go":   false, // too deep (a module id)
+		"can://app/app/go/x.go/T": false, // deeper still
+		"go/app":                  false, // no scheme
+		"can://app/app/":          false, // trailing empty segment
+		"can://app/app//":         false, // empty segments
 	}
 	for id, wantOK := range cases {
 		_, ok := applicationPrefix(id)
@@ -119,8 +119,8 @@ func TestApplicationPrefix_RefusesNonBareID(t *testing.T) {
 }
 
 func TestDescendantPrefix_AppendsSlash(t *testing.T) {
-	if got := descendantPrefix("can://app"); got != "can://app/" {
-		t.Errorf("descendantPrefix = %q, want can://app/", got)
+	if got := descendantPrefix("can://app/app"); got != "can://app/app/" {
+		t.Errorf("descendantPrefix = %q, want can://app/app/", got)
 	}
 }
 
@@ -131,7 +131,7 @@ func TestFinish_IsOrderStable(t *testing.T) {
 	ref := func(b *RowBuilder, id string) NodeRef {
 		return b.Node([]string{SymbolLabel, LabelCallable}, "id", id, nil, "")
 	}
-	const A, B, C = "can://app/go/a.go/A", "can://app/go/b.go/B", "can://app/go/c.go/C"
+	const A, B, C = "can://app/app/go/a.go/A", "can://app/app/go/b.go/B", "can://app/app/go/c.go/C"
 
 	build := func(reverse bool) GraphRows {
 		b := NewRowBuilder()
@@ -193,13 +193,40 @@ func edgeKeys(g GraphRows) []string {
 }
 
 func TestApplicationPrefix_AcceptsBareAppOnly(t *testing.T) {
-	if _, ok := applicationPrefix("can://shop"); !ok {
+	if _, ok := applicationPrefix("can://shop/shop"); !ok {
 		t.Error("bare can://shop should be accepted")
 	}
-	if _, ok := applicationPrefix("can://shop/go/a.go"); ok {
+	if _, ok := applicationPrefix("can://shop/shop/go/a.go"); ok {
 		t.Error("module id should be rejected")
 	}
 	if _, ok := applicationPrefix("can://"); ok {
 		t.Error("can:// should be rejected")
+	}
+}
+
+func TestCanonicalDedup(t *testing.T) {
+	b := NewRowBuilder()
+	a := b.Node([]string{LabelCallable}, "id", "can://team/app/go/a", Props{"kind": "function"}, "")
+	b.Node([]string{SymbolLabel}, "id", a.Value, Props{"kind": "function"}, "")
+	b.Edge("CALLS", a, a, Props{"site": "1"}, "")
+	b.Edge("CALLS", a, a, Props{"site": "1"}, "")
+	b.Edge("CALLS", a, a, Props{"site": "2"}, "")
+	r := b.Finish()
+	if len(r.Nodes) != 1 || len(r.Edges) != 2 {
+		t.Fatalf("nodes %d edges %d", len(r.Nodes), len(r.Edges))
+	}
+}
+
+func TestCanonicalEdgeFactOrder(t *testing.T) {
+	build := func(sites []string) GraphRows {
+		b := NewRowBuilder()
+		n := b.Node([]string{LabelCallable}, "id", "can://team/app/go/a", nil, "")
+		for _, site := range sites {
+			b.Edge(RelCalls, n, n, Props{"site": site}, "")
+		}
+		return b.Finish()
+	}
+	if !reflect.DeepEqual(build([]string{"a", "b"}), build([]string{"b", "a"})) {
+		t.Fatal("site order changes canonical graph")
 	}
 }

@@ -278,8 +278,8 @@ func TestRootCmd_EmitsCanonicalV2(t *testing.T) {
 	if v.Language != "go" {
 		t.Errorf("language = %q, want go", v.Language)
 	}
-	if v.Application.ID != "can://greeter" {
-		t.Errorf("application.id = %q, want can://greeter", v.Application.ID)
+	if v.Application.ID != "can://greeter/greeter" {
+		t.Errorf("application.id = %q, want can://greeter/greeter", v.Application.ID)
 	}
 }
 
@@ -777,5 +777,53 @@ func TestCLI_LibraryModelsBadFileErrors(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), path) {
 			t.Errorf("%s: error = %v, want one naming %s", name, err, path)
 		}
+	}
+}
+
+func TestNamespaceExplicitEmptyRejected(t *testing.T) {
+	for _, flag := range []string{"--namespace", "--app-name"} {
+		_, _, err := runCmd("--input", filepath.Join(cliTestdataDir(), "greeter"), flag, "", "--cache-dir", t.TempDir())
+		if err == nil {
+			t.Fatalf("accepted empty %s", flag)
+		}
+	}
+}
+func TestNamespaceExplicitScope(t *testing.T) {
+	out, _, err := runCmd("--input", filepath.Join(cliTestdataDir(), "greeter"), "--namespace", "team space", "--app-name", "billing", "--cache-dir", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var a struct {
+		IdentityVersion int `json:"identity_version"`
+		Application     struct {
+			ID        string `json:"id"`
+			Namespace string `json:"identity_namespace"`
+			Name      string `json:"application_name"`
+		}
+	}
+	if err = json.Unmarshal([]byte(out), &a); err != nil {
+		t.Fatal(err)
+	}
+	if a.IdentityVersion != 2 || a.Application.ID != "can://team%20space/billing" || a.Application.Namespace != "team space" || a.Application.Name != "billing" {
+		t.Fatalf("%+v", a)
+	}
+}
+
+func TestNamespaceDefaultUsesNormalizedInput(t *testing.T) {
+	t.Chdir(filepath.Join(cliTestdataDir(), "greeter"))
+	out, _, err := runCmd("--input", ".", "--cache-dir", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var a struct {
+		Application struct {
+			ID string `json:"id"`
+		}
+	}
+	if err = json.Unmarshal([]byte(out), &a); err != nil {
+		t.Fatal(err)
+	}
+	if a.Application.ID != "can://greeter/greeter" {
+		t.Fatal(a.Application.ID)
 	}
 }

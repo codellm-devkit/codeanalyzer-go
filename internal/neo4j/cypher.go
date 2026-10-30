@@ -2,6 +2,7 @@ package neo4j
 
 import (
 	"fmt"
+	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
 	"sort"
 	"strings"
 )
@@ -13,7 +14,7 @@ import (
 //
 //  1. constraints + indexes (IF NOT EXISTS) — first, so MERGE seeks an index;
 //  2. scoped wipe of this app's prior subgraph — anchored on :GoCanNode and the
-//     can://<app>/ id prefix, with the root id matched separately (the root is
+//     can://<namespace>/<app>/ id prefix, with the root id matched separately (the root is
 //     outside its own descendant prefix). Rows with no proper application root
 //     emit NO wipe (refused visibly), so a hand-built bag can't delete anything;
 //  3. batched UNWIND … MERGE for nodes, grouped by full label set + key prop;
@@ -29,7 +30,46 @@ const batchSize = 500
 
 // RenderCypher renders the full snapshot script. appID is the application root
 // id used to scope the wipe; it is normally rows' application node value.
-func RenderCypher(rows GraphRows, appID string) string {
+func validateIdentity(rows GraphRows, appID string) error {
+	for _, n := range rows.Nodes {
+		if n.Value != appID {
+			continue
+		}
+		for _, label := range n.Labels {
+			if label != LabelApplication {
+				continue
+			}
+			version, ok := n.Props["identity_version"].(int)
+			if !ok || version != 2 {
+				return fmt.Errorf("incompatible identity_version")
+			}
+			name, ok := n.Props["application_name"].(string)
+			if !ok {
+				return fmt.Errorf("missing application_name")
+			}
+			ns, ok := n.Props["identity_namespace"].(string)
+			if !ok {
+				return fmt.Errorf("missing identity_namespace")
+			}
+			identity, err := v2.ResolveIdentity(name, &ns)
+			if err != nil {
+				return err
+			}
+			if identity.ApplicationID != appID {
+				return fmt.Errorf("application root does not match metadata")
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("missing application anchor")
+}
+func RenderCypher(rows GraphRows, appID string) (string, error) {
+	if err := validateIdentity(rows, appID); err != nil {
+		return "", err
+	}
+	return renderCypher(rows, appID), nil
+}
+func renderCypher(rows GraphRows, appID string) string {
 	var b strings.Builder
 
 	writeDDL(&b)
@@ -66,7 +106,7 @@ func writeScopedWipe(b *strings.Builder, appID string) {
 	}
 	desc := descendantPrefix(root)
 	b.WriteString("// ─── scoped wipe (this application only) ───\n")
-	// Descendants: everything under can://<app>/.
+	// Descendants: everything under can://<namespace>/<app>/.
 	fmt.Fprintf(b, "MATCH (n:%s) WHERE n.id STARTS WITH %s DETACH DELETE n;\n",
 		MarkerLabel, cypherString(desc))
 	// The root itself is outside its own descendant prefix.

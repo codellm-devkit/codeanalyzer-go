@@ -15,9 +15,11 @@ package core
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
 	"io"
 	"io/fs"
 	"math/rand/v2"
@@ -67,13 +69,33 @@ func KLimit(opts options.AnalysisOptions) int {
 	return 3
 }
 
-// New creates an Analyzer for the given options.
+// resolveIdentity preserves the default input basename for programmatic callers.
+func resolveIdentity(opts options.AnalysisOptions) (v2.Identity, error) {
+	name := opts.AppName
+	if name == "" {
+		root, err := filepath.Abs(opts.InputPath)
+		if err != nil {
+			return v2.Identity{}, err
+		}
+		name = filepath.Base(filepath.Clean(root))
+	}
+	return v2.ResolveIdentity(name, opts.Namespace)
+}
+
+// New creates an Analyzer with a cache isolated by canonical application identity.
 func New(opts options.AnalysisOptions) *Analyzer {
+	if identity, err := resolveIdentity(opts); err == nil && opts.CacheDir != "" {
+		key := sha256.Sum256([]byte(identity.ApplicationID))
+		opts.CacheDir = filepath.Join(opts.CacheDir, fmt.Sprintf("identity-v2-%x", key))
+	}
 	return &Analyzer{opts: opts}
 }
 
 // Analyze runs the full analysis pipeline and returns a GoApplication.
 func (a *Analyzer) Analyze() (*schema.GoApplication, error) {
+	if _, err := resolveIdentity(a.opts); err != nil {
+		return nil, err
+	}
 	// Resolve to absolute path so filepath.Rel works correctly in all cases.
 	abs, err := filepath.Abs(a.opts.InputPath)
 	if err != nil {
@@ -292,7 +314,11 @@ func RenderJSON(app *schema.GoApplication, l3 map[dataflow.L3Key]dataflow.Result
 	if err := checkFormat(opts); err != nil {
 		return nil, err
 	}
-	payload := v2emit.Emit(app, opts.AppName, opts.InputPath, int(opts.Level), opts.AnalyzerVersion, KLimit(opts), l3, l4)
+	identity, err := resolveIdentity(opts)
+	if err != nil {
+		return nil, err
+	}
+	payload := v2emit.Emit(app, identity, opts.InputPath, int(opts.Level), opts.AnalyzerVersion, KLimit(opts), l3, l4)
 	return json.Marshal(payload)
 }
 
@@ -302,8 +328,12 @@ func StreamJSON(w io.Writer, app *schema.GoApplication, l3 map[dataflow.L3Key]da
 	if err := checkFormat(opts); err != nil {
 		return err
 	}
+	identity, err := resolveIdentity(opts)
+	if err != nil {
+		return err
+	}
 	bw := bufio.NewWriterSize(w, 1<<20)
-	if err := v2emit.EmitTo(bw, app, opts.AppName, opts.InputPath, int(opts.Level), opts.AnalyzerVersion, KLimit(opts), l3, l4); err != nil {
+	if err := v2emit.EmitTo(bw, app, identity, opts.InputPath, int(opts.Level), opts.AnalyzerVersion, KLimit(opts), l3, l4); err != nil {
 		return err
 	}
 	return bw.Flush()
