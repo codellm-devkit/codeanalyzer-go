@@ -425,3 +425,40 @@ func TestAnalyzeInvalidNamespaceReadOnly(t *testing.T) {
 		t.Fatalf("cache changed: %v %v", entries, err)
 	}
 }
+
+func TestWriteOutputInvalidIdentityPreservesFilesystem(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		t.Run(fmt.Sprint(existing), func(t *testing.T) {
+			root := t.TempDir()
+			dst := filepath.Join(root, "missing", "output")
+			if existing {
+				if err := os.MkdirAll(dst, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dst, "analysis.json"), []byte("protected"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ns := ""
+			opts := options.AnalysisOptions{InputPath: greeterDir(t), AppName: "greeter", Namespace: &ns, OutputDir: dst}
+			if err := core.WriteOutput(&schema.GoApplication{}, nil, nil, opts); err == nil {
+				t.Fatal("accepted invalid identity")
+			}
+			if !existing {
+				entries, err := os.ReadDir(root)
+				if err != nil || len(entries) != 0 {
+					t.Fatalf("created destination: %v %v", entries, err)
+				}
+			} else {
+				entries, err := os.ReadDir(dst)
+				if err != nil || len(entries) != 1 {
+					t.Fatalf("changed destination: %v %v", entries, err)
+				}
+				b, err := os.ReadFile(filepath.Join(dst, "analysis.json"))
+				if err != nil || string(b) != "protected" {
+					t.Fatalf("changed output: %q %v", b, err)
+				}
+			}
+		})
+	}
+}

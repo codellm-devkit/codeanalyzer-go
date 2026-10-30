@@ -1,6 +1,7 @@
 package neo4j
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -334,4 +335,12 @@ func unionLabels(a, b []string) []string {
 		}
 	}
 	return out
+}
+
+// edgeFactID retains distinct site/context/evidence facts through relationship
+// MERGE. Endpoints, type and original Key remain separate identity components.
+// JSON orders map keys, so equivalent property bags produce the same digest.
+func edgeFactID(e EdgeRow) string {
+	data, _ := json.Marshal(prune(e.Props))
+	return fmt.Sprintf("%x", sha256.Sum256(data))
 }

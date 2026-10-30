@@ -179,20 +179,20 @@ func writeEdgeBatches(b *strings.Builder, edges []EdgeRow) {
 					sep = ""
 				}
 				if keyed {
-					fmt.Fprintf(b, "  {a: %s, b: %s, k: %s, p: %s}%s\n",
-						cypherString(e.From.Value), cypherString(e.To.Value), cypherString(e.Key), cypherMap(e.Props), sep)
+					fmt.Fprintf(b, "  {a: %s, b: %s, k: %s, f: %s, p: %s}%s\n",
+						cypherString(e.From.Value), cypherString(e.To.Value), cypherString(e.Key), cypherString(edgeFactID(e)), cypherMap(e.Props), sep)
 				} else {
-					fmt.Fprintf(b, "  {a: %s, b: %s, p: %s}%s\n",
-						cypherString(e.From.Value), cypherString(e.To.Value), cypherMap(e.Props), sep)
+					fmt.Fprintf(b, "  {a: %s, b: %s, f: %s, p: %s}%s\n",
+						cypherString(e.From.Value), cypherString(e.To.Value), cypherString(edgeFactID(e)), cypherMap(e.Props), sep)
 				}
 			}
 			b.WriteString("] AS row\n")
 			fmt.Fprintf(b, "MATCH (a:%s {%s: row.a})\n", e0.From.Label, e0.From.KeyProp)
 			fmt.Fprintf(b, "MATCH (b:%s {%s: row.b})\n", e0.To.Label, e0.To.KeyProp)
 			if keyed {
-				fmt.Fprintf(b, "MERGE (a)-[r:%s {_k: row.k}]->(b)\n", e0.Type)
+				fmt.Fprintf(b, "MERGE (a)-[r:%s {_k: row.k, %s: row.f}]->(b)\n", e0.Type, RelationshipFactProperty)
 			} else {
-				fmt.Fprintf(b, "MERGE (a)-[r:%s]->(b)\n", e0.Type)
+				fmt.Fprintf(b, "MERGE (a)-[r:%s {%s: row.f}]->(b)\n", e0.Type, RelationshipFactProperty)
 			}
 			b.WriteString("SET r += row.p;\n")
 		}

@@ -794,3 +794,9 @@ whitespace-only, control-containing names, slashes, backslashes, `.` and `..` ar
 rejected. Explicit empty flags are errors. Outputs and graph anchors carry integer
 `identity_version: 2`; regenerate legacy outputs from source. The graph writer
 rejects incompatible selected anchors before any DDL or graph write.
+
+Graph relationships retain existing `_k` values and additionally use private
+`_fact` identity (declared as `relationship_fact_property` by `--emit schema`).
+Both snapshot and Bolt writers derive it from SHA-256 of the canonical JSON of
+the existing pruned relationship properties. Equal endpoint/type/key facts with
+different site, context, or evidence properties therefore remain distinct.

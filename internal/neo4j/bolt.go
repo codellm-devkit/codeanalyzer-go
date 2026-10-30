@@ -392,9 +392,9 @@ func (w *boltWriter) upsertEdges(edges []EdgeRow) error {
 		keyed := e0.Key != ""
 		var mergeClause string
 		if keyed {
-			mergeClause = fmt.Sprintf("MERGE (a)-[r:%s {_k: row.k}]->(b)", e0.Type)
+			mergeClause = fmt.Sprintf("MERGE (a)-[r:%s {_k: row.k, %s: row.f}]->(b)", e0.Type, RelationshipFactProperty)
 		} else {
-			mergeClause = fmt.Sprintf("MERGE (a)-[r:%s]->(b)", e0.Type)
+			mergeClause = fmt.Sprintf("MERGE (a)-[r:%s {%s: row.f}]->(b)", e0.Type, RelationshipFactProperty)
 		}
 		q := fmt.Sprintf("UNWIND $rows AS row MATCH (a:%s {%s: row.a}) MATCH (b:%s {%s: row.b}) %s SET r += row.p",
 			e0.From.Label, e0.From.KeyProp, e0.To.Label, e0.To.KeyProp, mergeClause)
@@ -466,7 +466,7 @@ func nodeParams(g []NodeRow) []map[string]any {
 func edgeParams(g []EdgeRow, keyed bool) []map[string]any {
 	out := make([]map[string]any, len(g))
 	for i, e := range g {
-		m := map[string]any{"a": e.From.Value, "b": e.To.Value, "p": propsToAny(e.Props)}
+		m := map[string]any{"a": e.From.Value, "b": e.To.Value, "p": propsToAny(e.Props), "f": edgeFactID(e)}
 		if keyed {
 			m["k"] = e.Key
 		}

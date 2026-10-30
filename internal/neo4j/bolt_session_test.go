@@ -2,6 +2,7 @@ package neo4j
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -417,5 +418,69 @@ func TestMissingStoredIdentityReadOnly(t *testing.T) {
 	}
 	if len(db.writes) != 0 {
 		t.Fatal("wrote before rejecting legacy anchor")
+	}
+}
+
+func TestWritersPreserveDistinctEdgeFacts(t *testing.T) {
+	for _, key := range []string{"", "original-key"} {
+		for _, field := range []string{"site", "context"} {
+			t.Run(key+"/"+field, func(t *testing.T) {
+				build := func(reverse bool) GraphRows {
+					b := NewRowBuilder()
+					n := b.Node([]string{LabelCallable}, "id", "can://team/app/go/a", nil, "")
+					sites := []string{"one", "two"}
+					if reverse {
+						sites[0], sites[1] = sites[1], sites[0]
+					}
+					for _, site := range sites {
+						props := Props{"site": "shared", "context": "shared"}
+						props[field] = site
+						b.Edge(RelCalls, n, n, props, key)
+					}
+					return b.Finish()
+				}
+				var scripts []string
+				var batches [][]map[string]any
+				for _, reverse := range []bool{false, true} {
+					rows := build(reverse)
+					var script strings.Builder
+					writeEdgeBatches(&script, rows.Edges)
+					scripts = append(scripts, script.String())
+					db := &fakeDB{}
+					w := &boltWriter{ctx: context.Background(), session: db}
+					if err := w.upsertEdges(rows.Edges); err != nil {
+						t.Fatal(err)
+					}
+					if len(db.writes) != 1 {
+						t.Fatalf("writes %d", len(db.writes))
+					}
+					q := db.writes[0].q
+					if !strings.Contains(q, "_fact: row.f") || !strings.Contains(script.String(), "_fact: row.f") {
+						t.Fatalf("fact identity missing:\n%s\n%s", q, script.String())
+					}
+					batch := db.writes[0].params["rows"].([]map[string]any)
+					batches = append(batches, batch)
+					if len(batch) != 2 || batch[0]["f"] == nil || batch[0]["f"] == batch[1]["f"] {
+						t.Fatalf("collapsed facts: %+v", batch)
+					}
+					for _, row := range batch {
+						f, ok := row["f"].(string)
+						if !ok || !strings.Contains(script.String(), "f: "+cypherString(f)) {
+							t.Fatalf("writer identity differs: %+v", row)
+						}
+						if key != "" {
+							if row["k"] != key || !strings.Contains(q, "_k: row.k") || !strings.Contains(script.String(), "k: "+cypherString(key)) {
+								t.Fatal("original key lost")
+							}
+						} else if _, ok := row["k"]; ok {
+							t.Fatal("invented original key")
+						}
+					}
+				}
+				if scripts[0] != scripts[1] || !reflect.DeepEqual(batches[0], batches[1]) {
+					t.Fatal("input order changes writer identities")
+				}
+			})
+		}
 	}
 }

@@ -343,6 +343,9 @@ func StreamJSON(w io.Writer, app *schema.GoApplication, l3 map[dataflow.L3Key]da
 // when outputDir is empty. The file is written beside its destination and
 // renamed into place, so a failed run never leaves a truncated analysis.json.
 func WriteOutput(app *schema.GoApplication, l3 map[dataflow.L3Key]dataflow.Result, l4 *sdg.Result, opts options.AnalysisOptions) error {
+	if _, err := resolveIdentity(opts); err != nil {
+		return err
+	}
 	if err := checkFormat(opts); err != nil {
 		return err
 	}

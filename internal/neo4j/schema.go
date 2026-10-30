@@ -35,6 +35,11 @@ import v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
 // moves in lockstep with the JSON schema major (v2.SchemaVersion). The
 // additive-MINOR rule is suspended for the 2.0.0 line (parity with the sibling
 // ruling); consumers gate on the analyzer-version floor instead.
+// RelationshipFactProperty is the private SHA-256 discriminator every writer
+// includes in relationship MERGE, in addition to endpoints/type and any _k.
+// It hashes the canonical JSON of the existing pruned fact properties.
+const RelationshipFactProperty = "_fact"
+
 const SchemaVersion = v2.SchemaVersion // "2.0.0"
 
 // ─── namespacing (parity: Python PY_/Py, TS TS_/TS) ─────────────────────────
@@ -164,13 +169,13 @@ type RelSpec struct {
 	// conformance test to reject an edge wired to an undeclared endpoint.
 	From []string
 	To   []string
-	// Props are the property names the edge may carry (excluding the _k
-	// discriminant, which is Discriminant).
+	// Props are fact property names, excluding writer identity properties:
+	// _k (Discriminant) and the private RelationshipFactProperty.
 	Props []string
 	// Discriminant names the _k key when parallel edges per (endpoint pair) are
 	// legitimate (e.g. "kind" for GO_CFG_NEXT). A composite is written
 	// "a|b" and means _k = a + "|" + strings.Join(b, ","), b being an array
-	// prop (GO_DDG: "var|prov"). Empty = plain endpoint-pair MERGE.
+	// prop (GO_DDG: "var|prov"). Empty omits _k; all relationships also MERGE on RelationshipFactProperty.
 	Discriminant string
 	// Deferred marks an edge whose target may be library/external code not
 	// present in the graph: it is emitted via the RowBuilder's edge-only-when-
