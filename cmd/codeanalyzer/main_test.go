@@ -624,11 +624,11 @@ func l4CypherRows(cy string) map[string]int {
 	for _, stmt := range strings.Split(cy, ";\n") {
 		rows := strings.Count(stmt, "\n  {")
 		for _, rel := range []string{"GO_PARAM_IN", "GO_PARAM_OUT", "GO_SUMMARY"} {
-			if strings.Contains(stmt, "MERGE (a)-[r:"+rel+"]->(b)") {
+			if strings.Contains(stmt, "MERGE (a)-[r:"+rel+" {_fact: row.f}]->(b)") {
 				n[rel] += rows
 			}
 		}
-		if strings.Contains(stmt, "-[r:GO_DDG {_k: row.k}]->") {
+		if strings.Contains(stmt, "-[r:GO_DDG {_k: row.k, _fact: row.f}]->") {
 			n["GO_DDG reaching-defs"] += strings.Count(stmt, "|reaching-defs'")
 		}
 		if strings.Contains(stmt, "MERGE (n:GoBodyNode") {

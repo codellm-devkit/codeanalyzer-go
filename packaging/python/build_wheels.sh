@@ -28,7 +28,7 @@ REPO_ROOT="$(cd "$HERE/../.." && pwd)"          # codeanalyzer-go repo root (has
 # tag); the literal is only a local-dev fallback. It is written into __init__.py
 # (hatch's single source of truth for the wheel version) and injected into the
 # binary via -ldflags so `cango --version` matches the wheel version.
-PKG_VERSION="${PKG_VERSION:-0.1.0}"
+PKG_VERSION="${PKG_VERSION:-0.3.0}"
 # The wheel filename carries the PEP 440-normalized version, not the raw tag
 # version: a SemVer pre-release like 0.1.0-rc.1 is built as 0.1.0rc1, and
 # 0.0.0-dev as 0.0.0.dev0. Normalize the same way so the retag step below finds

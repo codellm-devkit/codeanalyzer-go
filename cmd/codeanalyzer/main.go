@@ -23,7 +23,7 @@ import (
 // version is the analyzer version. It defaults to a dev value and is overridden
 // at release time via -ldflags "-X main.version=<tag>" (see packaging/python/build_wheels.sh),
 // keeping the binary, the PyPI wheel, and the git tag in lockstep.
-var version = "0.1.0"
+var version = "0.3.0"
 
 func main() {
 	if err := rootCmd().Execute(); err != nil {
