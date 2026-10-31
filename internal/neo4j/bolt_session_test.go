@@ -2,6 +2,8 @@ package neo4j
 
 import (
 	"context"
+	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -35,12 +37,12 @@ func (consumedResult) Consume(context.Context) (neo4j.ResultSummary, error) { re
 // TRANSACTIONS inside an explicit transaction (what ExecuteWrite opens), so
 // the batched eager purge must go through the session's implicit Run path.
 func TestEagerPurge_RunsAsImplicitTransaction(t *testing.T) {
-	if q, _ := eagerPurgeQuery("can://app"); !strings.Contains(q, "IN TRANSACTIONS") {
+	if q, _ := eagerPurgeQuery("can://app/app"); !strings.Contains(q, "IN TRANSACTIONS") {
 		t.Fatalf("eagerPurgeQuery is not batched: %q", q)
 	}
 	s := &recordingSession{}
 	w := &boltWriter{ctx: context.Background(), session: s}
-	if err := w.eagerPurge("can://app"); err != nil {
+	if err := w.eagerPurge("can://app/app"); err != nil {
 		t.Fatal(err)
 	}
 	if s.explicit != 0 {
@@ -84,8 +86,15 @@ type fakeDB struct {
 	level  int64
 	// rawLevel, when non-nil, is the stored max_level returned verbatim
 	// (any type), overriding level.
-	rawLevel any
-	writes   []fakeStmt
+	missingIdentity  bool
+	missingAnchor    bool
+	missingName      bool
+	missingNamespace bool
+	rawIdentity      any
+	rawName          any
+	rawNamespace     any
+	rawLevel         any
+	writes           []fakeStmt
 }
 
 type fakeStmt struct {
@@ -114,6 +123,9 @@ func (s *fakeDB) ExecuteRead(ctx context.Context, work neo4j.ManagedTransactionW
 func (tx fakeTx) Run(_ context.Context, q string, params map[string]any) (neo4j.ResultWithContext, error) {
 	switch {
 	case strings.Contains(q, "a.schema_version"):
+		if tx.db.missingAnchor {
+			return &fakeResult{}, nil
+		}
 		var lvl any
 		if tx.db.level != 0 {
 			lvl = tx.db.level
@@ -121,7 +133,31 @@ func (tx fakeTx) Run(_ context.Context, q string, params map[string]any) (neo4j.
 		if tx.db.rawLevel != nil {
 			lvl = tx.db.rawLevel
 		}
-		return &fakeResult{rec: &neo4j.Record{Keys: []string{"v", "l"}, Values: []any{SchemaVersion, lvl}}}, nil
+		identity := any(int64(2))
+		if tx.db.missingIdentity {
+			identity = nil
+		}
+		if tx.db.rawIdentity != nil {
+			identity = tx.db.rawIdentity
+		}
+		parts := strings.Split(strings.TrimPrefix(params["id"].(string), "can://"), "/")
+		ns, _ := url.PathUnescape(parts[0])
+		name, _ := url.PathUnescape(parts[1])
+		var rawName any = name
+		var rawNamespace any = ns
+		if tx.db.missingName {
+			rawName = nil
+		}
+		if tx.db.missingNamespace {
+			rawNamespace = nil
+		}
+		if tx.db.rawName != nil {
+			rawName = tx.db.rawName
+		}
+		if tx.db.rawNamespace != nil {
+			rawNamespace = tx.db.rawNamespace
+		}
+		return &fakeResult{rec: &neo4j.Record{Keys: []string{"v", "l", "iv", "an", "ns"}, Values: []any{SchemaVersion, lvl, identity, rawName, rawNamespace}}}, nil
 	case strings.Contains(q, "m.content_hash"):
 		h, ok := tx.db.hashes[params["id"].(string)]
 		if !ok {
@@ -384,5 +420,117 @@ func TestBolt_CleanPushClearsDegradedJSON(t *testing.T) {
 	}
 	if v := appProps(rows)["degraded_json"]; v != `[{"code":"no_vta"}]` {
 		t.Errorf("degraded push: degraded_json = %v, want the JSON string", v)
+	}
+}
+
+func TestIncompatibleIdentityReadOnly(t *testing.T) {
+	for _, iv := range []any{int64(1), "2", float64(2), true} {
+		db := &fakeDB{rawIdentity: iv}
+		w := &boltWriter{ctx: context.Background(), session: db, appID: "can://team/app"}
+		if err := w.run(); err == nil {
+			t.Errorf("accepted %v", iv)
+		}
+		if len(db.writes) != 0 {
+			t.Fatal("wrote before identity gate")
+		}
+	}
+}
+
+func TestMissingStoredIdentityReadOnly(t *testing.T) {
+	db := &fakeDB{missingIdentity: true}
+	w := &boltWriter{ctx: context.Background(), session: db, appID: "can://team/app"}
+	if err := w.run(); err == nil {
+		t.Fatal("accepted legacy anchor")
+	}
+	if len(db.writes) != 0 {
+		t.Fatal("wrote before rejecting legacy anchor")
+	}
+}
+
+func TestWritersPreserveDistinctEdgeFacts(t *testing.T) {
+	for _, key := range []string{"", "original-key"} {
+		for _, field := range []string{"site", "context"} {
+			t.Run(key+"/"+field, func(t *testing.T) {
+				build := func(reverse bool) GraphRows {
+					b := NewRowBuilder()
+					n := b.Node([]string{LabelCallable}, "id", "can://team/app/go/a", nil, "")
+					sites := []string{"one", "two"}
+					if reverse {
+						sites[0], sites[1] = sites[1], sites[0]
+					}
+					for _, site := range sites {
+						props := Props{"site": "shared", "context": "shared"}
+						props[field] = site
+						b.Edge(RelCalls, n, n, props, key)
+					}
+					return b.Finish()
+				}
+				var scripts []string
+				var batches [][]map[string]any
+				for _, reverse := range []bool{false, true} {
+					rows := build(reverse)
+					var script strings.Builder
+					writeEdgeBatches(&script, rows.Edges)
+					scripts = append(scripts, script.String())
+					db := &fakeDB{}
+					w := &boltWriter{ctx: context.Background(), session: db}
+					if err := w.upsertEdges(rows.Edges); err != nil {
+						t.Fatal(err)
+					}
+					if len(db.writes) != 1 {
+						t.Fatalf("writes %d", len(db.writes))
+					}
+					q := db.writes[0].q
+					if !strings.Contains(q, "_fact: row.f") || !strings.Contains(script.String(), "_fact: row.f") {
+						t.Fatalf("fact identity missing:\n%s\n%s", q, script.String())
+					}
+					batch := db.writes[0].params["rows"].([]map[string]any)
+					batches = append(batches, batch)
+					if len(batch) != 2 || batch[0]["f"] == nil || batch[0]["f"] == batch[1]["f"] {
+						t.Fatalf("collapsed facts: %+v", batch)
+					}
+					for _, row := range batch {
+						f, ok := row["f"].(string)
+						if !ok || !strings.Contains(script.String(), "f: "+cypherString(f)) {
+							t.Fatalf("writer identity differs: %+v", row)
+						}
+						if key != "" {
+							if row["k"] != key || !strings.Contains(q, "_k: row.k") || !strings.Contains(script.String(), "k: "+cypherString(key)) {
+								t.Fatal("original key lost")
+							}
+						} else if _, ok := row["k"]; ok {
+							t.Fatal("invented original key")
+						}
+					}
+				}
+				if scripts[0] != scripts[1] || !reflect.DeepEqual(batches[0], batches[1]) {
+					t.Fatal("input order changes writer identities")
+				}
+			})
+		}
+	}
+}
+
+func TestStoredOwnerMismatchReadOnly(t *testing.T) {
+	for _, db := range []*fakeDB{{missingName: true}, {missingNamespace: true}, {rawName: "other"}, {rawNamespace: "other"}, {rawName: 42}, {rawNamespace: 42}} {
+		w := &boltWriter{ctx: context.Background(), session: db, appID: "can://team/app"}
+		if err := w.run(); err == nil {
+			t.Fatal("accepted contradictory stored owner")
+		}
+		if len(db.writes) != 0 {
+			t.Fatal("wrote before rejecting stored owner")
+		}
+	}
+}
+
+func TestStoredOwnerAllowsFreshAndMatchingAnchor(t *testing.T) {
+	for _, db := range []*fakeDB{{missingAnchor: true}, {}} {
+		w := &boltWriter{ctx: context.Background(), session: db, appID: "can://team/app"}
+		if _, err := w.storedAppStale(); err != nil {
+			t.Fatal(err)
+		}
+		if len(db.writes) != 0 {
+			t.Fatal("identity probe mutated graph")
+		}
 	}
 }

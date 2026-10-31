@@ -120,8 +120,8 @@ func TestGateL4_HTTPToSQLPath(t *testing.T) {
 		t.Fatalf("httpsql degraded: %+v", a.Degraded)
 	}
 	app := a.Application.ID
-	if app != "can://httpsql" {
-		t.Fatalf("application id %s, want can://httpsql", app)
+	if app != "can://httpsql/httpsql" {
+		t.Fatalf("application id %s, want can://httpsql/httpsql", app)
 	}
 	idx := bodyIndex(a)
 	vertex := func(owner, kind, of string) string {
@@ -144,7 +144,7 @@ func TestGateL4_HTTPToSQLPath(t *testing.T) {
 	method := func(typ, m string) string { return v2.CallableID(v2.TypeID(mod, pkg+typ), pkg+typ+"."+m) }
 
 	sink := vertex(v2.ExternalID(app, "database/sql", "DB.Query"), "formal_in", "query")
-	if sink != "can://httpsql/@external/database/sql/DB.Query@formal_in:1" {
+	if sink != "can://httpsql/httpsql/@external/database/sql/DB.Query@formal_in:1" {
 		t.Fatalf("sink vertex %s", sink)
 	}
 	find := method("sqlRepo", "Find")
@@ -232,7 +232,7 @@ func buildHTTPSQLWithModels(t *testing.T, models sdg.Models) *v2.Analysis {
 		Units: units, L3: res, K: 3, Jobs: 4, Models: models,
 	})
 	l4.ApplyTo(app)
-	return Emit(app, "httpsql", dir, 4, "gate-test", 3, res, &l4)
+	return Emit(app, testIdentity("httpsql"), dir, 4, "gate-test", 3, res, &l4)
 }
 
 // TestGateL4_HTTPToSQLSanitizerIsSDKSemantics pins what L4 does — and

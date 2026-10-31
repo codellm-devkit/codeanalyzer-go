@@ -42,7 +42,7 @@ func buildMultipackageL2(t *testing.T) *v2.Analysis {
 	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 	edges := cg.Build(st) // mutates st in place: backfills callee_signature
 	app := &schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}
-	return Emit(app, "multipackage", dir, 2, "gate-test", 0, nil, nil)
+	return Emit(app, testIdentity("multipackage"), dir, 2, "gate-test", 0, nil, nil)
 }
 
 // allCallableIDs collects every callable/type id in the emitted tree.
@@ -110,8 +110,8 @@ func TestGateL2_NamedEdgePresent(t *testing.T) {
 	out := buildMultipackageL2(t)
 
 	const (
-		src = "can://multipackage/go/worker/worker.go/example.com/multipackage/worker.Worker/example.com/multipackage/worker.Worker.Run"
-		dst = "can://multipackage/go/worker/worker.go/example.com/multipackage/worker.Worker/example.com/multipackage/worker.Worker.execute"
+		src = "can://multipackage/multipackage/go/worker/worker.go/example.com/multipackage/worker.Worker/example.com/multipackage/worker.Worker.Run"
+		dst = "can://multipackage/multipackage/go/worker/worker.go/example.com/multipackage/worker.Worker/example.com/multipackage/worker.Worker.execute"
 	)
 	found := false
 	for _, e := range out.Application.CallGraph {
@@ -133,8 +133,8 @@ func TestGateL2_CrossPackageEdge(t *testing.T) {
 	out := buildMultipackageL2(t)
 
 	const (
-		src = "can://multipackage/go/main.go/example.com/multipackage.main"
-		dst = "can://multipackage/go/server/server.go/example.com/multipackage/server.New"
+		src = "can://multipackage/multipackage/go/main.go/example.com/multipackage.main"
+		dst = "can://multipackage/multipackage/go/server/server.go/example.com/multipackage/server.New"
 	)
 	found := false
 	for _, e := range out.Application.CallGraph {
@@ -189,12 +189,12 @@ func TestGateL2_SupersetOfL1(t *testing.T) {
 		t.Fatalf("symbol table build failed: %v", err)
 	}
 	// L1 snapshot BEFORE the resolver mutates call sites.
-	l1 := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: nil}, "multipackage", dir, 1, "gate-test", 0, nil, nil)
+	l1 := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: nil}, testIdentity("multipackage"), dir, 1, "gate-test", 0, nil, nil)
 
 	// Now run the resolver (mutates st) and emit L2.
 	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 	edges := cg.Build(st)
-	l2 := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges}, "multipackage", dir, 2, "gate-test", 0, nil, nil)
+	l2 := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges}, testIdentity("multipackage"), dir, 2, "gate-test", 0, nil, nil)
 
 	if len(l1.Application.SymbolTable) != len(l2.Application.SymbolTable) {
 		t.Fatalf("module count changed L1->L2: %d vs %d",
@@ -410,7 +410,7 @@ func emitTemp(t *testing.T, src string) *v2.Analysis {
 	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 	edges := cg.Build(st)
 	app := &schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}
-	return Emit(app, "p", dir, 2, "gate-test", 0, nil, nil)
+	return Emit(app, testIdentity("p"), dir, 2, "gate-test", 0, nil, nil)
 }
 
 // TestGateL2_ExternalParamsHaveNoSpan locks that external parameters serialize
@@ -442,7 +442,7 @@ func TestGateL2_GenericLibraryMethodUsesDeclaredSignature(t *testing.T) {
 		}
 		cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 		edges := cg.Build(st)
-		out := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}, "dataflow", dir, 2, "gate-test", 0, nil, nil)
+		out := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}, testIdentity("dataflow"), dir, 2, "gate-test", 0, nil, nil)
 		ext := v2.ExternalID(out.Application.ID, "sync/atomic", "Pointer.Store")
 		sym, ok := out.Application.ExternalSymbols[ext]
 		if !ok {
@@ -466,7 +466,7 @@ func TestGateL2_IncrementalModeKeepsProjectCalleesInternal(t *testing.T) {
 	}
 	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 	edges := cg.Build(st)
-	out := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}, "multipackage", dir, 2, "gate-test", 0, nil, nil)
+	out := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}, testIdentity("multipackage"), dir, 2, "gate-test", 0, nil, nil)
 
 	const projectModule = "example.com/multipackage"
 	for id, sym := range out.Application.ExternalSymbols {
@@ -492,7 +492,7 @@ func TestGateL2_VendoredCalleeIsExternal(t *testing.T) {
 	}
 	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 	edges := cg.Build(st)
-	out := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}, "dataflow", dir, 2, "gate-test", 0, nil, nil)
+	out := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}, testIdentity("dataflow"), dir, 2, "gate-test", 0, nil, nil)
 
 	ext := v2.ExternalID(out.Application.ID, "example.com/vlib", "F")
 	sym, ok := out.Application.ExternalSymbols[ext]
@@ -564,7 +564,7 @@ func TestGateL2_ExternalUnnamedParamsArePositional(t *testing.T) {
 	}
 	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 	edges := cg.Build(st)
-	out := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}, "dataflow", dir, 2, "gate-test", 0, nil, nil)
+	out := Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}, testIdentity("dataflow"), dir, 2, "gate-test", 0, nil, nil)
 
 	for sig, want := range map[string][]string{"G": {"_0", "_1"}, "H": {"_0", "n"}} {
 		ext := v2.ExternalID(out.Application.ID, "example.com/vlib", sig)
@@ -593,7 +593,7 @@ func emitDirL2(t *testing.T, dir, app string) *v2.Analysis {
 	}
 	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 	edges := cg.Build(st)
-	return Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}, app, dir, 2, "gate-test", 0, nil, nil)
+	return Emit(&schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}, testIdentity(app), dir, 2, "gate-test", 0, nil, nil)
 }
 
 // assertNoDanglingEdges fails when an edge endpoint is neither a callable id

@@ -1,6 +1,11 @@
 package v2
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+	"unicode"
+	"unicode/utf8"
+)
 
 // Group A vocabulary: the `can://` durable-id grammar (>= callable) and the
 // `@line:col` ordinal-id grammar (< callable), plus span construction. These
@@ -8,14 +13,14 @@ import "strings"
 // the deferred L3/L4 train (which must not re-decide id or span shape).
 //
 // Durable id grammar (the app segment is outermost so a polyglot app shares one
-// `can://<app>` prefix across languages; the language follows it):
+// `can://<namespace>/<app>` prefix across languages; the language follows it):
 //
-//	can://<app>/<lang>/<file>/<type>/<callable-signature>
-//	can://myapp/go/src/util.go/Hasher/Hash(string)uint64
+//	can://<namespace>/<app>/<lang>/<file>/<type>/<callable-signature>
+//	can://myapp/myapp/go/src/util.go/Hasher/Hash(string)uint64
 //
 // External (out-of-project) symbols are language-neutral:
 //
-//	can://<app>/@external/<import-path>/<sig>
+//	can://<namespace>/<app>/@external/<import-path>/<sig>
 //
 // Ordinal id grammar (statements and synthetic vertices, addressed WITHIN their
 // callable):
@@ -32,10 +37,49 @@ const (
 	ordinalSep = "@"
 )
 
-// AppID builds the application id: can://<app>. The language is not part of it
-// (it follows the app in module ids) so sibling analyzers share the prefix.
-func AppID(app string) string {
-	return scheme + app
+// Identity holds validated raw names and their canonical root.
+type Identity struct {
+	Namespace       string
+	ApplicationName string
+	ApplicationID   string
+}
+
+// ResolveIdentity validates raw names, defaulting an omitted namespace to appName.
+func ResolveIdentity(appName string, namespace *string) (Identity, error) {
+	ns := appName
+	if namespace != nil {
+		ns = *namespace
+	}
+	for _, s := range []string{appName, ns} {
+		if !utf8.ValidString(s) || strings.TrimSpace(s) == "" || s == "." || s == ".." || strings.ContainsAny(s, "/\\") {
+			return Identity{}, fmt.Errorf("invalid application identity segment %q", s)
+		}
+		for _, r := range s {
+			if unicode.IsControl(r) {
+				return Identity{}, fmt.Errorf("control character in identity")
+			}
+		}
+	}
+	return Identity{Namespace: ns, ApplicationName: appName, ApplicationID: AppID(appName, ns)}, nil
+}
+func encodeSegment(s string) string {
+	const hex = "0123456789ABCDEF"
+	var b strings.Builder
+	for _, c := range []byte(s) {
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("-._~", rune(c)) {
+			b.WriteByte(c)
+		} else {
+			b.WriteByte('%')
+			b.WriteByte(hex[c>>4])
+			b.WriteByte(hex[c&15])
+		}
+	}
+	return b.String()
+}
+
+// AppID encodes resolved, validated names into a canonical application root.
+func AppID(app, namespace string) string {
+	return scheme + encodeSegment(namespace) + "/" + encodeSegment(app)
 }
 
 // ModuleID builds a module id from the application id and the module's file

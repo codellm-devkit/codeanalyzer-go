@@ -37,9 +37,11 @@ type AnalysisOptions struct {
 	Format string
 	// Emit selects the output projection: json (default), neo4j, or schema.
 	Emit EmitTarget
-	// AppName anchors application identity (can://<app-name> and the Neo4j
+	// AppName anchors application identity (can://<namespace>/<app-name> and the Neo4j
 	// :Application node). Defaults to the input directory's base name.
 	AppName string
+	// Namespace is presence-aware: nil defaults to the resolved application name.
+	Namespace *string
 	// AnalysisLevel controls symbol-table-only (1), + call graph (2),
 	// + intraprocedural dataflow (3), or + the interprocedural SDG (4).
 	Level AnalysisLevel

@@ -58,7 +58,7 @@ The binary is fully self-contained: a single static executable with no runtime d
   imports, struct tags, and generic type parameters, with precise source spans.
 - **Call graph** — a resolver-based call graph via `go/types`: each call site is resolved to its
   full import-path signature. Level 2 emits edges to project callees and to library callees
-  (homed in `application.external_symbols` under `can://<app>/@external/<import-path>/<sig>`).
+  (homed in `application.external_symbols` under `can://<namespace>/<app>/@external/<import-path>/<sig>`).
   Level 3 (`-a 3`) adds per-callable `cfg`, `cdg` and `ddg`. Level 4 (`-a 4`) adds the
   interprocedural system dependence graph (SDG): parameter vertices, `param_in` / `param_out`,
   call-site `summary` edges, VTA dispatch targets and library stand-ins — what the SDK's
@@ -251,7 +251,7 @@ cango -i /path/to/go/app -a 2 -o /path/to/output/
 > of writing a file.
 
 **3. (Optional) name the application anchor.** `--app-name` sets the `<app>` in every
-`can://<app>/…` id and defaults to the input directory's base name. Set it when the
+`can://<namespace>/<app>/…` id and defaults to the input directory's base name. Set it when the
 directory name isn't the identity you want:
 
 ```bash
@@ -358,20 +358,24 @@ and the [step-by-step section above](#generating-analysisjson-for-a-go-app) prod
 ### Canonical v2 shape
 
 The document is a manifest envelope wrapping one `application` containment tree. Every
-node carries a `can://<app>/…` `id`, a `kind`, and a `span`:
+node carries a `can://<namespace>/<app>/…` `id`, a `kind`, and a `span`:
 
 ```json
 {
+  "identity_version": 2,
   "schema_version": "2.0.0",
   "language": "go",
   "max_level": 2,
   "analyzer": { "name": "codeanalyzer-go", "version": "0.1.0" },
   "application": {
-    "id": "can://myapp",
+    "id": "can://myapp/myapp",
+    "identity_version": 2,
+    "application_name": "myapp",
+    "identity_namespace": "myapp",
     "kind": "application",
     "symbol_table": {
       "pkg/greeter/greeter.go": {
-        "id": "can://myapp/go/pkg/greeter/greeter.go",
+        "id": "can://myapp/myapp/go/pkg/greeter/greeter.go",
         "kind": "module",
         "package": "greeter",
         "span": { "start": [1, 1], "end": [40, 2], "bytes": [0, 812] },
@@ -380,7 +384,7 @@ node carries a `can://<app>/…` `id`, a `kind`, and a `span`:
         "imports": [ { "name": "fmt", "path": "fmt", "span": {…} } ],
         "types": {
           "Greeter": {
-            "id": "can://myapp/go/pkg/greeter/greeter.go/example.com/pkg/greeter.Greeter",
+            "id": "can://myapp/myapp/go/pkg/greeter/greeter.go/example.com/pkg/greeter.Greeter",
             "kind": "struct",
             "span": { "start": [5, 1], "end": [7, 2], "bytes": [17, 63] },
             "fields": {
@@ -388,7 +392,7 @@ node carries a `can://<app>/…` `id`, a `kind`, and a `span`:
             },
             "callables": {
               "example.com/pkg/greeter.Greeter.Greet": {
-                "id": "can://myapp/go/pkg/greeter/greeter.go/example.com/pkg/greeter.Greeter/example.com/pkg/greeter.Greeter.Greet",
+                "id": "can://myapp/myapp/go/pkg/greeter/greeter.go/example.com/pkg/greeter.Greeter/example.com/pkg/greeter.Greeter.Greet",
                 "kind": "method",
                 "signature": "example.com/pkg/greeter.Greeter.Greet",
                 "span": { "start": [9, 1], "end": [11, 2], "bytes": [65, 140] },
@@ -399,9 +403,9 @@ node carries a `can://<app>/…` `id`, a `kind`, and a `span`:
                 "body": {
                   "10:2": {
                     "kind": "call",
-                    "id": "can://myapp/go/pkg/greeter/greeter.go/…/example.com/pkg/greeter.Greeter.Greet@10:2",
+                    "id": "can://myapp/myapp/go/pkg/greeter/greeter.go/…/example.com/pkg/greeter.Greeter.Greet@10:2",
                     "span": { "start": [10, 2], "end": [10, 30], "bytes": [90, 118] },
-                    "callee": "can://myapp/go/pkg/greeter/greeter.go/…/example.com/pkg/greeter.format"
+                    "callee": "can://myapp/myapp/go/pkg/greeter/greeter.go/…/example.com/pkg/greeter.format"
                   }
                 }
               }
@@ -415,8 +419,8 @@ node carries a `can://<app>/…` `id`, a `kind`, and a `span`:
     },
     "call_graph": [
       {
-        "src": "can://myapp/go/main.go/…/example.com/main.main",
-        "dst": "can://myapp/go/pkg/greeter/greeter.go/…/example.com/pkg/greeter.Greeter.Greet",
+        "src": "can://myapp/myapp/go/main.go/…/example.com/main.main",
+        "dst": "can://myapp/myapp/go/pkg/greeter/greeter.go/…/example.com/pkg/greeter.Greeter.Greet",
         "prov": ["go/types"],
         "weight": 1
       }
@@ -431,7 +435,7 @@ Key v2 schema properties:
   degraded) and `analyzer{name,version}` wrap a single `application` node.
 - **One containment tree** — `application → module → type → callable → body`, keyed as
   `symbol_table` (modules, by **project-relative file path**), `types`, `callables`, `body`.
-- **`id`** — every node carries a durable `can://<app>/go/<file>/<type>/<signature>` id;
+- **`id`** — every node carries a durable `can://<namespace>/<app>/go/<file>/<type>/<signature>` id;
   `<app>` is the `--app-name` anchor. A body node is keyed by `line:col` in its callable's `body`
   map and carries `id` = `<callable-id>@<key>` at every level, from `-a 1` on.
 - **`kind`** — `module` · `type` kinds `struct | interface | alias | defined` (collapses v1's
@@ -448,7 +452,7 @@ Key v2 schema properties:
   `return_type`). **Closures** nest as `callables{}` on the enclosing callable.
 - **`body` call nodes** — `callee` is the sanctioned `null → id` slot: `null` at L1; at L2 a
   project callable's `can://` id, or for a library (stdlib or dependency) callee its
-  `can://<app>/@external/<import-path>/<sig>` id, a key of `external_symbols`. It stays `null`
+  `can://<namespace>/<app>/@external/<import-path>/<sig>` id, a key of `external_symbols`. It stays `null`
   for conversions, builtins, calls through function values and unresolved sites. `is_goroutine` / `is_deferred`
   are boolean flags emitted **only when true** (a plain call omits them), for `go f()` / `defer f()`.
 - **`call_graph` edges** — `{src, dst, prov, weight}`; `src` is a callable id in the tree and
@@ -476,7 +480,7 @@ Key v2 schema properties:
 ## Neo4j projection (`--emit neo4j`)
 
 `--emit neo4j` projects the **same v2 envelope** into a Neo4j property graph. It is a *second
-projection of the identical analysis* — JSON nodes and graph nodes carry the same `can://<app>/…`
+projection of the identical analysis* — JSON nodes and graph nodes carry the same `can://<namespace>/<app>/…`
 ids, so the two join on one string and are never recomposed. The graph vocabulary is `Go`-prefixed
 labels (`:GoModule`, `:GoType`, `:GoCallable`, `:GoField`, `:GoBodyNode`, `:GoExternal`, plus the
 shared merge label `:GoSymbol` and marker `:GoCanNode`) and `GO_`-prefixed relationships
@@ -492,7 +496,7 @@ There are two output paths, chosen by whether `--neo4j-uri` is set:
 | **Use for** | Review, diffing, loading on your own schedule, CI | A DB you already have running |
 
 Both paths are **scoped to one application**: every destructive statement is anchored on
-`:GoCanNode` and the `can://<app>/` id prefix, so it never touches another app (or a
+`:GoCanNode` and the `can://<namespace>/<app>/` id prefix, so it never touches another app (or a
 sibling-language graph) in the same database. The projection is **deterministic** — a second emit
 is byte-identical.
 
@@ -602,7 +606,7 @@ MATCH (n:GoCanNode) RETURN labels(n)[0] AS label, count(*) AS n ORDER BY n DESC;
 MATCH ()-[r]->() RETURN type(r) AS rel, count(*) AS n ORDER BY n DESC;
 
 // Everything owned by one application (prefix seek).
-MATCH (n:GoCanNode) WHERE n.id STARTS WITH 'can://<app>/' RETURN count(n) AS app_nodes;
+MATCH (n:GoCanNode) WHERE n.id STARTS WITH 'can://<namespace>/<app>/' RETURN count(n) AS app_nodes;
 
 // Types ranked by method count (the "god struct" finder).
 MATCH (t:GoType) OPTIONAL MATCH (t)-[:GO_HAS_METHOD]->(m)
@@ -645,8 +649,8 @@ methods above, including `pip install codeanalyzer-go`). See
 This release changes the output contract. If you consume `analysis.json` or the Neo4j graph,
 check the following.
 
-- **Ids are app-outermost.** `can://go/<app>/<file>/…` is now `can://<app>/go/<file>/…`. Library
-  callees are `can://<app>/@external/<import-path>/<sig>`.
+- **Ids are app-outermost.** `can://go/<app>/<file>/…` is now `can://<namespace>/<app>/go/<file>/…`. Library
+  callees are `can://<namespace>/<app>/@external/<import-path>/<sig>`.
 - **Body nodes carry `id` at every level.** Each body node has `id` = `<callable-id>@<local-key>`,
   from `-a 1` on, not only at `-a 3`.
 - **L2 includes library calls.** The call graph now has edges to library (stdlib and dependency)
@@ -781,3 +785,18 @@ The version is injected into the binary at build time via `-ldflags "-X main.ver
 ## License
 
 Apache 2.0 — see [LICENSE](./LICENSE).
+
+Application identity uses `--namespace` (default: resolved application name) and
+`--app-name` (default: input directory basename). Both segments are always present,
+for example `can://team/inventory` or `can://inventory/inventory`. Names are raw,
+case-sensitive Unicode strings; reserved UTF-8 bytes are percent encoded. Empty,
+whitespace-only, control-containing names, slashes, backslashes, `.` and `..` are
+rejected. Explicit empty flags are errors. Outputs and graph anchors carry integer
+`identity_version: 2`; regenerate legacy outputs from source. The graph writer
+rejects incompatible selected anchors before any DDL or graph write.
+
+Graph relationships retain existing `_k` values and additionally use private
+`_fact` identity (declared as `relationship_fact_property` by `--emit schema`).
+Both snapshot and Bolt writers derive it from SHA-256 of the canonical JSON of
+the existing pruned relationship properties. Equal endpoint/type/key facts with
+different site, context, or evidence properties therefore remain distinct.

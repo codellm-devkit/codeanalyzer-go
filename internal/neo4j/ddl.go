@@ -85,16 +85,17 @@ func constraintName(label, prop string) string {
 // --emit schema to schema.neo4j.json. It is the graph-side sibling of the
 // keystone JSON schema and what the SDK's Neo4j backend reconstructs against.
 type SchemaDocument struct {
-	SchemaVersion string       `json:"schema_version"`
-	Language      string       `json:"language"`
-	NodePrefix    string       `json:"node_prefix"`
-	RelPrefix     string       `json:"rel_prefix"`
-	MarkerLabel   string       `json:"marker_label"`
-	SymbolLabel   string       `json:"symbol_label"`
-	Nodes         []NodeDoc    `json:"nodes"`
-	Relationships []RelDoc     `json:"relationships"`
-	Constraints   []Constraint `json:"constraints"`
-	Indexes       []Index      `json:"indexes"`
+	RelationshipFactProperty string       `json:"relationship_fact_property"`
+	SchemaVersion            string       `json:"schema_version"`
+	Language                 string       `json:"language"`
+	NodePrefix               string       `json:"node_prefix"`
+	RelPrefix                string       `json:"rel_prefix"`
+	MarkerLabel              string       `json:"marker_label"`
+	SymbolLabel              string       `json:"symbol_label"`
+	Nodes                    []NodeDoc    `json:"nodes"`
+	Relationships            []RelDoc     `json:"relationships"`
+	Constraints              []Constraint `json:"constraints"`
+	Indexes                  []Index      `json:"indexes"`
 }
 
 // NodeDoc / RelDoc are the serialized (JSON-stable) views of NodeSpec / RelSpec.
@@ -128,16 +129,17 @@ func BuildSchemaDocument() SchemaDocument {
 		rels = append(rels, RelDoc(r))
 	}
 	return SchemaDocument{
-		SchemaVersion: SchemaVersion,
-		Language:      v2.Language,
-		NodePrefix:    NodePrefix,
-		RelPrefix:     RelPrefix,
-		MarkerLabel:   MarkerLabel,
-		SymbolLabel:   SymbolLabel,
-		Nodes:         nodes,
-		Relationships: rels,
-		Constraints:   UniquenessConstraints(),
-		Indexes:       Indexes(),
+		RelationshipFactProperty: RelationshipFactProperty,
+		SchemaVersion:            SchemaVersion,
+		Language:                 v2.Language,
+		NodePrefix:               NodePrefix,
+		RelPrefix:                RelPrefix,
+		MarkerLabel:              MarkerLabel,
+		SymbolLabel:              SymbolLabel,
+		Nodes:                    nodes,
+		Relationships:            rels,
+		Constraints:              UniquenessConstraints(),
+		Indexes:                  Indexes(),
 	}
 }
 

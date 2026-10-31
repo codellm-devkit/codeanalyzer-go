@@ -19,7 +19,7 @@ import (
 	"github.com/codellm-devkit/codeanalyzer-go/internal/sdg"
 )
 
-// Emit transforms the v1 GoApplication into the v2 Analysis payload. appName is
+// Emit transforms the v1 GoApplication into the v2 Analysis payload. identity is
 // the application anchor (--app-name); projectDir is the absolute input root,
 // used to read each module's source for span slicing. maxLevel records how
 // deeply the tree was populated (1 = symbol table, 2 = + call_graph, 3 = +
@@ -34,8 +34,8 @@ import (
 // This is a pure re-serialization: every fact comes from the v1 model and the
 // L3/L4 side tables, except span byte offsets, which are derived from source
 // via lineIndex.
-func Emit(app *schema.GoApplication, appName, projectDir string, maxLevel int, analyzerVersion string, kLimit int, l3 map[dataflow.L3Key]dataflow.Result, l4 *sdg.Result) *v2.Analysis {
-	e := newEmitter(app, appName, projectDir, maxLevel, l3, l4)
+func Emit(app *schema.GoApplication, identity v2.Identity, projectDir string, maxLevel int, analyzerVersion string, kLimit int, l3 map[dataflow.L3Key]dataflow.Result, l4 *sdg.Result) *v2.Analysis {
+	e := newEmitter(app, identity, projectDir, maxLevel, l3, l4)
 	out := e.envelope(app, maxLevel, analyzerVersion, kLimit)
 	out.Application.SymbolTable = make(map[string]v2.Module, len(app.SymbolTable))
 	for _, relPath := range sortedFileKeys(app.SymbolTable) {
@@ -54,8 +54,8 @@ func Emit(app *schema.GoApplication, appName, projectDir string, maxLevel int, a
 // memory is the envelope plus the largest module, not the document. The L4
 // param edges follow the modules (they need every callable's id) and are
 // minted and written one at a time.
-func EmitTo(w io.Writer, app *schema.GoApplication, appName, projectDir string, maxLevel int, analyzerVersion string, kLimit int, l3 map[dataflow.L3Key]dataflow.Result, l4 *sdg.Result) error {
-	e := newEmitter(app, appName, projectDir, maxLevel, l3, l4)
+func EmitTo(w io.Writer, app *schema.GoApplication, identity v2.Identity, projectDir string, maxLevel int, analyzerVersion string, kLimit int, l3 map[dataflow.L3Key]dataflow.Result, l4 *sdg.Result) error {
+	e := newEmitter(app, identity, projectDir, maxLevel, l3, l4)
 	out := e.envelope(app, maxLevel, analyzerVersion, kLimit)
 	return encode(w, out, func(yield func(string, v2.Module) bool) {
 		for _, relPath := range sortedFileKeys(app.SymbolTable) {
@@ -221,19 +221,20 @@ func writeEntry(w io.Writer, key string, m v2.Module, first bool) error {
 // Schema decisions → callable.source_file); the cache lets emitCallable reach
 // any file's index without re-reading it per callable.
 type emitter struct {
-	appID string
-	idx   sigIndex
-	srcs  *sourceCache
-	flow  l3Overlay
-	sdg   *l4Overlay // nil below L4
+	identity v2.Identity
+	appID    string
+	idx      sigIndex
+	srcs     *sourceCache
+	flow     l3Overlay
+	sdg      *l4Overlay // nil below L4
 }
 
-func newEmitter(app *schema.GoApplication, appName, projectDir string, maxLevel int, l3 map[dataflow.L3Key]dataflow.Result, l4 *sdg.Result) *emitter {
-	appID := v2.AppID(appName)
+func newEmitter(app *schema.GoApplication, identity v2.Identity, projectDir string, maxLevel int, l3 map[dataflow.L3Key]dataflow.Result, l4 *sdg.Result) *emitter {
+	appID := identity.ApplicationID
 	idx := buildSigIndex(appID, app.SymbolTable)
 	idx.externals = externalIDs(appID, app.Externals)
 	return &emitter{
-		appID: appID, idx: idx, srcs: newSourceCache(projectDir),
+		identity: identity, appID: appID, idx: idx, srcs: newSourceCache(projectDir),
 		flow: newL3Overlay(maxLevel, l3), sdg: newL4Overlay(maxLevel, l4, idx),
 	}
 }
@@ -242,12 +243,12 @@ func newEmitter(app *schema.GoApplication, appName, projectDir string, maxLevel 
 // call graph and the external symbols.
 func (e *emitter) envelope(app *schema.GoApplication, maxLevel int, analyzerVersion string, kLimit int) *v2.Analysis {
 	out := &v2.Analysis{
-		SchemaVersion: v2.SchemaVersion,
-		Language:      v2.Language,
-		MaxLevel:      maxLevel,
-		Analyzer:      v2.AnalyzerTag{Name: "codeanalyzer-go", Version: analyzerVersion},
+		IdentityVersion: 2, SchemaVersion: v2.SchemaVersion,
+		Language: v2.Language,
+		MaxLevel: maxLevel,
+		Analyzer: v2.AnalyzerTag{Name: "codeanalyzer-go", Version: analyzerVersion},
 		Application: v2.Application{
-			ID:        e.appID,
+			IdentityVersion: 2, ApplicationName: e.identity.ApplicationName, IdentityNamespace: e.identity.Namespace, ID: e.appID,
 			Kind:      "application",
 			CallGraph: emitCallGraph(app.CallGraph, e.idx),
 		},

@@ -43,11 +43,16 @@ var (
 // buildL4 runs the -a 4 pipeline over testdata/<name> once and emits both the
 // L3 and the L4 payload from the same resolved symbol table. The app name is
 // name's last element (cango's default: the input directory's base name).
-func buildL4(t *testing.T, name string) *l4Fixture {
+func buildL4(t *testing.T, name string) *l4Fixture { return buildL4Identity(t, name, nil) }
+func buildL4Identity(t *testing.T, name string, identity *v2.Identity) *l4Fixture {
 	t.Helper()
 	l4Mu.Lock()
 	defer l4Mu.Unlock()
-	if fx, ok := l4Cache[name]; ok {
+	key := name
+	if identity != nil {
+		key += "|" + identity.ApplicationID
+	}
+	if fx, ok := l4Cache[key]; ok {
 		return fx
 	}
 	_, thisFile, _, _ := runtime.Caller(0)
@@ -66,7 +71,11 @@ func buildL4(t *testing.T, name string) *l4Fixture {
 	units := b.L3Units(st)
 	res := dataflow.RunWithSideTables(b.Fset(), units, 3, 4)
 	appName := filepath.Base(dir)
-	fx := &l4Fixture{st: st, l3: Emit(app, appName, dir, 3, "gate-test", 3, res, nil), res: res, dir: dir}
+	resolved := testIdentity(appName)
+	if identity != nil {
+		resolved = *identity
+	}
+	fx := &l4Fixture{st: st, l3: Emit(app, resolved, dir, 3, "gate-test", 3, res, nil), res: res, dir: dir}
 	l4 := sdg.Run(sdg.Input{
 		Fset: b.Fset(), Pkgs: b.Pkgs(), ProjectDir: dir, SymbolTable: st,
 		Externals: app.Externals, CallGraph: app.CallGraph,
@@ -74,8 +83,8 @@ func buildL4(t *testing.T, name string) *l4Fixture {
 	})
 	l4.ApplyTo(app)
 	fx.sdg = &l4
-	fx.l4 = Emit(app, appName, dir, 4, "gate-test", 3, res, &l4)
-	l4Cache[name] = fx
+	fx.l4 = Emit(app, resolved, dir, 4, "gate-test", 3, res, &l4)
+	l4Cache[key] = fx
 	return fx
 }
 
@@ -789,10 +798,10 @@ func buildL4Jobs(t *testing.T, dir, name string, jobs int) []byte {
 	l4.ApplyTo(app)
 	dataflow.ReleaseAll(res)
 	var buf bytes.Buffer
-	if err := EmitTo(&buf, app, name, dir, 4, "det", 3, res, &l4); err != nil {
+	if err := EmitTo(&buf, app, testIdentity(name), dir, 4, "det", 3, res, &l4); err != nil {
 		t.Fatal(err)
 	}
-	want, err := json.Marshal(Emit(app, name, dir, 4, "det", 3, res, &l4))
+	want, err := json.Marshal(Emit(app, testIdentity(name), dir, 4, "det", 3, res, &l4))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -846,7 +855,7 @@ func TestEmitL4_UnresolvedRefIsDroppedAndWarned(t *testing.T) {
 	warnf = func(format string, args ...any) { warned = append(warned, fmt.Sprintf(format, args...)) }
 	defer func() { warnf = prev }()
 	app := &schema.GoApplication{SymbolTable: fx.st, Externals: map[string]schema.GoExternalCallee{}}
-	out := Emit(app, "dataflow", fx.dir, 4, "t", 3, fx.res, &res)
+	out := Emit(app, testIdentity("dataflow"), fx.dir, 4, "t", 3, fx.res, &res)
 	for _, e := range out.Application.ParamIn {
 		if strings.Contains(e.Src, "nowhere") || strings.Contains(e.Dst, "nowhere") {
 			t.Errorf("dangling param_in emitted: %+v", e)
@@ -918,5 +927,51 @@ func TestSupersetL4_DetectsEveryViolation(t *testing.T) {
 		case c.want != "" && !strings.Contains(got, c.want):
 			t.Errorf("%s: want an error containing %q, got %q", name, c.want, got)
 		}
+	}
+}
+
+func TestNamespaceNestedReferences(t *testing.T) {
+	ns := "team space"
+	identity, err := v2.ResolveIdentity("billing", &ns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := buildL4Identity(t, "dataflow/httpsql", &identity).l4
+	b, err := json.Marshal(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw any
+	if err = json.Unmarshal(b, &raw); err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	var walk func(any)
+	check := func(s string) {
+		if strings.HasPrefix(s, "can://") {
+			count++
+			if s != identity.ApplicationID && !strings.HasPrefix(s, identity.ApplicationID+"/") {
+				t.Errorf("foreign root: %s", s)
+			}
+		}
+	}
+	walk = func(v any) {
+		switch x := v.(type) {
+		case string:
+			check(x)
+		case map[string]any:
+			for k, v := range x {
+				check(k)
+				walk(v)
+			}
+		case []any:
+			for _, v := range x {
+				walk(v)
+			}
+		}
+	}
+	walk(raw)
+	if count < 20 || len(a.Application.ExternalSymbols) == 0 || len(a.Application.ParamIn) == 0 {
+		t.Fatalf("missing nested coverage: ids=%d externals=%d params=%d", count, len(a.Application.ExternalSymbols), len(a.Application.ParamIn))
 	}
 }

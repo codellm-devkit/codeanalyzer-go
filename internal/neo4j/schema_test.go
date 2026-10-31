@@ -323,3 +323,10 @@ func TestContract_L4RelsCarryVar(t *testing.T) {
 		}
 	}
 }
+
+func TestSchemaDeclaresRelationshipFactIdentity(t *testing.T) {
+	doc := BuildSchemaDocument()
+	if doc.RelationshipFactProperty != "_fact" {
+		t.Fatalf("private fact identity property: %q", doc.RelationshipFactProperty)
+	}
+}

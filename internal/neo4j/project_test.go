@@ -39,7 +39,13 @@ func buildMultipackageL2(t *testing.T) *v2.Analysis {
 	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
 	edges := cg.Build(st)
 	app := &schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}
-	return v2emit.Emit(app, "multipackage", dir, 2, "neo4j-gate", 0, nil, nil)
+	return v2emit.Emit(app, func() v2.Identity {
+		i, e := v2.ResolveIdentity("multipackage", nil)
+		if e != nil {
+			panic(e)
+		}
+		return i
+	}(), dir, 2, "neo4j-gate", 0, nil, nil)
 }
 
 func TestProject_NoDanglingEndpoints(t *testing.T) {
@@ -240,10 +246,22 @@ func buildDataflowAt(t *testing.T, level int) *v2.Analysis {
 	edges := cg.Build(st)
 	app := &schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}
 	if level < 3 {
-		return v2emit.Emit(app, "dataflow", dir, level, "neo4j-gate", 3, nil, nil)
+		return v2emit.Emit(app, func() v2.Identity {
+			i, e := v2.ResolveIdentity("dataflow", nil)
+			if e != nil {
+				panic(e)
+			}
+			return i
+		}(), dir, level, "neo4j-gate", 3, nil, nil)
 	}
 	res := dataflow.Run(b.Fset(), b.L3Units(st), 3, 4)
-	return v2emit.Emit(app, "dataflow", dir, level, "neo4j-gate", 3, res, nil)
+	return v2emit.Emit(app, func() v2.Identity {
+		i, e := v2.ResolveIdentity("dataflow", nil)
+		if e != nil {
+			panic(e)
+		}
+		return i
+	}(), dir, level, "neo4j-gate", 3, res, nil)
 }
 
 // walkCallables visits every callable (methods and nested closures included).
@@ -559,7 +577,13 @@ func buildDataflowL4(t *testing.T) *v2.Analysis {
 			Externals: app.Externals, CallGraph: app.CallGraph, Units: units, L3: res, K: 3, Jobs: 4,
 		})
 		l4.ApplyTo(app)
-		l4Analysis = v2emit.Emit(app, "dataflow", dir, 4, "neo4j-gate", 3, res, &l4)
+		l4Analysis = v2emit.Emit(app, func() v2.Identity {
+			i, e := v2.ResolveIdentity("dataflow", nil)
+			if e != nil {
+				panic(e)
+			}
+			return i
+		}(), dir, 4, "neo4j-gate", 3, res, &l4)
 	})
 	if l4Analysis == nil {
 		t.Fatal("L4 fixture build failed")

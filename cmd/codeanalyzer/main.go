@@ -6,6 +6,7 @@ package main
 
 import (
 	"fmt"
+	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -22,7 +23,7 @@ import (
 // version is the analyzer version. It defaults to a dev value and is overridden
 // at release time via -ldflags "-X main.version=<tag>" (see packaging/python/build_wheels.sh),
 // keeping the binary, the PyPI wheel, and the git tag in lockstep.
-var version = "0.1.0"
+var version = "0.3.0"
 
 func main() {
 	if err := rootCmd().Execute(); err != nil {
@@ -38,6 +39,7 @@ func rootCmd() *cobra.Command {
 		format        string
 		emit          string
 		appName       string
+		namespace     string
 		level         int
 		fieldDepth    int
 		strict        bool
@@ -142,16 +144,28 @@ via CLDK(language="go").analysis(project_path=...).`,
 				jobs = runtime.NumCPU()
 			}
 			// application anchor: explicit flag > input dir base name.
-			if appName == "" {
-				appName = filepath.Base(filepath.Clean(inputPath))
+			if !cmd.Flags().Changed("app-name") {
+				root, err := filepath.Abs(inputPath)
+				if err != nil {
+					return err
+				}
+				appName = filepath.Base(filepath.Clean(root))
 			}
 
+			var ns *string
+			if cmd.Flags().Changed("namespace") {
+				ns = &namespace
+			}
+			identity, err := v2.ResolveIdentity(appName, ns)
+			if err != nil {
+				return err
+			}
 			opts := options.AnalysisOptions{
-				InputPath:       inputPath,
-				OutputDir:       outputDir,
-				Format:          format,
-				Emit:            options.EmitTarget(emit),
-				AppName:         appName,
+				InputPath: inputPath,
+				OutputDir: outputDir,
+				Format:    format,
+				Emit:      options.EmitTarget(emit),
+				AppName:   appName, Namespace: ns,
 				Level:           options.AnalysisLevel(level),
 				Strict:          strict,
 				LibraryModels:   libraryModels,
@@ -179,7 +193,7 @@ via CLDK(language="go").analysis(project_path=...).`,
 			// JSON path emits) and project it. --neo4j-uri set → live Bolt push;
 			// absent → a graph.cypher snapshot in the output dir.
 			if emitTarget == options.EmitNeo4j {
-				payload := v2emit.Emit(app, opts.AppName, opts.InputPath, int(opts.Level), opts.AnalyzerVersion, core.KLimit(opts), analyzer.L3(), analyzer.L4())
+				payload := v2emit.Emit(app, identity, opts.InputPath, int(opts.Level), opts.AnalyzerVersion, core.KLimit(opts), analyzer.L3(), analyzer.L4())
 				boltCfg := neo4j.BoltConfig{
 					URI:      opts.Neo4jURI,
 					User:     opts.Neo4jUser,
@@ -211,6 +225,7 @@ via CLDK(language="go").analysis(project_path=...).`,
 	f.StringVarP(&outputDir, "output", "o", "", "Output directory for analysis.json (default: stdout)")
 	f.StringVarP(&format, "format", "f", "json", "Output format: json|msgpack")
 	f.StringVar(&emit, "emit", "json", "Output projection: json|neo4j|schema")
+	f.StringVar(&namespace, "namespace", "", "Identity namespace (default: application name)")
 	f.StringVar(&appName, "app-name", "",
 		"Application anchor name for can:// ids and Neo4j :Application (default: input dir name)")
 	f.IntVarP(&level, "analysis-level", "a", 1,

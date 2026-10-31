@@ -8,6 +8,7 @@ package metamorphic
 
 import (
 	"fmt"
+	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
 	"io"
 	"path/filepath"
 	"sort"
@@ -78,7 +79,7 @@ func Analyze(dir string, level int, targets []string) (*Run, error) {
 	// so a large app's tree never exists in memory at once.
 	pr, pw := io.Pipe()
 	go func() {
-		pw.CloseWithError(v2emit.EmitTo(pw, app, AppName, dir, level, "metamorphic", k, res, l4))
+		pw.CloseWithError(v2emit.EmitTo(pw, app, func() v2.Identity { i, _ := v2.ResolveIdentity(AppName, nil); return i }(), dir, level, "metamorphic", k, res, l4))
 	}()
 	v, err := Collect(pr)
 	pr.CloseWithError(err)

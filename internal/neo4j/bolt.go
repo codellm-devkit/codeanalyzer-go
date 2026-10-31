@@ -3,6 +3,7 @@ package neo4j
 import (
 	"context"
 	"fmt"
+	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
 	"sort"
 
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
@@ -41,7 +42,7 @@ import (
 // is additive: a stale L4 row stays until an --eager push.
 //
 // A push NEVER deletes by default (#171): steps 4/6/8 run under --eager only.
-// Every destructive statement is scoped on the can://<app>/ id prefix (#173),
+// Every destructive statement is scoped on the can://<namespace>/<app>/ id prefix (#173),
 // anchored on :GoCanNode so it seeks an index.
 
 // BoltConfig carries the connection + behavior knobs (populated by the facade
@@ -62,6 +63,9 @@ type BoltConfig struct {
 // WriteBolt pushes rows into the live DB per BoltConfig. appID scopes every
 // destructive statement; it must be the application root id.
 func WriteBolt(ctx context.Context, rows GraphRows, appID string, cfg BoltConfig) error {
+	if err := validateIdentity(rows, appID); err != nil {
+		return err
+	}
 	driver, err := neo4j.NewDriverWithContext(cfg.URI, neo4j.BasicAuth(cfg.User, cfg.Password, ""))
 	if err != nil {
 		return fmt.Errorf("neo4j driver: %w", err)
@@ -87,9 +91,6 @@ type boltWriter struct {
 }
 
 func (w *boltWriter) run() error {
-	if err := w.ensureDDL(); err != nil {
-		return err
-	}
 
 	// Stored-application gate: a producer/consumer version mismatch, or a
 	// graph pushed at a lower level, forces a full re-upsert (it never
@@ -101,6 +102,9 @@ func (w *boltWriter) run() error {
 		return err
 	}
 
+	if err := w.ensureDDL(); err != nil {
+		return err
+	}
 	root, scoped := applicationPrefix(w.appID)
 	if w.shouldEagerPurge(scoped) {
 		if err := w.eagerPurge(root); err != nil {
@@ -206,12 +210,25 @@ func (w *boltWriter) storedAppStale() (bool, error) {
 	haveLevel, badLevel := false, false
 	err := w.read(func(tx neo4j.ManagedTransaction) error {
 		res, err := tx.Run(w.ctx,
-			"MATCH (a:GoApplication {id: $id}) RETURN a.schema_version AS v, a.max_level AS l",
+			"MATCH (a:GoApplication {id: $id}) RETURN a.schema_version AS v, a.max_level AS l, a.identity_version AS iv, a.application_name AS an, a.identity_namespace AS ns",
 			map[string]any{"id": w.appID})
 		if err != nil {
 			return err
 		}
 		if res.Next(w.ctx) {
+			iv, _ := res.Record().Get("iv")
+			if n, ok := iv.(int64); !ok || n != 2 {
+				return fmt.Errorf("incompatible stored identity_version: %v", iv)
+			}
+			nameValue, _ := res.Record().Get("an")
+			namespaceValue, _ := res.Record().Get("ns")
+			name, nameOK := nameValue.(string)
+			namespace, namespaceOK := namespaceValue.(string)
+			identity, identityErr := v2.ResolveIdentity(name, &namespace)
+			if !nameOK || !namespaceOK || identityErr != nil || identity.ApplicationID != w.appID {
+				return fmt.Errorf("incompatible stored application identity metadata")
+			}
+
 			if v, ok := res.Record().Get("v"); ok && v != nil {
 				stored, _ = v.(string)
 			}
@@ -385,9 +402,9 @@ func (w *boltWriter) upsertEdges(edges []EdgeRow) error {
 		keyed := e0.Key != ""
 		var mergeClause string
 		if keyed {
-			mergeClause = fmt.Sprintf("MERGE (a)-[r:%s {_k: row.k}]->(b)", e0.Type)
+			mergeClause = fmt.Sprintf("MERGE (a)-[r:%s {_k: row.k, %s: row.f}]->(b)", e0.Type, RelationshipFactProperty)
 		} else {
-			mergeClause = fmt.Sprintf("MERGE (a)-[r:%s]->(b)", e0.Type)
+			mergeClause = fmt.Sprintf("MERGE (a)-[r:%s {%s: row.f}]->(b)", e0.Type, RelationshipFactProperty)
 		}
 		q := fmt.Sprintf("UNWIND $rows AS row MATCH (a:%s {%s: row.a}) MATCH (b:%s {%s: row.b}) %s SET r += row.p",
 			e0.From.Label, e0.From.KeyProp, e0.To.Label, e0.To.KeyProp, mergeClause)
@@ -459,7 +476,7 @@ func nodeParams(g []NodeRow) []map[string]any {
 func edgeParams(g []EdgeRow, keyed bool) []map[string]any {
 	out := make([]map[string]any, len(g))
 	for i, e := range g {
-		m := map[string]any{"a": e.From.Value, "b": e.To.Value, "p": propsToAny(e.Props)}
+		m := map[string]any{"a": e.From.Value, "b": e.To.Value, "p": propsToAny(e.Props), "f": edgeFactID(e)}
 		if keyed {
 			m["k"] = e.Key
 		}
