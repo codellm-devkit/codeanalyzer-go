@@ -3,6 +3,7 @@ package neo4j
 import (
 	"context"
 	"fmt"
+	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
 	"sort"
 
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
@@ -209,7 +210,7 @@ func (w *boltWriter) storedAppStale() (bool, error) {
 	haveLevel, badLevel := false, false
 	err := w.read(func(tx neo4j.ManagedTransaction) error {
 		res, err := tx.Run(w.ctx,
-			"MATCH (a:GoApplication {id: $id}) RETURN a.schema_version AS v, a.max_level AS l, a.identity_version AS iv",
+			"MATCH (a:GoApplication {id: $id}) RETURN a.schema_version AS v, a.max_level AS l, a.identity_version AS iv, a.application_name AS an, a.identity_namespace AS ns",
 			map[string]any{"id": w.appID})
 		if err != nil {
 			return err
@@ -219,6 +220,15 @@ func (w *boltWriter) storedAppStale() (bool, error) {
 			if n, ok := iv.(int64); !ok || n != 2 {
 				return fmt.Errorf("incompatible stored identity_version: %v", iv)
 			}
+			nameValue, _ := res.Record().Get("an")
+			namespaceValue, _ := res.Record().Get("ns")
+			name, nameOK := nameValue.(string)
+			namespace, namespaceOK := namespaceValue.(string)
+			identity, identityErr := v2.ResolveIdentity(name, &namespace)
+			if !nameOK || !namespaceOK || identityErr != nil || identity.ApplicationID != w.appID {
+				return fmt.Errorf("incompatible stored application identity metadata")
+			}
+
 			if v, ok := res.Record().Get("v"); ok && v != nil {
 				stored, _ = v.(string)
 			}

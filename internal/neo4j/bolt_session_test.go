@@ -2,6 +2,7 @@ package neo4j
 
 import (
 	"context"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -85,10 +86,15 @@ type fakeDB struct {
 	level  int64
 	// rawLevel, when non-nil, is the stored max_level returned verbatim
 	// (any type), overriding level.
-	missingIdentity bool
-	rawIdentity     any
-	rawLevel        any
-	writes          []fakeStmt
+	missingIdentity  bool
+	missingAnchor    bool
+	missingName      bool
+	missingNamespace bool
+	rawIdentity      any
+	rawName          any
+	rawNamespace     any
+	rawLevel         any
+	writes           []fakeStmt
 }
 
 type fakeStmt struct {
@@ -117,6 +123,9 @@ func (s *fakeDB) ExecuteRead(ctx context.Context, work neo4j.ManagedTransactionW
 func (tx fakeTx) Run(_ context.Context, q string, params map[string]any) (neo4j.ResultWithContext, error) {
 	switch {
 	case strings.Contains(q, "a.schema_version"):
+		if tx.db.missingAnchor {
+			return &fakeResult{}, nil
+		}
 		var lvl any
 		if tx.db.level != 0 {
 			lvl = tx.db.level
@@ -131,7 +140,24 @@ func (tx fakeTx) Run(_ context.Context, q string, params map[string]any) (neo4j.
 		if tx.db.rawIdentity != nil {
 			identity = tx.db.rawIdentity
 		}
-		return &fakeResult{rec: &neo4j.Record{Keys: []string{"v", "l", "iv"}, Values: []any{SchemaVersion, lvl, identity}}}, nil
+		parts := strings.Split(strings.TrimPrefix(params["id"].(string), "can://"), "/")
+		ns, _ := url.PathUnescape(parts[0])
+		name, _ := url.PathUnescape(parts[1])
+		var rawName any = name
+		var rawNamespace any = ns
+		if tx.db.missingName {
+			rawName = nil
+		}
+		if tx.db.missingNamespace {
+			rawNamespace = nil
+		}
+		if tx.db.rawName != nil {
+			rawName = tx.db.rawName
+		}
+		if tx.db.rawNamespace != nil {
+			rawNamespace = tx.db.rawNamespace
+		}
+		return &fakeResult{rec: &neo4j.Record{Keys: []string{"v", "l", "iv", "an", "ns"}, Values: []any{SchemaVersion, lvl, identity, rawName, rawNamespace}}}, nil
 	case strings.Contains(q, "m.content_hash"):
 		h, ok := tx.db.hashes[params["id"].(string)]
 		if !ok {
@@ -481,6 +507,30 @@ func TestWritersPreserveDistinctEdgeFacts(t *testing.T) {
 					t.Fatal("input order changes writer identities")
 				}
 			})
+		}
+	}
+}
+
+func TestStoredOwnerMismatchReadOnly(t *testing.T) {
+	for _, db := range []*fakeDB{{missingName: true}, {missingNamespace: true}, {rawName: "other"}, {rawNamespace: "other"}, {rawName: 42}, {rawNamespace: 42}} {
+		w := &boltWriter{ctx: context.Background(), session: db, appID: "can://team/app"}
+		if err := w.run(); err == nil {
+			t.Fatal("accepted contradictory stored owner")
+		}
+		if len(db.writes) != 0 {
+			t.Fatal("wrote before rejecting stored owner")
+		}
+	}
+}
+
+func TestStoredOwnerAllowsFreshAndMatchingAnchor(t *testing.T) {
+	for _, db := range []*fakeDB{{missingAnchor: true}, {}} {
+		w := &boltWriter{ctx: context.Background(), session: db, appID: "can://team/app"}
+		if _, err := w.storedAppStale(); err != nil {
+			t.Fatal(err)
+		}
+		if len(db.writes) != 0 {
+			t.Fatal("identity probe mutated graph")
 		}
 	}
 }
