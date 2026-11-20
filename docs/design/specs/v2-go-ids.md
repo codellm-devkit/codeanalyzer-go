@@ -86,8 +86,10 @@ name the JSON carries. The id no longer needs to carry it.
 - **Uniqueness**: ids are unique within a file. Go forbids duplicate package-scope identifiers,
   and forbids a duplicate method name on one type. Two files in one package have distinct
   module ids, so the stripped package path never causes a collision.
-- **Cross-file methods**: a method declared in another file nests under its receiver type's
-  module, as today (`source_file` handles its text). Its id is `<receiver-module>/<Type>/<Method>`.
+- **Cross-file methods** (amended 2026-11-20, see Amendment below): a method declared in another
+  file gets an id under the file that declares it, `<declaring-module>/<Type>/<Method>`. The
+  method node stays in its receiver type's `callables{}`, and `source_file` names the declaring
+  file for text recovery.
 - **python-sdk**: `cldk/analysis/go/neo4j/neo4j_backend.py` keys types by `ty.id.split("/")[-1]`,
   which still returns the type name, and fields by `fld.id.split("/")[-1]`, which is unchanged.
   Callables keyed by a dotted sig will change meaning: the last segment is now the bare method
@@ -122,6 +124,32 @@ ships first; the python-sdk Go backend follows once the id shape is released.
   type `Set[T]` ids as `set/set.go/Set` and its method as `set/set.go/Set/Add`.
 - **Open item 1 (collisions) resolved**: the generics fixture and the chi/init fixtures
   produce distinct ids. `init` functions are distinct per file by module.
+
+## Amendment (2026-11-20): cross-file method ids
+
+Decided with the user in the design loop, after the id change landed.
+
+**Problem.** A method is nested under its receiver type's module, so its id names the file
+where the receiver lives, not the file where the method is declared. Example: `frontendServer.logoutHandler`
+is declared in `handlers.go` but its id was `…/main.go/frontendServer/logoutHandler`. 22 methods in the
+frontend app are affected (those with `source_file` set).
+
+**Decisions.**
+
+1. **Id.** A callable's id contains the file where it is declared:
+   `<declaring-module>/<Type>/<Method>`, e.g. `…/handlers.go/frontendServer/logoutHandler`. The type
+   segment stays. Rejected: `<declaring-module>/<Method>`, because a method and a package-level
+   function of the same name in one file would collide.
+2. **JSON containment.** The node stays in its receiver type's `callables{}` (containment by
+   receiver is unchanged). Only its id changes. Moving it under the declaring module was rejected
+   because it changes containment for every consumer and hides which type the method belongs to.
+3. **Text recovery.** `source_file` is kept. The id's module now equals `source_file`, but the
+   node still nests under the receiver's module, so its span still needs `source_file` to resolve.
+4. **Neo4j.** `GO_HAS_METHOD` from the receiver `:GoType` is kept. A `GO_DECLARES` edge is added from
+   the declaring `:GoModule` to the method, so "which file declares this method" is one query. No
+   new relationship kind.
+
+**Release.** Same PR and release as the id format (feat/v2-go-ids). Tracked in #46.
 
 ## Out of scope
 
