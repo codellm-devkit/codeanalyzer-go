@@ -110,6 +110,19 @@ One issue in `codeanalyzer-go`, rungs as checklist items (user decision). Base b
 `feat/artifacts`, since the artifact code is the base for this work (user decision). Analyzer
 ships first; the python-sdk Go backend follows once the id shape is released.
 
+## Implementation notes (2026-11-20)
+
+- **Type signature field (amended)**: the spec said this change adds no field. The Neo4j
+  `:GoType.signature` needs the full name, which the type id no longer carries, so `Type`
+  gained a `signature` JSON field (the full `signatureOf()`), mirroring `Callable`. The
+  projector copies it. Decided with the user.
+- **Member name rule**: implemented as "the part after the last dot of the signature". This
+  is the same as stripping the import path, since Go identifiers contain no dots.
+- **Open item 2 (generics) resolved**: `signatureOf()` has no type parameters, so a generic
+  type `Set[T]` ids as `set/set.go/Set` and its method as `set/set.go/Set/Add`.
+- **Open item 1 (collisions) resolved**: the generics fixture and the chi/init fixtures
+  produce distinct ids. `init` functions are distinct per file by module.
+
 ## Out of scope
 
 - Module, field, artifact, and ordinal-id shapes.

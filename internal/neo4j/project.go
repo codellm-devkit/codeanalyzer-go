@@ -162,7 +162,7 @@ func (p *projector) projectType(modRef NodeRef, module string, t v2.Type) {
 		"id", t.ID,
 		Props{
 			"kind":      t.Kind, // struct|interface|alias|defined (decision T1)
-			"signature": lastSegment(t.ID),
+			"signature": t.Signature,
 			"span_json": spanJSON(t.Span),
 		},
 		module,

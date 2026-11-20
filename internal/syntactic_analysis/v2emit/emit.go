@@ -310,6 +310,7 @@ func emitType(modID, modRel string, t schema.GoType, idx sigIndex, srcs *sourceC
 	out := v2.Type{
 		ID:        typeID,
 		Kind:      typeKind(t),
+		Signature: t.Signature,
 		Span:      lineSpan(li, t.StartLine, t.EndLine),
 		BaseTypes: nonEmpty(t.BaseTypes),
 		Callables: make(map[string]v2.Callable, len(t.Methods)),

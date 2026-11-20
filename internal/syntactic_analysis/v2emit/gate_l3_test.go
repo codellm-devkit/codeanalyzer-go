@@ -508,7 +508,7 @@ func TestSymbolTable_MethodDeclaredAboveItsType(t *testing.T) {
 		for _, mod := range out.Application.SymbolTable {
 			for _, ty := range mod.Types {
 				for _, m := range ty.Callables {
-					if strings.HasSuffix(m.ID, "/"+sig) {
+					if strings.HasSuffix(m.ID, "/early/Bump") {
 						return m, true
 					}
 				}
@@ -531,7 +531,7 @@ func TestSymbolTable_MethodDeclaredAboveItsType(t *testing.T) {
 	if call == nil {
 		t.Fatalf("%s has no call site", sig)
 	}
-	if call.Callee == nil || !strings.HasSuffix(*call.Callee, "/"+fID) {
+	if call.Callee == nil || !strings.HasSuffix(*call.Callee, "/f") {
 		t.Fatalf("call to f not resolved at -a 2: callee = %v", call.Callee)
 	}
 	sawEdge := false

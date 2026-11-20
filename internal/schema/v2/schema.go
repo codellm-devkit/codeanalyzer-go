@@ -185,6 +185,9 @@ type Type struct {
 	ID   string `json:"id"`
 	Kind string `json:"kind"` // struct | interface | alias | defined
 	Span Span   `json:"span"`
+	// Signature is the type's full import-qualified name (one signatureOf()). The
+	// id carries only the bare type name, so this is where the package path lives.
+	Signature string `json:"signature"`
 	// BaseTypes are embedded type ids (struct/interface embedding — the explicit
 	// spine).
 	BaseTypes []string `json:"base_types,omitempty"`
@@ -214,7 +217,8 @@ type Callable struct {
 	ID   string `json:"id"`
 	Kind string `json:"kind"` // function | method | lambda
 	Span Span   `json:"span"`
-	// Signature is the human-readable last path segment of ID (one signatureOf()).
+	// Signature is the full import-qualified name (one signatureOf()). The id
+	// carries only the bare member name, so this field is where the package path lives.
 	Signature string `json:"signature"`
 	// SourceFile names the callable's declaring file (a symbol_table key) when it
 	// differs from the module this callable is nested under — the Go case where a

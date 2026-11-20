@@ -15,10 +15,21 @@ committed spec is the full transcript: `docs/design/specs/v2-l1-emission.md`.
 - **`application.id`** = `can://<app>` (app outermost, so a polyglot app shares one prefix),
   where `<app>` is the **`--app-name`** value, defaulting to the input directory's base name
   (per the CLI contract; the SDK's Neo4j backend must use the same anchor). Module ids are
-  `can://<app>/go/<file>`; externals are language-neutral `can://<app>/@external/<import-path>/<sig>`.
+  `can://<app>/go/<file>`; externals are language-neutral `can://<app>/@external/<import-path>/<Type>/<Member>` (see § Id member segments).
   L3/L4 build ids on this unchanged.
-- **Callable signature** = existing `signatureOf()` output as the last `can://` path
-  segment; receiver folded in for methods. One canonicalizer, unchanged from v1.
+- **Id member segments (spec `docs/design/specs/v2-go-ids.md`, issue #46)**: a type is
+  `<module>/<Type>`; a method is `<module>/<Type>/<Method>`; a package-level function is
+  `<module>/<Name>`; a closure is `<enclosing>/closure_N`. The package import path is dropped:
+  the member segment is the signature's part after its last dot (Go names contain no dots).
+  Follows `codeanalyzer-typescript` `idFromSig` and `codeanalyzer-python` `child_id`
+  [user, 2026-11-20]. Externals: `<app>/@external/<import-path>/<Type>/<Member>` (import path
+  whole) [user, 2026-11-20].
+- **Callable and type `signature`** = the full `signatureOf()` output (import-qualified), a
+  JSON field on both (types gained it, additive, for the Neo4j `:GoType.signature`) [user,
+  2026-11-20]. The id carries only the bare member name, so this field is where the package
+  path lives. One canonicalizer, unchanged from v1.
+- **Generic types**: `signatureOf()` carries no type parameters, so a generic type or method
+  ids as `<module>/<Set>/<Add>`, with no `[T]` in the id.
 - **`span.bytes`** = **UTF-8 byte offsets** into `module.source` (Go strings are
   natively UTF-8; avoids the UTF-16/rune slicing mismatch TS hit in cants#179).
 
@@ -64,8 +75,9 @@ committed spec is the full transcript: `docs/design/specs/v2-l1-emission.md`.
   `(*strings.Builder).WriteString`) is no longer dropped: the call node's `callee` and the
   `call_graph` edge `dst` are the callee's `@external` id. Builtins, type conversions
   (no longer minted as `<Type>.__new__`) and calls through function values stay `null`.
-- **Id** = `can://<app>/@external/<import-path>/<sig>` where `<sig>` is the callee signature
-  minus the `<import-path>.` prefix (`Println`, `Builder.WriteString`); it may also name a
+- **Id** = `can://<app>/@external/<import-path>/<Type>/<Member>` where `<sig>` is the callee signature
+  minus the `<import-path>.` prefix; its dots become segments (`Println` → `…/fmt/Println`,
+  `Builder.WriteString` → `…/strings/Builder/WriteString`); it may also name a
   library *interface* method (`@external/io/Writer.Write`). Methods on generic library types
   record the declared (origin) signature, not the instance. `@external` is
   language-neutral (not `go/`), so a polyglot app shares one external namespace.
