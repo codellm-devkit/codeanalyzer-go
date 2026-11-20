@@ -214,6 +214,44 @@ type GoApplication struct {
 	// Externals holds the library (out-of-project) functions the resolver saw
 	// called, keyed by the full callee signature ("<importpath>.[Type.]Name").
 	Externals map[string]GoExternalCallee `json:"externals,omitempty"`
+	// Repository holds the repository-artifact facts (non-.go project files and
+	// go.mod/go.sum dependencies), set by the analyzer after symbol-table
+	// construction. Never cached or serialized in the v1 model: it is recomputed
+	// on every run, since it reads files outside the analyzed Go source.
+	Repository *RepositoryFacts `json:"-"`
+}
+
+// RepositoryFacts is the repository-artifact layer (spec v2-artifacts): every
+// non-.go project file as an artifact, and the go.mod requires as dependencies.
+type RepositoryFacts struct {
+	// Artifacts is keyed by repo-relative POSIX path.
+	Artifacts map[string]GoArtifact
+	// Dependencies is sorted by module path.
+	Dependencies []GoDependency
+}
+
+// GoArtifact is one non-.go project file.
+type GoArtifact struct {
+	Path       string
+	Format     string
+	Roles      []string
+	SizeBytes  int64
+	SHA256     string
+	Source     string // whole file text, only when --artifact-text is on
+	Extraction string // none | full
+}
+
+// GoDependency is one go.mod require, evidence-tagged by go.sum.
+type GoDependency struct {
+	Name            string
+	Ecosystem       string
+	Spec            string
+	Kind            string
+	Direct          bool
+	LockedVersion   string   // go.sum version of Spec, when both its h1 and /go.mod lines exist
+	DeclaredIn      string   // path of the go.mod artifact
+	ProvidesImports []string // project import paths that resolve to this module
+	Prov            []string // declared | lockfile
 }
 
 // GoExternalCallee describes a library function or method called from the

@@ -115,6 +115,30 @@ These are defaults I chose while writing the spec. Confirm them during review:
 4. **`locked_version` when `go.sum` has several lines for one module** (the `h1:` and
    `/go.mod` hashes). Take the version common to both lines; error if they disagree.
 
+## Resolution (implementation, branch `feat/artifacts`)
+
+The open items were resolved with the defaults below. Two are deviations from the wording
+above, marked **(deviation)**:
+
+1. **`format`**: `gomod` for `go.mod`, `gosum` for `go.sum`, adopted.
+2. **Excluded directories**: `.git/` and `vendor/` are skipped at any depth. The tool's own
+   outputs are also skipped when they sit in the project: `analysis.json` and `graph.cypher`
+   in the `-o` directory, and the `-c` cache subtree. Without this, a run that writes into the
+   project would capture the previous run's output.
+3. **Unrecorded imports**: an import matching no `go.mod` requirement is not recorded.
+4. **Locked version (deviation)**: a requirement is locked only when go.sum has **both** the
+   `h1:` and the `/go.mod` line for the exact required version. A version with only one line
+   is left unlocked (`locked_version` absent, `prov` without `lockfile`), with no error. A
+   disagreement cannot arise, since the lookup is keyed by the required version.
+5. **Artifact id root (deviation)**: the code's grammar is `can://<namespace>/<app>/…`, the
+   same root every other node uses, so an artifact id is
+   `can://<namespace>/<app>/artifact/<path>`. The `can://<app>/artifact/<path>` form in the
+   decisions above is shorthand for that root.
+
+Also decided at implementation: `source` is omitted from JSON when empty (`omitempty`), not
+written as `""`; only the root `go.mod` contributes dependencies (nested modules are artifacts
+only); `dependencies` is absent when there is no root `go.mod`.
+
 ## Consumers
 
 - **codeanalyzer-go**: emits the fields; the projector writes the rows above. Tests: a fixture
