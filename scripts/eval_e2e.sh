@@ -2,13 +2,16 @@
 # eval_e2e.sh - end-to-end check: Go app -> analysis.json -> Neo4j projection -> loaded graph.
 #
 # Usage (from the repository root):
-#   scripts/eval_e2e.sh APP_DIR [OUT_DIR]
+#   scripts/eval_e2e.sh [--json-only] APP_DIR [OUT_DIR]
 #
-#   APP_DIR   a Go module root (must contain go.mod).
-#   OUT_DIR   where analysis.json and the run log go (default: APP_DIR).
+#   APP_DIR     a Go module root (must contain go.mod).
+#   OUT_DIR     where analysis.json and the run log go (default: APP_DIR).
+#   --json-only write and check analysis.json only: no Neo4j push, no graph check,
+#               no password or running database needed.
 #
 # Example:
 #   NEO4J_PASSWORD='...' scripts/eval_e2e.sh /path/to/microservices-demo/src/frontend
+#   scripts/eval_e2e.sh --json-only /path/to/microservices-demo/src/frontend
 #
 # Environment:
 #   LEVEL           analysis level for analysis.json (default 2; 1..4)
@@ -33,6 +36,9 @@
 #
 # Exit status: 0 when every check passes (or is skipped with a reason), non-zero otherwise.
 set -euo pipefail
+
+JSON_ONLY=0
+if [ "${1:-}" = "--json-only" ]; then JSON_ONLY=1; shift; fi
 
 if [ $# -lt 1 ]; then
   sed -n '2,/^set -euo/p' "$0" | sed '$d' >&2
@@ -84,6 +90,9 @@ step "2/5 analysis.json (-a $LEVEL)"
 [ -s "$OUT/analysis.json" ] && pass "wrote $OUT/analysis.json ($(wc -c <"$OUT/analysis.json" | tr -d ' ') bytes)" \
   || { bad "analysis.json missing or empty (see $LOG)"; exit 1; }
 
+if [ "$JSON_ONLY" = "1" ]; then
+  step "3/5 Neo4j projection"; skip "--json-only: no push"
+else
 step "3/5 Neo4j projection (live push to $URI as $USER)"
 # EAGER=1 reloads: --eager purges this application's subgraph (its can://<ns>/<app>/
 # prefix only) before the push, so nodes from an earlier id format do not linger.
@@ -100,6 +109,7 @@ fi
 pushed=$(printf '%s\n' "$push_out" | sed -n 's/^pushed \([0-9]*\) nodes, \([0-9]*\) relationships.*/\1 \2/p' | tail -1)
 [ -n "$pushed" ] && pass "pushed $(printf '%s' "$pushed" | cut -d' ' -f1) nodes, $(printf '%s' "$pushed" | cut -d' ' -f2) relationships" \
   || bad "push output had no 'pushed N nodes' line"
+fi
 
 step "4/5 verify analysis.json"
 if command -v python3 >/dev/null 2>&1; then
@@ -125,6 +135,9 @@ else
   skip "python3 not found; analysis.json not inspected"
 fi
 
+if [ "$JSON_ONLY" = "1" ]; then
+  step "5/5 verify loaded graph"; skip "--json-only: graph not checked"
+else
 step "5/5 verify loaded graph"
 CS=${CYPHER_SHELL:-}
 if [ -z "$CS" ]; then
@@ -159,9 +172,15 @@ else
   fi
 fi
 
+fi
+
 echo
 if [ "$fail" -eq 0 ]; then
-  echo "E2E OK: $APP_NAME -> $OUT/analysis.json -> Neo4j at $URI"
+  if [ "$JSON_ONLY" = "1" ]; then
+    echo "E2E OK (json-only): $APP_NAME -> $OUT/analysis.json"
+  else
+    echo "E2E OK: $APP_NAME -> $OUT/analysis.json -> Neo4j at $URI"
+  fi
 else
   echo "E2E FAILED for $APP_NAME (log: $LOG)" >&2
 fi
