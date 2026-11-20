@@ -502,7 +502,6 @@ func TestGateL3_LineDirectiveRealPositions(t *testing.T) {
 func TestSymbolTable_MethodDeclaredAboveItsType(t *testing.T) {
 	fx := buildL3(t, "dataflow")
 	const sig = "example.com/dataflow/flow.early.Bump"
-	const fID = "example.com/dataflow/flow.f"
 
 	find := func(out *v2.Analysis) (v2.Callable, bool) {
 		for _, mod := range out.Application.SymbolTable {
