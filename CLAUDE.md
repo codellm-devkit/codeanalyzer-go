@@ -12,6 +12,9 @@ v2 vocabulary (parity clause: add at the leaves, never rename shared names). The
 committed spec is the full transcript: `docs/design/specs/v2-l1-emission.md`.
 
 ### Identity & positioning (Group A — reused verbatim by L3/L4)
+- **`application.name`** [user, 2026-11-20; spec `docs/design/specs/v2-application-name-field.md`]: an additive
+  field with the same value as `application_name`. `application_name` is kept unchanged (renaming a shared
+  field is forbidden), and `:GoApplication.name` carries the same value in Neo4j.
 - **`application.id`** = `can://<app>` (app outermost, so a polyglot app shares one prefix),
   where `<app>` is the **`--app-name`** value, defaulting to the input directory's base name
   (per the CLI contract; the SDK's Neo4j backend must use the same anchor). Module ids are
