@@ -129,6 +129,20 @@ func (w *boltWriter) run() error {
 		}
 	}
 
+	// Purge every changed module before upserting any of them. A module's purge is
+	// by id prefix, and a node a module OWNS may carry another module's prefix (a
+	// method declared in rpc.go but owned by main.go's receiver). Purging rpc.go
+	// after main.go had upserted that method would delete it, so all purges run first.
+	if w.cfg.Eager && scoped {
+		for _, m := range sortedModuleKeys(byModule) {
+			if !changed[m] {
+				continue
+			}
+			if err := w.purgeModule(m); err != nil {
+				return err
+			}
+		}
+	}
 	// Upsert shared nodes (MERGE-only, every run) then changed-module nodes.
 	if err := w.upsertNodes(shared); err != nil {
 		return err
@@ -136,11 +150,6 @@ func (w *boltWriter) run() error {
 	for _, m := range sortedModuleKeys(byModule) {
 		if !changed[m] {
 			continue
-		}
-		if w.cfg.Eager && scoped {
-			if err := w.purgeModule(m); err != nil {
-				return err
-			}
 		}
 		if err := w.upsertNodes(byModule[m]); err != nil {
 			return err
