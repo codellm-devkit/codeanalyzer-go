@@ -2,6 +2,7 @@ package neo4j
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 
 	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
@@ -33,6 +34,7 @@ func Project(a *v2.Analysis) GraphRows {
 		declared: collectDeclaredIDs(a),
 	}
 	p.projectApplication()
+	p.projectRepository()
 	for _, mod := range a.Application.SymbolTable {
 		p.projectModule(mod)
 	}
@@ -82,6 +84,48 @@ func degradedJSON(d []v2.Degraded) Value {
 
 func (p *projector) appRef() NodeRef {
 	return NodeRef{Label: LabelApplication, KeyProp: "id", Value: p.analysis.Application.ID}
+}
+
+// ─── repository layer (spec v2-artifacts) ────────────────────────────────────
+
+// projectRepository writes the artifact and dependency rows. An artifact is an
+// app-scoped node (its id is a can:// id) hung off the application; a dependency
+// is a neutral :Package keyed by its version-less purl, declared by the go.mod
+// artifact and, when go.sum locks it, locked by the go.sum artifact.
+func (p *projector) projectRepository() {
+	arts := p.analysis.Application.Artifacts
+	paths := make([]string, 0, len(arts))
+	for path := range arts {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		art := arts[path]
+		ref := p.b.Node(
+			[]string{LabelArtifact, MarkerLabel},
+			"id", art.ID,
+			Props{"path": art.Path, "format": art.Format},
+			"", // an artifact belongs to no single module
+		)
+		p.b.Edge(RelHasArtifact, p.appRef(), ref, nil, "")
+	}
+
+	goSum, hasGoSum := arts["go.sum"]
+	for _, dep := range p.analysis.Application.Dependencies {
+		pkgRef := p.b.Node(
+			[]string{LabelPackage},
+			"id", "pkg:"+dep.Ecosystem+"/"+dep.Name,
+			Props{"ecosystem": dep.Ecosystem, "name": dep.Name},
+			"",
+		)
+		declaredBy := NodeRef{Label: LabelArtifact, KeyProp: "id", Value: dep.DeclaredIn}
+		p.b.Edge(RelDeclaresDependency, declaredBy, pkgRef,
+			Props{"spec": dep.Spec, "direct": dep.Direct, "prov": dep.Prov}, dep.Kind)
+		if dep.LockedVersion != "" && hasGoSum {
+			p.b.Edge(RelLocks, NodeRef{Label: LabelArtifact, KeyProp: "id", Value: goSum.ID}, pkgRef,
+				Props{"locked_version": dep.LockedVersion}, "")
+		}
+	}
 }
 
 // ─── module ──────────────────────────────────────────────────────────────────
