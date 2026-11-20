@@ -81,8 +81,11 @@ type AnalyzerTag struct {
 
 // Application is the root node of the containment tree.
 type Application struct {
-	IdentityVersion   int    `json:"identity_version"`
-	ApplicationName   string `json:"application_name"`
+	IdentityVersion int    `json:"identity_version"`
+	ApplicationName string `json:"application_name"`
+	// Name is the application's name: the same value as ApplicationName (additive,
+	// spec v2-application-name-field). ApplicationName is kept unchanged.
+	Name              string `json:"name"`
 	IdentityNamespace string `json:"identity_namespace"`
 	// ID is `can://<namespace>/<app>` — the app segment is outermost, so a polyglot
 	// app shares one prefix across languages. <app> is the --app-name value (default: input dir base name).

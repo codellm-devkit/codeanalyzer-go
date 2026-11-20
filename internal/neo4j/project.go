@@ -58,7 +58,7 @@ func (p *projector) projectApplication() {
 		[]string{LabelApplication, MarkerLabel},
 		"id", a.Application.ID,
 		Props{
-			"identity_version": a.IdentityVersion, "application_name": a.Application.ApplicationName, "identity_namespace": a.Application.IdentityNamespace, "schema_version": a.SchemaVersion,
+			"identity_version": a.IdentityVersion, "application_name": a.Application.ApplicationName, "name": a.Application.Name, "identity_namespace": a.Application.IdentityNamespace, "schema_version": a.SchemaVersion,
 			"language":         a.Language,
 			"max_level":        a.MaxLevel,
 			"analyzer_name":    a.Analyzer.Name,

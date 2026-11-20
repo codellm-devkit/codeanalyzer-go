@@ -248,7 +248,8 @@ func (e *emitter) envelope(app *schema.GoApplication, maxLevel int, analyzerVers
 		MaxLevel: maxLevel,
 		Analyzer: v2.AnalyzerTag{Name: "codeanalyzer-go", Version: analyzerVersion},
 		Application: v2.Application{
-			IdentityVersion: 2, ApplicationName: e.identity.ApplicationName, IdentityNamespace: e.identity.Namespace, ID: e.appID,
+			IdentityVersion: 2, ApplicationName: e.identity.ApplicationName, Name: e.identity.ApplicationName,
+			IdentityNamespace: e.identity.Namespace, ID: e.appID,
 			Kind:      "application",
 			CallGraph: emitCallGraph(app.CallGraph, e.idx),
 		},
