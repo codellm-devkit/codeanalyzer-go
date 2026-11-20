@@ -227,12 +227,15 @@ var Nodes = []NodeSpec{
 		Props: []string{"name", "path", "signature", "module"},
 	},
 
-	// Neutral layer. Keyed by own id (not a can:// id), so NO marker label and
-	// outside prefix scoping — a sibling analyzer converges on the same node.
+	// Repository layer. An artifact id is can://<namespace>/<app>/artifact/<path>
+	// (spec v2-artifacts, Python parity), so it is app-scoped: it carries the
+	// :GoCanNode marker and falls under the prefix scope on wipe.
 	{
-		Label: LabelArtifact, MergeLabel: LabelArtifact, Key: "id", CanNode: false,
+		Label: LabelArtifact, MergeLabel: LabelArtifact, Key: "id", CanNode: true,
 		Props: []string{"path", "format"},
 	},
+	// Neutral layer. Keyed by its pkg: purl (not a can:// id), so NO marker label
+	// and outside prefix scoping — a sibling analyzer converges on the same node.
 	{
 		Label: LabelPackage, MergeLabel: LabelPackage, Key: "id", CanNode: false,
 		Props: []string{"ecosystem", "name"},
@@ -265,8 +268,8 @@ var Rels = []RelSpec{
 
 	// Repository layer.
 	{Type: RelHasArtifact, From: []string{LabelApplication}, To: []string{LabelArtifact}},
-	{Type: RelDeclaresDependency, From: []string{LabelArtifact}, To: []string{LabelPackage}, Discriminant: "kind"},
-	{Type: RelLocks, From: []string{LabelArtifact}, To: []string{LabelPackage}},
+	{Type: RelDeclaresDependency, From: []string{LabelArtifact}, To: []string{LabelPackage}, Props: []string{"spec", "direct", "prov"}, Discriminant: "kind"},
+	{Type: RelLocks, From: []string{LabelArtifact}, To: []string{LabelPackage}, Props: []string{"locked_version"}},
 	{Type: RelDefinesConfig, From: []string{LabelArtifact}, To: []string{LabelConfigKey}},
 	{Type: RelProvides, From: []string{LabelPackage}, To: []string{LabelExternal}},
 	{Type: RelUnresolvedImport, From: []string{LabelApplication}, To: []string{LabelExternal}},

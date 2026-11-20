@@ -32,6 +32,7 @@ import (
 	"github.com/codellm-devkit/codeanalyzer-go/internal/analysis"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/dataflow"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/options"
+	"github.com/codellm-devkit/codeanalyzer-go/internal/repository"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/schema"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/sdg"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/semantic_analysis"
@@ -93,6 +94,25 @@ func New(opts options.AnalysisOptions) *Analyzer {
 
 // Analyze runs the full analysis pipeline and returns a GoApplication.
 func (a *Analyzer) Analyze() (*schema.GoApplication, error) {
+	app, err := a.analyze()
+	if err != nil {
+		return nil, err
+	}
+	// The repository layer reads files outside the Go source, so it is computed
+	// on every run, after the (possibly cached) application is ready.
+	facts, err := repository.Facts(a.opts.InputPath, app, repository.Options{
+		CaptureText: a.opts.ArtifactText,
+		OutputDir:   a.opts.OutputDir,
+		CacheDir:    a.opts.CacheDir,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("repository layer: %w", err)
+	}
+	app.Repository = facts
+	return app, nil
+}
+
+func (a *Analyzer) analyze() (*schema.GoApplication, error) {
 	if _, err := resolveIdentity(a.opts); err != nil {
 		return nil, err
 	}

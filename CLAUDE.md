@@ -15,10 +15,27 @@ committed spec is the full transcript: `docs/design/specs/v2-l1-emission.md`.
 - **`application.id`** = `can://<app>` (app outermost, so a polyglot app shares one prefix),
   where `<app>` is the **`--app-name`** value, defaulting to the input directory's base name
   (per the CLI contract; the SDK's Neo4j backend must use the same anchor). Module ids are
-  `can://<app>/go/<file>`; externals are language-neutral `can://<app>/@external/<import-path>/<sig>`.
+  `can://<app>/go/<file>`; externals are language-neutral `can://<app>/@external/<import-path>/<Type>/<Member>` (see § Id member segments).
   L3/L4 build ids on this unchanged.
-- **Callable signature** = existing `signatureOf()` output as the last `can://` path
-  segment; receiver folded in for methods. One canonicalizer, unchanged from v1.
+- **Id member segments (spec `docs/design/specs/v2-go-ids.md`, issue #46)**: a type is
+  `<module>/<Type>`; a method is `<module>/<Type>/<Method>`; a package-level function is
+  `<module>/<Name>` (a method declared in another file uses that file as `<module>`, see
+  § Cross-file method ids below); a closure is `<enclosing>/closure_N`. The package import path is dropped:
+  the member segment is the signature's part after its last dot (Go names contain no dots).
+  Follows `codeanalyzer-typescript` `idFromSig` and `codeanalyzer-python` `child_id`
+  [user, 2026-11-20]. Externals: `<app>/@external/<import-path>/<Type>/<Member>` (import path
+  whole) [user, 2026-11-20].
+- **Callable and type `signature`** = the full `signatureOf()` output (import-qualified), a
+  JSON field on both (types gained it, additive, for the Neo4j `:GoType.signature`) [user,
+  2026-11-20]. The id carries only the bare member name, so this field is where the package
+  path lives. One canonicalizer, unchanged from v1.
+- **Cross-file method ids** [user, 2026-11-20]: a method declared in another file than its receiver
+  type gets `<declaring-module>/<Type>/<Method>`, e.g. `…/handlers.go/frontendServer/logoutHandler`.
+  The node stays in the receiver type's `callables{}`. `source_file` is kept for text recovery.
+  Neo4j adds `GO_DECLARES` from the declaring `:GoModule` to the method, beside `GO_HAS_METHOD`.
+  Spec: `docs/design/specs/v2-go-ids.md` § Amendment.
+- **Generic types**: `signatureOf()` carries no type parameters, so a generic type or method
+  ids as `<module>/<Set>/<Add>`, with no `[T]` in the id.
 - **`span.bytes`** = **UTF-8 byte offsets** into `module.source` (Go strings are
   natively UTF-8; avoids the UTF-16/rune slicing mismatch TS hit in cants#179).
 
@@ -64,8 +81,9 @@ committed spec is the full transcript: `docs/design/specs/v2-l1-emission.md`.
   `(*strings.Builder).WriteString`) is no longer dropped: the call node's `callee` and the
   `call_graph` edge `dst` are the callee's `@external` id. Builtins, type conversions
   (no longer minted as `<Type>.__new__`) and calls through function values stay `null`.
-- **Id** = `can://<app>/@external/<import-path>/<sig>` where `<sig>` is the callee signature
-  minus the `<import-path>.` prefix (`Println`, `Builder.WriteString`); it may also name a
+- **Id** = `can://<app>/@external/<import-path>/<Type>/<Member>` where `<sig>` is the callee signature
+  minus the `<import-path>.` prefix; its dots become segments (`Println` → `…/fmt/Println`,
+  `Builder.WriteString` → `…/strings/Builder/WriteString`); it may also name a
   library *interface* method (`@external/io/Writer.Write`). Methods on generic library types
   record the declared (origin) signature, not the instance. `@external` is
   language-neutral (not `go/`), so a polyglot app shares one external namespace.
@@ -128,6 +146,17 @@ Reuses Group A ids/spans and the L3 vocabulary unchanged; every L4 fact is an ad
   at L3 with a warning (D9).
 - A Go-specific `select` cfg kind was not added (`select` is a `switch` with `switch_case`
   edges).
+
+### Repository-artifact decisions (spec `docs/design/specs/v2-artifacts.md`, branch `feat/artifacts`)
+Made with the user in the 2026-11-19 design loop, anchored on `codeanalyzer-python`'s `PyArtifact` / `PyDependency`.
+- **Placement:** `application.artifacts{<path>: artifact}` (map); `application.dependencies[]` (list).
+- **Scope:** all non-`.go` project files [user, 2026-11-19]. Binaries are metadata only (`source:""`) [user].
+- **Artifact id:** `can://<app>/artifact/<path>`, app-scoped (Python parity) [user]. The Go projector's `:Artifact` flips to `CanNode=true`.
+- **Package id:** version-less `pkg:golang/<module-path>` [user]; version lives on the dependency edge.
+- **Source text:** only with `--artifact-text`, default off [user]. `config_keys` deferred [user].
+- **Dependencies:** every `go.mod` require; `direct=false` on `// indirect`; `kind:"runtime"`; `go.sum` supplies `locked_version` only, `go.sum`-only entries excluded [user].
+- **`provides_imports`:** longest-prefix match against `go.mod` module paths [user].
+- **Level:** L1, every level, not gated [user].
 
 ## Neo4j-projection decisions
 

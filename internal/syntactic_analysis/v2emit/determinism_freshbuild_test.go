@@ -116,7 +116,7 @@ func TestInitCollision_DistinctNodesAndEdges(t *testing.T) {
 			continue
 		}
 		for _, fn := range mod.Functions {
-			if strings.HasSuffix(fn.ID, "middleware.init") {
+			if strings.HasSuffix(fn.ID, "/init") {
 				initNodeIDs[fn.ID] = true
 			}
 		}
@@ -131,7 +131,7 @@ func TestInitCollision_DistinctNodesAndEdges(t *testing.T) {
 	// edge resolved to ITS OWN file's init, so the id is self-consistent).
 	sawInitEdge := false
 	for _, e := range out.Application.CallGraph {
-		if !strings.HasSuffix(e.Src, "middleware.init") {
+		if !strings.HasSuffix(e.Src, "/init") {
 			continue
 		}
 		sawInitEdge = true
