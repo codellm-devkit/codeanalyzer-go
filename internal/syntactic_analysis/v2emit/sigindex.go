@@ -55,13 +55,26 @@ func buildSigIndex(appID string, symbolTable map[string]schema.GoFile) sigIndex 
 			idx.addCallable(modID, relPath, fn)
 		}
 		for _, t := range file.Types {
-			typeID := v2.TypeID(modID, t.Signature)
 			for _, m := range t.Methods {
-				idx.addCallable(typeID, relPath, m)
+				idx.addCallable(methodParentID(appID, relPath, t, m), relPath, m)
 			}
 		}
 	}
 	return idx
+}
+
+// methodParentID is the id a method nests under. A method declared in its
+// receiver type's file nests under that type's id. A method declared in another
+// file nests under the same type in the DECLARING file's module, so its id names
+// where the method is written (spec v2-go-ids § Amendment). The JSON node itself
+// stays in the receiver type's callables{}; only its id moves. modRel is the
+// receiver's module (the file the type lives in).
+func methodParentID(appID, modRel string, t schema.GoType, c schema.GoCallable) string {
+	mod := modRel
+	if c.Path != "" {
+		mod = c.Path
+	}
+	return v2.TypeID(v2.ModuleID(appID, mod), t.Signature)
 }
 
 // addCallable records one callable and recurses into its closures, matching the

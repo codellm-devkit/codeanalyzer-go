@@ -292,7 +292,7 @@ func emitModule(appID, modRel string, file schema.GoFile, idx sigIndex, srcs *so
 	}
 
 	for name, t := range file.Types {
-		mod.Types[name] = emitType(modID, modRel, t, idx, srcs, flow, l4)
+		mod.Types[name] = emitType(appID, modRel, t, idx, srcs, flow, l4)
 	}
 	for sig, fn := range file.Functions {
 		mod.Functions[sig] = emitCallable(modID, modRel, modRel, li, fn, idx, srcs, flow, l4)
@@ -304,9 +304,9 @@ func emitModule(appID, modRel string, file schema.GoFile, idx sigIndex, srcs *so
 // kind and splitting embedding (base_types) from computed satisfaction. Methods
 // resolve into the type's callables{}. modRel is the module the type lives in;
 // its methods may be declared in other files (handled in emitCallable).
-func emitType(modID, modRel string, t schema.GoType, idx sigIndex, srcs *sourceCache, flow l3Overlay, l4 *l4Overlay) v2.Type {
+func emitType(appID, modRel string, t schema.GoType, idx sigIndex, srcs *sourceCache, flow l3Overlay, l4 *l4Overlay) v2.Type {
 	li := srcs.index(modRel)
-	typeID := v2.TypeID(modID, t.Signature)
+	typeID := v2.TypeID(v2.ModuleID(appID, modRel), t.Signature)
 	out := v2.Type{
 		ID:        typeID,
 		Kind:      typeKind(t),
@@ -327,7 +327,7 @@ func emitType(modID, modRel string, t schema.GoType, idx sigIndex, srcs *sourceC
 		}
 	}
 	for sig, m := range t.Methods {
-		out.Callables[sig] = emitCallable(typeID, modRel, modRel, li, m, idx, srcs, flow, l4)
+		out.Callables[sig] = emitCallable(methodParentID(appID, modRel, t, m), modRel, modRel, li, m, idx, srcs, flow, l4)
 	}
 	return out
 }

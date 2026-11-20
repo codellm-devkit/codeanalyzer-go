@@ -195,6 +195,12 @@ func (p *projector) projectType(modRef NodeRef, module string, t v2.Type) {
 	for _, m := range t.Callables {
 		mRef := p.projectCallable(tRef, module, m)
 		p.b.Edge(RelHasMethod, tRef, mRef, nil, "")
+		// A method declared in another file is also declared by that file's module,
+		// so "which file declares this method" is one query (spec v2-go-ids § Amendment).
+		if m.SourceFile != "" {
+			declaring := NodeRef{Label: LabelModule, KeyProp: "id", Value: v2.ModuleID(p.analysis.Application.ID, m.SourceFile)}
+			p.b.Edge(RelDeclares, declaring, mRef, nil, "")
+		}
 	}
 }
 
