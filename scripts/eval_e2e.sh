@@ -73,7 +73,8 @@ if [ -n "${CANGO:-}" ]; then
   [ -x "$CANGO" ] || { echo "CANGO '$CANGO' is not executable" >&2; exit 2; }
   echo "   using $CANGO"
 else
-  CANGO="$OUT/cango"
+  # Build outside the project: a binary inside it would be captured as an artifact.
+  CANGO="${E2E_BUILD_DIR:-${TMPDIR:-/tmp}}/cldk-e2e-cango-${APP_NAME}"
   (cd "$REPO" && go build -o "$CANGO" ./cmd/codeanalyzer) >>"$LOG" 2>&1
   echo "   built $CANGO from $REPO"
 fi
@@ -86,10 +87,11 @@ step "2/5 analysis.json (-a $LEVEL)"
 step "3/5 Neo4j projection (live push to $URI as $USER)"
 # EAGER=1 reloads: --eager purges this application's subgraph (its can://<ns>/<app>/
 # prefix only) before the push, so nodes from an earlier id format do not linger.
-EAGER_FLAG=()
-[ "${EAGER:-0}" = "1" ] && EAGER_FLAG=(--eager)
+# A plain string, not an array: an empty array trips `set -u` on bash 3.2 (macOS).
+EAGER_FLAG=""
+[ "${EAGER:-0}" = "1" ] && EAGER_FLAG="--eager"
 push_out=$(NEO4J_PASSWORD="$PASS" "$CANGO" --emit neo4j --neo4j-uri "$URI" --neo4j-user "$USER" \
-  --app-name "$APP_NAME" "${EAGER_FLAG[@]}" -i "$APP" -o "$OUT" 2>&1) && push_rc=0 || push_rc=$?
+  --app-name "$APP_NAME" $EAGER_FLAG -i "$APP" -o "$OUT" 2>&1) && push_rc=0 || push_rc=$?
 printf '%s\n' "$push_out" >>"$LOG"
 if [ "$push_rc" -ne 0 ]; then
   bad "projection push failed (exit $push_rc): $(printf '%s' "$push_out" | tail -1)"
