@@ -93,6 +93,15 @@ func TestSpanLines_KeysEqualSpanLines(t *testing.T) {
 	}
 	seen := map[string]int{}
 	checkSpanLines(t, doc, "", seen)
+	mods := asMap(asMap(asMap(doc["application"])["symbol_table"]))
+	if len(mods) == 0 {
+		t.Fatal("no modules in symbol_table")
+	}
+	for path, m := range mods {
+		if _, ok := asMap(m)["start_line"]; !ok {
+			t.Errorf("module %s has no start_line", path)
+		}
+	}
 	for _, container := range []string{"imports", "types", "fields", "callables", "parameters", "body"} {
 		if seen[container] == 0 {
 			t.Errorf("no %s node carried start_line/end_line; saw %v", container, seen)

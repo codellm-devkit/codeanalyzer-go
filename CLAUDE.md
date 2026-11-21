@@ -40,7 +40,7 @@ committed spec is the full transcript: `docs/design/specs/v2-l1-emission.md`.
 - **Generic types**: `signatureOf()` carries no type parameters, so a generic type or method
   ids as `<module>/<Set>/<Add>`, with no `[T]` in the id.
 - **`start_line` / `end_line`** [user, 2026-11-21; spec `docs/design/specs/v2-span-lines.md`]: top-level keys next
-  to `span` on `Import`, `Parameter`, `Callable`, `Type`, `Field` and `BodyNode`, equal to `span.start[0]` and
+  to `span` on `Module` (added 2026-11-21 so the JSON and Neo4j modules match), `Import`, `Parameter`, `Callable`, `Type`, `Field` and `BodyNode`, equal to `span.start[0]` and
   `span.end[0]`. No `code_start_line`. Neo4j nodes carry the same two properties beside `span_json`.
 - **`span.bytes`** = **UTF-8 byte offsets** into `module.source` (Go strings are
   natively UTF-8; avoids the UTF-16/rune slicing mismatch TS hit in cants#179).

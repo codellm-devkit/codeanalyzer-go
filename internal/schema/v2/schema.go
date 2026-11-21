@@ -157,6 +157,9 @@ type Module struct {
 	ID   string `json:"id"`
 	Kind string `json:"kind"` // always "module"
 	Span Span   `json:"span"`
+	// StartLine and EndLine equal span.start[0] and span.end[0] (the whole file).
+	StartLine int `json:"start_line"`
+	EndLine   int `json:"end_line"`
 	// Package is the Go package the file belongs to.
 	Package string `json:"package"`
 	// Source is the WHOLE file's text, stored once. Every node's text slices

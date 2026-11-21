@@ -278,10 +278,13 @@ func emitModule(appID, modRel string, file schema.GoFile, idx sigIndex, srcs *so
 	source := li.source
 	modID := v2.ModuleID(appID, modRel)
 
+	msp := wholeFileSpan(li, source)
 	mod := v2.Module{
 		ID:        modID,
 		Kind:      "module",
-		Span:      wholeFileSpan(li, source),
+		Span:      msp,
+		StartLine: msp.Start[0],
+		EndLine:   msp.End[0],
 		Package:   file.PackageName,
 		Source:    source,
 		Imports:   emitImports(li, file.Imports),

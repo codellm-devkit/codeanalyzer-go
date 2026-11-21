@@ -28,6 +28,12 @@ Made with the user on 2026-11-21.
 5. **Tracking.** One issue in codeanalyzer-go, one checklist. One PR on `add_startline_endline`.
 6. **Release.** One PR, one release. The keys are additive, so existing consumers keep working.
 
+## Amendment (2026-11-21): module
+
+The Neo4j module node carries `start_line` and `end_line`, so the JSON module must too, or the
+two projections differ. Decided with the user: the JSON `module` gains the keys, equal to its
+whole-file `span.start[0]` and `span.end[0]`. The module is therefore a seventh model.
+
 ## Out of scope
 
 - `code_start_line` (decision 3).
