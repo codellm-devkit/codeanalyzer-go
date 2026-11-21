@@ -139,6 +139,7 @@ func (p *projector) projectModule(m v2.Module) {
 			"source":       m.Source,
 			"content_hash": emptyToNil(m.ContentHash),
 			"span_json":    spanJSON(m.Span),
+			"start_line":   spanLine(m.Span, true), "end_line": spanLine(m.Span, false),
 		},
 		m.ID,
 	)
@@ -161,9 +162,10 @@ func (p *projector) projectType(modRef NodeRef, module string, t v2.Type) {
 		[]string{SymbolLabel, LabelType, MarkerLabel},
 		"id", t.ID,
 		Props{
-			"kind":      t.Kind, // struct|interface|alias|defined (decision T1)
-			"signature": t.Signature,
-			"span_json": spanJSON(t.Span),
+			"kind":       t.Kind, // struct|interface|alias|defined (decision T1)
+			"signature":  t.Signature,
+			"span_json":  spanJSON(t.Span),
+			"start_line": spanLine(t.Span, true), "end_line": spanLine(t.Span, false),
 		},
 		module,
 	)
@@ -185,7 +187,7 @@ func (p *projector) projectType(modRef NodeRef, module string, t v2.Type) {
 		fRef := p.b.Node(
 			[]string{LabelField, MarkerLabel},
 			"id", f.ID,
-			Props{"kind": f.Kind, "type": f.Type, "span_json": spanJSON(f.Span)},
+			Props{"kind": f.Kind, "type": f.Type, "span_json": spanJSON(f.Span), "start_line": spanLine(f.Span, true), "end_line": spanLine(f.Span, false)},
 			module,
 		)
 		p.b.Edge(RelHasField, tRef, fRef, nil, "")
@@ -220,7 +222,8 @@ func (p *projector) projectCallable(parentRef NodeRef, module string, c v2.Calla
 			"error_channel": stringsOrNil(c.ErrorChannel),
 			"source_file":   emptyToNil(c.SourceFile), // only when ≠ nesting module (D8)
 			"span_json":     spanJSON(c.Span),
-			"metrics_json":  metricsJSON(c.Metrics),
+			"start_line":    spanLine(c.Span, true), "end_line": spanLine(c.Span, false),
+			"metrics_json": metricsJSON(c.Metrics),
 		},
 		module,
 	)
@@ -263,7 +266,8 @@ func (p *projector) projectBodyNode(callableRef NodeRef, module, callableID, loc
 			"is_goroutine": boolOrNil(bn.IsGoroutine),
 			"is_deferred":  boolOrNil(bn.IsDeferred),
 			"span_json":    bodySpanJSON(bn.Span),
-			"call_node":    callNode,
+			"start_line":   spanLine(bn.Span, true), "end_line": spanLine(bn.Span, false),
+			"call_node": callNode,
 			// var is JSON `of`: set on L4 vertices only (pruned when empty).
 			"var": emptyToNil(bn.Of),
 		},
@@ -437,6 +441,18 @@ func collectDeclaredIDs(a *v2.Analysis) map[string]bool {
 }
 
 // ─── flattening helpers ──────────────────────────────────────────────────────
+
+// spanLine is a span's start or end line as a node property, nil (pruned) for the
+// span-less synthetic nodes. Lines are 1-based, so a zero span is the absent one.
+func spanLine(s v2.Span, start bool) Value {
+	if s.Start[0] == 0 && s.End[0] == 0 {
+		return nil
+	}
+	if start {
+		return s.Start[0]
+	}
+	return s.End[0]
+}
 
 // spanJSON flattens a span to a compact JSON string property. (A span is a
 // nested map, which Neo4j cannot store as a property, so it rides as *_json —

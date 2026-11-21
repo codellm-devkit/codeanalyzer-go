@@ -308,22 +308,28 @@ func emitModule(appID, modRel string, file schema.GoFile, idx sigIndex, srcs *so
 func emitType(appID, modRel string, t schema.GoType, idx sigIndex, srcs *sourceCache, flow l3Overlay, l4 *l4Overlay) v2.Type {
 	li := srcs.index(modRel)
 	typeID := v2.TypeID(v2.ModuleID(appID, modRel), t.Signature)
+	tsp := lineSpan(li, t.StartLine, t.EndLine)
 	out := v2.Type{
 		ID:        typeID,
 		Kind:      typeKind(t),
 		Signature: t.Signature,
-		Span:      lineSpan(li, t.StartLine, t.EndLine),
+		Span:      tsp,
+		StartLine: tsp.Start[0],
+		EndLine:   tsp.End[0],
 		BaseTypes: nonEmpty(t.BaseTypes),
 		Callables: make(map[string]v2.Callable, len(t.Methods)),
 	}
 	if len(t.Fields) > 0 {
 		out.Fields = make(map[string]v2.Field, len(t.Fields))
 		for _, f := range t.Fields {
+			fsp := lineSpan(li, f.StartLine, f.EndLine)
 			out.Fields[f.Name] = v2.Field{
-				ID:   typeID + "/" + f.Name,
-				Kind: "field",
-				Type: f.Type,
-				Span: lineSpan(li, f.StartLine, f.EndLine),
+				ID:        typeID + "/" + f.Name,
+				Kind:      "field",
+				Type:      f.Type,
+				Span:      fsp,
+				StartLine: fsp.Start[0],
+				EndLine:   fsp.End[0],
 			}
 		}
 	}
@@ -372,10 +378,13 @@ func emitCallable(parentID, modRel, declRel string, declLI *lineIndex, c schema.
 		sourceFile = declRel
 	}
 
+	csp := lineSpan(li, c.StartLine, c.EndLine)
 	out := v2.Callable{
 		ID:         callID,
 		Kind:       callableKind(c),
-		Span:       lineSpan(li, c.StartLine, c.EndLine),
+		Span:       csp,
+		StartLine:  csp.Start[0],
+		EndLine:    csp.End[0],
 		Signature:  c.Signature,
 		SourceFile: sourceFile,
 		Parameters: emitParams(li, c.Parameters),
@@ -419,10 +428,13 @@ func emitBody(callableID string, li *lineIndex, sites []schema.GoCallsite, idx s
 	body := make(map[string]v2.BodyNode, len(sites))
 	for i, cs := range sites {
 		local := keys[i]
+		bsp := colSpan(li, cs.StartLine, cs.StartColumn, cs.EndLine, cs.EndColumn)
 		body[local] = v2.BodyNode{
 			Kind:        "call",
 			ID:          v2.GlobalOrdinal(callableID, local),
-			Span:        colSpan(li, cs.StartLine, cs.StartColumn, cs.EndLine, cs.EndColumn),
+			Span:        bsp,
+			StartLine:   bsp.Start[0],
+			EndLine:     bsp.End[0],
 			Callee:      calleeID(cs.CalleeSignature, idx),
 			IsGoroutine: cs.IsGoroutine,
 			IsDeferred:  cs.IsDeferred,
@@ -507,10 +519,13 @@ func emitExternalSymbols(appID string, externals map[string]schema.GoExternalCal
 func emitParams(li *lineIndex, params []schema.GoParameter) []v2.Parameter {
 	out := make([]v2.Parameter, 0, len(params))
 	for _, p := range params {
+		psp := lineSpan(li, p.StartLine, p.EndLine)
 		out = append(out, v2.Parameter{
 			Name:       p.Name,
 			Type:       p.Type,
-			Span:       lineSpan(li, p.StartLine, p.EndLine),
+			Span:       psp,
+			StartLine:  psp.Start[0],
+			EndLine:    psp.End[0],
 			IsVariadic: p.IsVariadic,
 		})
 	}
@@ -520,11 +535,14 @@ func emitParams(li *lineIndex, params []schema.GoParameter) []v2.Parameter {
 func emitImports(li *lineIndex, imports []schema.GoImport) []v2.Import {
 	out := make([]v2.Import, 0, len(imports))
 	for _, imp := range imports {
+		isp := lineSpan(li, imp.StartLine, imp.EndLine)
 		out = append(out, v2.Import{
-			Name:  packageBase(imp.Module),
-			Path:  imp.Module,
-			Alias: imp.Alias,
-			Span:  lineSpan(li, imp.StartLine, imp.EndLine),
+			Name:      packageBase(imp.Module),
+			Path:      imp.Module,
+			Alias:     imp.Alias,
+			Span:      isp,
+			StartLine: isp.Start[0],
+			EndLine:   isp.End[0],
 		})
 	}
 	return out

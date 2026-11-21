@@ -174,10 +174,12 @@ type Module struct {
 
 // Import is a single import declaration.
 type Import struct {
-	Name  string `json:"name"`            // imported package name
-	Path  string `json:"path"`            // import path, e.g. "hash/fnv"
-	Alias string `json:"alias,omitempty"` // present only when aliased
-	Span  Span   `json:"span"`
+	Name      string `json:"name"`            // imported package name
+	Path      string `json:"path"`            // import path, e.g. "hash/fnv"
+	Alias     string `json:"alias,omitempty"` // present only when aliased
+	Span      Span   `json:"span"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
 }
 
 // ─── type ─────────────────────────────────────────────────────────────────────
@@ -185,9 +187,11 @@ type Import struct {
 // Type is a named Go type. Kind is the specific type-declaration shape, not a
 // pile of is_* booleans.
 type Type struct {
-	ID   string `json:"id"`
-	Kind string `json:"kind"` // struct | interface | alias | defined
-	Span Span   `json:"span"`
+	ID        string `json:"id"`
+	Kind      string `json:"kind"` // struct | interface | alias | defined
+	Span      Span   `json:"span"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
 	// Signature is the type's full import-qualified name (one signatureOf()). The
 	// id carries only the bare type name, so this is where the package path lives.
 	Signature string `json:"signature"`
@@ -206,10 +210,12 @@ type Type struct {
 
 // Field is a struct field.
 type Field struct {
-	ID   string `json:"id"`
-	Kind string `json:"kind"` // always "field"
-	Type string `json:"type"`
-	Span Span   `json:"span"`
+	ID        string `json:"id"`
+	Kind      string `json:"kind"` // always "field"
+	Type      string `json:"type"`
+	Span      Span   `json:"span"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
 }
 
 // ─── callable ─────────────────────────────────────────────────────────────────
@@ -217,9 +223,11 @@ type Field struct {
 // Callable is a function, method, or closure. span.bytes → get_method_body =
 // module.source[bytes].
 type Callable struct {
-	ID   string `json:"id"`
-	Kind string `json:"kind"` // function | method | lambda
-	Span Span   `json:"span"`
+	ID        string `json:"id"`
+	Kind      string `json:"kind"` // function | method | lambda
+	Span      Span   `json:"span"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
 	// Signature is the full import-qualified name (one signatureOf()). The id
 	// carries only the bare member name, so this field is where the package path lives.
 	Signature string `json:"signature"`
@@ -261,6 +269,8 @@ type Parameter struct {
 	Name       string `json:"name"`
 	Type       string `json:"type"`
 	Span       Span   `json:"span"`
+	StartLine  int    `json:"start_line"`
+	EndLine    int    `json:"end_line"`
 	IsVariadic bool   `json:"is_variadic,omitempty"`
 }
 
@@ -279,6 +289,9 @@ type BodyNode struct {
 	// Span is the node's source range. Absent (zero) only on the synthetic
 	// entry/exit nodes, which have no source.
 	Span Span `json:"span,omitzero"`
+	// StartLine and EndLine equal span.start[0] and span.end[0]; absent with the span.
+	StartLine int `json:"start_line,omitempty"`
+	EndLine   int `json:"end_line,omitempty"`
 	// Parent is, at L3+, the local key of the statement a satellite call
 	// node is nested in (the sanctioned parent refinement). Absent on CFG
 	// nodes.

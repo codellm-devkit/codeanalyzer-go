@@ -194,22 +194,22 @@ var Nodes = []NodeSpec{
 	},
 	{
 		Label: LabelModule, MergeLabel: LabelModule, Key: "id", CanNode: true,
-		Props: []string{"package", "source", "content_hash", "span_json"},
+		Props: []string{"package", "source", "content_hash", "span_json", "start_line", "end_line"},
 	},
 	{
 		Label: LabelType, MergeLabel: SymbolLabel, Key: "id", CanNode: true,
 		// kind ∈ struct|interface|alias|defined (property, decision T1).
-		Props: []string{"kind", "signature", "span_json"},
+		Props: []string{"kind", "signature", "span_json", "start_line", "end_line"},
 	},
 	{
 		Label: LabelCallable, MergeLabel: SymbolLabel, Key: "id", CanNode: true,
 		// source_file present only when it differs from the nesting module (D8);
 		// error_channel is a homogeneous string array; is_* only on body nodes.
-		Props: []string{"kind", "signature", "return_type", "error_channel", "source_file", "span_json", "metrics_json"},
+		Props: []string{"kind", "signature", "return_type", "error_channel", "source_file", "span_json", "metrics_json", "start_line", "end_line"},
 	},
 	{
 		Label: LabelField, MergeLabel: LabelField, Key: "id", CanNode: true,
-		Props: []string{"kind", "type", "span_json"},
+		Props: []string{"kind", "type", "span_json", "start_line", "end_line"},
 	},
 	{
 		Label: LabelBodyNode, MergeLabel: LabelBodyNode, Key: "id", CanNode: true,
@@ -220,7 +220,7 @@ var Nodes = []NodeSpec{
 		// resolved against the owning callable or stand-in; Python parity.
 		// var = JSON `of` (L4 vertices only). span_json absent on the
 		// synthetic entry/exit nodes and on vertices.
-		Props: []string{"kind", "is_goroutine", "is_deferred", "span_json", "call_node", "var"},
+		Props: []string{"kind", "is_goroutine", "is_deferred", "span_json", "start_line", "end_line", "call_node", "var"},
 	},
 	{
 		Label: LabelExternal, MergeLabel: SymbolLabel, Key: "id", CanNode: true,
