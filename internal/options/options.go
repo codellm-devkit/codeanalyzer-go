@@ -57,6 +57,9 @@ type AnalysisOptions struct {
 	TargetFiles []string
 	// SkipTests skips test files (files ending in _test.go).
 	SkipTests bool
+	// ArtifactText captures each text artifact's whole source (--artifact-text).
+	// Off by default: artifacts carry metadata only.
+	ArtifactText bool
 	// Eager forces a clean rebuild ignoring any cache.
 	Eager bool
 	// CacheDir is where per-file caches and intermediate data are stored.

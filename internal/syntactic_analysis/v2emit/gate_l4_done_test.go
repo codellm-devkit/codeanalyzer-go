@@ -144,7 +144,7 @@ func TestGateL4_HTTPToSQLPath(t *testing.T) {
 	method := func(typ, m string) string { return v2.CallableID(v2.TypeID(mod, pkg+typ), pkg+typ+"."+m) }
 
 	sink := vertex(v2.ExternalID(app, "database/sql", "DB.Query"), "formal_in", "query")
-	if sink != "can://httpsql/httpsql/@external/database/sql/DB.Query@formal_in:1" {
+	if sink != "can://httpsql/httpsql/@external/database/sql/DB/Query@formal_in:1" {
 		t.Fatalf("sink vertex %s", sink)
 	}
 	find := method("sqlRepo", "Find")
