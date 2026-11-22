@@ -32,6 +32,13 @@ committed spec is the full transcript: `docs/design/specs/v2-l1-emission.md`.
   JSON field on both (types gained it, additive, for the Neo4j `:GoType.signature`) [user,
   2026-11-20]. The id carries only the bare member name, so this field is where the package
   path lives. One canonicalizer, unchanged from v1.
+  **Exception: duplicate `func init()`** (fix/init-collision, 2026-11-22). Go allows many
+  inits per file, all with signatureOf() `<pkgpath>.init`. The second and later ones in a
+  file carry `:N` (N = 2, 3, ...), e.g. `<pkgpath>.init:2`, in `signature`, in the callable's
+  id member (`init:2`), and as the call-graph source. The first keeps the bare name, so the
+  ids of files with one init are unchanged. The suffix is the only way to keep their ids and
+  edges distinct; a colon is not a Go identifier character, so it cannot collide with a
+  real function.
 - **Cross-file method ids** [user, 2026-11-20]: a method declared in another file than its receiver
   type gets `<declaring-module>/<Type>/<Method>`, e.g. `…/handlers.go/frontendServer/logoutHandler`.
   The node stays in the receiver type's `callables{}`. `source_file` is kept for text recovery.

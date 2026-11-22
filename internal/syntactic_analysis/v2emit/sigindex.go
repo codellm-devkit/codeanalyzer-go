@@ -18,17 +18,17 @@ import (
 //
 // Signatures are ALMOST globally unique (a method signature embeds its receiver
 // type), with one exception: package-level `func init()`. Go permits many init
-// functions per package (one per file), and they all share the signature
-// "<pkgpath>.init". They are nonetheless distinct callables with distinct
-// can:// ids — the id embeds the declaring file via its parent module — so a
-// flat signature→id map collapses them, and since it is populated by ranging a
-// Go map (random order) the surviving id is nondeterministic run to run. That
-// nondeterminism propagated into the call_graph edge set.
+// functions per file, and they all share the signature "<pkgpath>.init". The
+// symbol table gives the second and later ones a ":N" suffix (see
+// uniqueFuncSignature), so each init has its own signature and therefore its
+// own can:// id, call-graph endpoint and map key. A signature is then unique
+// per declaring file, and the flat map below is unambiguous except across files
+// that each declare an init.
 //
-// The index therefore keeps two maps: a flat signature→id (deterministic on
-// collision — smallest id wins) for the unique common case, and a
-// (signature,path)→id map that disambiguates the init collision by the source
-// callable's declaring file. See idFor / idForWithPath.
+// The index keeps two maps: a flat signature→id (deterministic on collision —
+// smallest id wins) for the unique common case, and a (signature,path)→id map
+// that resolves a signature declared in a specific file. See idFor /
+// idForWithPath.
 type sigIndex struct {
 	bySig     map[string]string
 	bySigPath map[sigPathKey]string
@@ -93,7 +93,7 @@ func (idx sigIndex) addCallable(parentID, relPath string, c schema.GoCallable) {
 	}
 
 	// Precise entry: a callable's declaring file plus its signature is unique
-	// even for init, because at most one init exists per file. Call-graph
+	// (inits within one file carry distinct :N suffixes). Call-graph
 	// edges carry the declaring file (c.Path), which differs from relPath for
 	// a method declared apart from its receiver type, and for the closures in
 	// one; index both so either resolves.
