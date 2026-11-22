@@ -12,12 +12,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/codellm-devkit/codeanalyzer-go/internal/schema"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/utils"
@@ -67,8 +67,20 @@ func Discover(root string, opts Options) (map[string]schema.GoArtifact, error) {
 	}
 	out := map[string]schema.GoArtifact{}
 	err = filepath.WalkDir(absRoot, func(p string, d fs.DirEntry, werr error) error {
+		rel, err := filepath.Rel(absRoot, p)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
 		if werr != nil {
-			return werr
+			if p == absRoot {
+				return werr
+			}
+			// An entry that cannot be listed or stat'ed is skipped, not fatal: one
+			// unreadable directory must not cost the whole analysis. The warning names
+			// it, so the omission is visible rather than silent.
+			utils.Warn("repository: skipping %s: %v", rel, werr)
+			return nil
 		}
 		if d.IsDir() {
 			if p != absRoot && (skipDirNames[d.Name()] || (cacheDir != "" && p == cacheDir)) {
@@ -82,13 +94,17 @@ func Discover(root string, opts Options) (map[string]schema.GoArtifact, error) {
 		if outDir != "" && filepath.Dir(p) == outDir && outputFileNames[d.Name()] {
 			return nil
 		}
-		rel, err := filepath.Rel(absRoot, p)
+		info, err := d.Info()
 		if err != nil {
-			return err
+			utils.Warn("repository: skipping %s: %v", rel, err)
+			return nil
 		}
-		art, err := readArtifact(p, filepath.ToSlash(rel), opts.CaptureText)
+		art, err := readArtifact(p, info, rel, opts.CaptureText)
 		if err != nil {
-			return err
+			// A file that vanished, became unreadable, or changed while it was read
+			// mid-walk. None of these is a project-level failure.
+			utils.Warn("repository: skipping %s: %v", rel, err)
+			return nil
 		}
 		out[art.Path] = art
 		return nil
@@ -135,19 +151,38 @@ func resolveDir(p string) (string, error) {
 	}
 }
 
-// readArtifact hashes the whole file and classifies it. Text source is kept only
-// when captureText is set; binaries are never captured.
-func readArtifact(abs, rel string, captureText bool) (schema.GoArtifact, error) {
-	data, err := os.ReadFile(abs)
+// readArtifact classifies one file the walk reported as a regular file. It reads
+// the file in constant memory: one streaming pass hashes it and decides whether it
+// is binary. Text source is read a second time, and only with captureText. Binary
+// bytes are never captured.
+//
+// info is the walk's view of the entry. The opened file must be that same file,
+// so a path swapped for a symlink or a device between the walk and the open is
+// refused rather than read.
+func readArtifact(abs string, info fs.FileInfo, rel string, captureText bool) (schema.GoArtifact, error) {
+	f, err := os.Open(abs)
 	if err != nil {
 		return schema.GoArtifact{}, err
 	}
-	sum := sha256.Sum256(data)
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return schema.GoArtifact{}, err
+	}
+	if !st.Mode().IsRegular() || !os.SameFile(info, st) {
+		return schema.GoArtifact{}, fmt.Errorf("replaced during analysis; not the file the walk saw")
+	}
+
+	s := newSniff()
+	if _, err := io.Copy(s, f); err != nil {
+		return schema.GoArtifact{}, err
+	}
+	s.finish()
 	art := schema.GoArtifact{
 		Path:       rel,
-		Format:     formatOf(rel, data),
-		SizeBytes:  int64(len(data)),
-		SHA256:     hex.EncodeToString(sum[:]),
+		Format:     formatOf(rel, s.binary()),
+		SizeBytes:  s.size,
+		SHA256:     hex.EncodeToString(s.sum()),
 		Extraction: "none",
 	}
 	switch rel {
@@ -156,29 +191,49 @@ func readArtifact(abs, rel string, captureText bool) (schema.GoArtifact, error) 
 	case "go.sum":
 		art.Roles = []string{"lockfile"}
 	}
-	if captureText && art.Format != "binary" {
-		art.Source = string(data)
-		art.Extraction = "full"
+	if !captureText || s.binary() {
+		return art, nil
 	}
+
+	// Second read, for the text only. The bytes must hash to what the first pass
+	// hashed; otherwise the file changed in between, and its source would not match
+	// its recorded hash, so it is skipped with an error instead.
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return schema.GoArtifact{}, err
+	}
+	h := sha256.New()
+	var text bytes.Buffer
+	if _, err := io.Copy(io.MultiWriter(h, &text), f); err != nil {
+		return schema.GoArtifact{}, err
+	}
+	if !bytes.Equal(h.Sum(nil), s.sum()) {
+		return schema.GoArtifact{}, fmt.Errorf("changed while it was read; not captured")
+	}
+	art.Source = text.String()
+	art.Extraction = "full"
 	return art, nil
 }
 
-// formatOf names the file's format. go.mod and go.sum have their own names; the
-// rest follow the Python analyzer's enum. Binary is a NUL byte or invalid UTF-8.
-func formatOf(rel string, data []byte) string {
+// formatOf names the file's format. go.mod and go.sum are named by their file name.
+// A binary is never a Dockerfile or a requirements file, whatever its name: the
+// name rules apply to text only, so binary bytes can never be captured as text.
+// The rest follow the Python analyzer's enum.
+func formatOf(rel string, binary bool) string {
 	base := filepath.Base(rel)
-	switch {
-	case base == "go.mod":
+	switch base {
+	case "go.mod":
 		return "gomod"
-	case base == "go.sum":
+	case "go.sum":
 		return "gosum"
+	}
+	if binary {
+		return "binary"
+	}
+	switch {
 	case base == "Dockerfile" || strings.HasPrefix(base, "Dockerfile.") || strings.HasSuffix(base, ".dockerfile"):
 		return "dockerfile"
 	case strings.HasPrefix(base, "requirements") && strings.HasSuffix(base, ".txt"):
 		return "requirements"
-	}
-	if bytes.IndexByte(data, 0) >= 0 || !utf8.Valid(data) {
-		return "binary"
 	}
 	switch strings.ToLower(filepath.Ext(base)) {
 	case ".toml":
@@ -207,7 +262,11 @@ func Facts(root string, app *schema.GoApplication, opts Options) (*schema.Reposi
 	modPath := filepath.Join(root, "go.mod")
 	modData, err := os.ReadFile(modPath)
 	if err != nil {
-		// No root go.mod: artifacts only, no dependencies.
+		// No root go.mod: artifacts only, no dependencies. Any other failure (a
+		// permission error, say) also drops the dependencies, so it must be said.
+		if !errors.Is(err, fs.ErrNotExist) {
+			utils.Warn("repository: go.mod unreadable, dependencies skipped: %v", err)
+		}
 		return facts, nil
 	}
 	f, err := modfile.Parse("go.mod", modData, nil)
@@ -249,6 +308,9 @@ func parseGoSum(path string) map[string]map[string]bool {
 	entries := map[string]map[string]*seen{}
 	data, err := os.ReadFile(path)
 	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			utils.Warn("repository: go.sum unreadable, no versions locked: %v", err)
+		}
 		return map[string]map[string]bool{}
 	}
 	for _, line := range strings.Split(string(data), "\n") {
