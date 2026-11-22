@@ -130,9 +130,11 @@ func (w *boltWriter) run() error {
 	}
 
 	// Purge every changed module before upserting any of them. A module's purge is
-	// by id prefix, and a node a module OWNS may carry another module's prefix (a
-	// method declared in rpc.go but owned by main.go's receiver). Purging rpc.go
-	// after main.go had upserted that method would delete it, so all purges run first.
+	// by id prefix, and it deletes rows that another module upserted if the two
+	// differ. A module owns exactly the nodes whose id carries its prefix (a
+	// cross-file method is owned by its declaring file), so the purge and the
+	// upsert agree. Purging all changed modules first still keeps any ordering
+	// dependence out of the eager path.
 	if w.cfg.Eager && scoped {
 		for _, m := range sortedModuleKeys(byModule) {
 			if !changed[m] {
@@ -335,10 +337,9 @@ func (w *boltWriter) pruneVanishedModules(byModule map[string][]NodeRow) error {
 
 // changedModules compares each module's content_hash in rows against the DB.
 func (w *boltWriter) changedModules(byModule map[string][]NodeRow) (map[string]bool, error) {
-	changed := map[string]bool{}
+	dbHash := map[string]string{}
 	for _, m := range sortedModuleKeys(byModule) {
-		localHash := moduleHash(byModule[m])
-		var dbHash string
+		var h string
 		err := w.read(func(tx neo4j.ManagedTransaction) error {
 			res, err := tx.Run(w.ctx,
 				"MATCH (m:GoModule {id: $id}) RETURN m.content_hash AS h",
@@ -347,8 +348,8 @@ func (w *boltWriter) changedModules(byModule map[string][]NodeRow) (map[string]b
 				return err
 			}
 			if res.Next(w.ctx) {
-				if h, ok := res.Record().Get("h"); ok && h != nil {
-					dbHash, _ = h.(string)
+				if v, ok := res.Record().Get("h"); ok && v != nil {
+					h, _ = v.(string)
 				}
 			}
 			return res.Err()
@@ -356,13 +357,26 @@ func (w *boltWriter) changedModules(byModule map[string][]NodeRow) (map[string]b
 		if err != nil {
 			return nil, err
 		}
-		// Changed when the hash differs or the module is new, or when either side
-		// has no hash (can't prove unchanged → upsert).
-		if localHash == "" || dbHash == "" || localHash != dbHash {
+		dbHash[m] = h
+	}
+	return changedAgainst(byModule, func(m string) string { return dbHash[m] }), nil
+}
+
+// changedAgainst reports the modules whose rows must be upserted: a module
+// changed when its content_hash differs from the database's, when it is new, or
+// when either side has no hash (we cannot prove it unchanged). dbHash is the
+// stored hash of a module, "" when the module is absent. The comparison is pure,
+// so the lazy-push selection can be tested without a database.
+func changedAgainst(byModule map[string][]NodeRow, dbHash func(string) string) map[string]bool {
+	changed := map[string]bool{}
+	for m, nodes := range byModule {
+		local := moduleHash(nodes)
+		db := dbHash(m)
+		if local == "" || db == "" || local != db {
 			changed[m] = true
 		}
 	}
-	return changed, nil
+	return changed
 }
 
 // ─── upserts ──────────────────────────────────────────────────────────────────

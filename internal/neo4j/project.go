@@ -195,12 +195,21 @@ func (p *projector) projectType(modRef NodeRef, module string, t v2.Type) {
 
 	// Methods nest under their receiver type (containment-by-receiver).
 	for _, m := range t.Callables {
-		mRef := p.projectCallable(tRef, module, m)
+		// A method declared in another file is owned by that file's module: its text
+		// (span, body) lives there, and its id carries that file's prefix. Owning it
+		// by the receiver's module instead leaves a lazy push blind to edits in the
+		// declaring file, since only the receiver's content hash decides what is
+		// upserted. The node id is unchanged; only the row's owner moves.
+		owner := module
+		if m.SourceFile != "" {
+			owner = v2.ModuleID(p.analysis.Application.ID, m.SourceFile)
+		}
+		mRef := p.projectCallable(tRef, owner, m)
 		p.b.Edge(RelHasMethod, tRef, mRef, nil, "")
 		// A method declared in another file is also declared by that file's module,
 		// so "which file declares this method" is one query (spec v2-go-ids § Amendment).
 		if m.SourceFile != "" {
-			declaring := NodeRef{Label: LabelModule, KeyProp: "id", Value: v2.ModuleID(p.analysis.Application.ID, m.SourceFile)}
+			declaring := NodeRef{Label: LabelModule, KeyProp: "id", Value: owner}
 			p.b.Edge(RelDeclares, declaring, mRef, nil, "")
 		}
 	}
