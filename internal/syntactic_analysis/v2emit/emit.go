@@ -254,7 +254,7 @@ func (e *emitter) envelope(app *schema.GoApplication, maxLevel int, analyzerVers
 			CallGraph: emitCallGraph(app.CallGraph, e.idx),
 		},
 	}
-	out.Application.ExternalSymbols = emitExternalSymbols(e.appID, app.Externals, e.sdg.standIns())
+	out.Application.ExternalSymbols = emitExternalSymbols(app.Externals, e.idx.externals, e.sdg.standIns())
 	out.Application.Artifacts, out.Application.Dependencies = emitRepository(e.appID, app.Repository)
 	if e.flow.on {
 		out.KLimit = kLimit
@@ -473,19 +473,23 @@ func calleeID(sig *string, idx sigIndex) *string {
 }
 
 // externalIDs maps each library callee's full signature to its @external id.
+//
+// The result is the single source of external ids: the call-edge index and
+// external_symbols both read it, so an edge and its symbol always agree. Ids
+// that collide are made distinct (v2.DisambiguateExternalIDs).
 func externalIDs(appID string, externals map[string]schema.GoExternalCallee) map[string]string {
-	ids := make(map[string]string, len(externals))
+	plain := make(map[string]string, len(externals))
 	for fullSig, ext := range externals {
-		ids[fullSig] = v2.ExternalID(appID, ext.ImportPath, ext.Sig)
+		plain[fullSig] = v2.ExternalID(appID, ext.ImportPath, ext.Sig)
 	}
-	return ids
+	return v2.DisambiguateExternalIDs(plain)
 }
 
 // emitExternalSymbols builds application.external_symbols, keyed by @external
 // id. Nil (omitted from JSON) when no library callee was recorded. At L4
 // standIns (by full callee signature) gives each stand-in its body: its
 // formal vertices, id v2.GlobalOrdinal(external id, key).
-func emitExternalSymbols(appID string, externals map[string]schema.GoExternalCallee, standIns map[string][]sdg.Vertex) map[string]v2.ExternalSymbol {
+func emitExternalSymbols(externals map[string]schema.GoExternalCallee, ids map[string]string, standIns map[string][]sdg.Vertex) map[string]v2.ExternalSymbol {
 	for _, sig := range slices.Sorted(maps.Keys(standIns)) {
 		if _, ok := externals[sig]; !ok {
 			warnf("L4 emit: stand-in %s is not an external symbol; its body is dropped", sig)
@@ -496,7 +500,7 @@ func emitExternalSymbols(appID string, externals map[string]schema.GoExternalCal
 	}
 	out := make(map[string]v2.ExternalSymbol, len(externals))
 	for fullSig, ext := range externals {
-		id := v2.ExternalID(appID, ext.ImportPath, ext.Sig)
+		id := ids[fullSig]
 		params := make([]v2.ExternalParameter, 0, len(ext.Params))
 		for _, p := range ext.Params {
 			params = append(params, v2.ExternalParameter{Name: p.Name, Type: p.Type, IsVariadic: p.IsVariadic})

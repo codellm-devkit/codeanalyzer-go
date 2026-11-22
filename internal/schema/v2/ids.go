@@ -1,6 +1,8 @@
 package v2
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"unicode"
@@ -109,6 +111,31 @@ func ExternalID(appID, importPath, sig string) string {
 		return appID + idSep + "@external" + idSep + importPath
 	}
 	return appID + idSep + "@external" + idSep + importPath + idSep + strings.ReplaceAll(sig, ".", idSep)
+}
+
+// DisambiguateExternalIDs gives every external callee a distinct id. plain maps a
+// callee's full signature to its ExternalID. The dot-to-segment rule is not
+// injective: a method Box.Put in package example.com/dep and a function Put in
+// package example.com/dep/Box both give example.com/dep/Box/Put. A callee whose
+// plain id is unique keeps it, so every id that was already emitted is unchanged.
+// Callees that share a plain id each get ":" plus the first 16 hex digits of the
+// SHA-256 of their own full signature. That suffix depends only on the callee, not
+// on which other callees are present or in what order, so an id is stable while
+// the collision lasts and no callee overwrites another.
+func DisambiguateExternalIDs(plain map[string]string) map[string]string {
+	count := make(map[string]int, len(plain))
+	for _, id := range plain {
+		count[id]++
+	}
+	out := make(map[string]string, len(plain))
+	for fullSig, id := range plain {
+		if count[id] > 1 {
+			sum := sha256.Sum256([]byte(fullSig))
+			id += ":" + hex.EncodeToString(sum[:8])
+		}
+		out[fullSig] = id
+	}
+	return out
 }
 
 // memberName is the member segment a symbol contributes under its parent: the
