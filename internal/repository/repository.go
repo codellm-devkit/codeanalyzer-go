@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -45,13 +46,25 @@ var outputFileNames = map[string]bool{"analysis.json": true, "graph.cypher": tru
 
 // Discover returns every non-.go regular file under root as an artifact, keyed by
 // its repo-relative POSIX path. Files are visited in lexical order.
+//
+// The root, OutputDir and CacheDir are resolved through symlinks before the walk.
+// filepath.WalkDir does not follow a symlink at the root, so a project reached
+// through one would otherwise yield no artifacts at all. Symlinks found inside the
+// tree are still not followed (they are skipped, as before), so discovery never
+// leaves the project root.
 func Discover(root string, opts Options) (map[string]schema.GoArtifact, error) {
-	absRoot, err := filepath.Abs(root)
+	absRoot, err := resolveDir(root)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("resolving project root: %w", err)
 	}
-	outDir := absOrEmpty(opts.OutputDir)
-	cacheDir := absOrEmpty(opts.CacheDir)
+	outDir, err := optionalDir(opts.OutputDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolving output directory: %w", err)
+	}
+	cacheDir, err := optionalDir(opts.CacheDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolving cache directory: %w", err)
+	}
 	out := map[string]schema.GoArtifact{}
 	err = filepath.WalkDir(absRoot, func(p string, d fs.DirEntry, werr error) error {
 		if werr != nil {
@@ -86,15 +99,40 @@ func Discover(root string, opts Options) (map[string]schema.GoArtifact, error) {
 	return out, nil
 }
 
-func absOrEmpty(p string) string {
+// optionalDir resolves an optional directory setting; "" means unset.
+func optionalDir(p string) (string, error) {
 	if p == "" {
-		return ""
+		return "", nil
 	}
+	return resolveDir(p)
+}
+
+// resolveDir returns the absolute, symlink-free form of p. p need not exist yet
+// (an output directory may be created later): the longest existing ancestor is
+// resolved and the missing tail is re-appended. Any error other than "does not
+// exist" (a symlink loop, a permission failure) is returned rather than ignored,
+// so the self-exclusion comparisons never silently turn off.
+func resolveDir(p string) (string, error) {
 	abs, err := filepath.Abs(p)
 	if err != nil {
-		return ""
+		return "", err
 	}
-	return abs
+	cur, tail := abs, ""
+	for {
+		resolved, err := filepath.EvalSymlinks(cur)
+		if err == nil {
+			return filepath.Join(resolved, tail), nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return abs, nil
+		}
+		tail = filepath.Join(filepath.Base(cur), tail)
+		cur = parent
+	}
 }
 
 // readArtifact hashes the whole file and classifies it. Text source is kept only
