@@ -32,6 +32,7 @@ import (
 	"github.com/codellm-devkit/codeanalyzer-go/internal/analysis"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/dataflow"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/options"
+	"github.com/codellm-devkit/codeanalyzer-go/internal/repository"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/schema"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/sdg"
 	"github.com/codellm-devkit/codeanalyzer-go/internal/semantic_analysis"
@@ -43,6 +44,10 @@ import (
 // Analyzer is the top-level analysis driver. Construct with New() and call Analyze().
 type Analyzer struct {
 	opts options.AnalysisOptions
+	// cacheRoot is the cache directory as the user gave it, before the
+	// per-application identity-v2-<hash> suffix. The repository layer excludes all
+	// of it, so no application's cache is recorded as a project artifact.
+	cacheRoot string
 	// l3 is the Phase 5 side table (nil below L3). It stays off
 	// schema.GoApplication: schema must not depend on dataflow, and the
 	// cached v1 model has no L3 facts.
@@ -84,15 +89,37 @@ func resolveIdentity(opts options.AnalysisOptions) (v2.Identity, error) {
 
 // New creates an Analyzer with a cache isolated by canonical application identity.
 func New(opts options.AnalysisOptions) *Analyzer {
+	// The root is kept before the per-application suffix: it is the tool's own cache
+	// location, and every application's subdirectory lives beneath it.
+	cacheRoot := opts.CacheDir
 	if identity, err := resolveIdentity(opts); err == nil && opts.CacheDir != "" {
 		key := sha256.Sum256([]byte(identity.ApplicationID))
 		opts.CacheDir = filepath.Join(opts.CacheDir, fmt.Sprintf("identity-v2-%x", key))
 	}
-	return &Analyzer{opts: opts}
+	return &Analyzer{opts: opts, cacheRoot: cacheRoot}
 }
 
 // Analyze runs the full analysis pipeline and returns a GoApplication.
 func (a *Analyzer) Analyze() (*schema.GoApplication, error) {
+	app, err := a.analyze()
+	if err != nil {
+		return nil, err
+	}
+	// The repository layer reads files outside the Go source, so it is computed
+	// on every run, after the (possibly cached) application is ready.
+	facts, err := repository.Facts(a.opts.InputPath, app, repository.Options{
+		CaptureText: a.opts.ArtifactText,
+		OutputDir:   a.opts.OutputDir,
+		CacheDir:    a.cacheRoot,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("repository layer: %w", err)
+	}
+	app.Repository = facts
+	return app, nil
+}
+
+func (a *Analyzer) analyze() (*schema.GoApplication, error) {
 	if _, err := resolveIdentity(a.opts); err != nil {
 		return nil, err
 	}

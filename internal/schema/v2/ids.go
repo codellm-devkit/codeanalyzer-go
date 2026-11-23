@@ -1,6 +1,8 @@
 package v2
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"unicode"
@@ -15,18 +17,26 @@ import (
 // Durable id grammar (the app segment is outermost so a polyglot app shares one
 // `can://<namespace>/<app>` prefix across languages; the language follows it):
 //
-//	can://<namespace>/<app>/<lang>/<file>/<type>/<callable-signature>
-//	can://myapp/myapp/go/src/util.go/Hasher/Hash(string)uint64
+//	can://<namespace>/<app>/<lang>/<file>                  module
+//	can://<namespace>/<app>/<lang>/<file>/<Type>           type
+//	can://<namespace>/<app>/<lang>/<file>/<Type>/<Method>  method
+//	can://<namespace>/<app>/<lang>/<file>/<Name>           package-level function
+//	can://myapp/myapp/go/util.go/Hasher/Hash               e.g. a method
+//
+// Each member segment is the bare name: the package import path is dropped (it is
+// always before the last dot of the signature, and Go names contain no dots).
+// Closures nest under their enclosing callable as closure_N.
 //
 // External (out-of-project) symbols are language-neutral:
 //
-//	can://<namespace>/<app>/@external/<import-path>/<sig>
+//	can://<namespace>/<app>/@external/<import-path>/<Type>/<Member>
+//	can://myapp/myapp/@external/strings/Builder/WriteString
 //
 // Ordinal id grammar (statements and synthetic vertices, addressed WITHIN their
 // callable):
 //
-//	<callable-id>@<line>:<col>   e.g. …/Hash(string)uint64@15:2
-//	<callable-id>@<tag>          e.g. …/Hash(string)uint64@entry
+//	<callable-id>@<line>:<col>   e.g. …/Hasher/Hash@15:2
+//	<callable-id>@<tag>          e.g. …/Hasher/Hash@entry
 //
 // The delimiters `/`, `@`, `:` are fixed by the keystone; do not substitute.
 const (
@@ -91,13 +101,54 @@ func ModuleID(appID, relPath string) string {
 }
 
 // ExternalID builds the id of an out-of-project symbol:
-// <app-id>/@external/<import-path>/<sig>. It is language-neutral. An empty sig
-// (an import-level ghost, no symbol) yields <app-id>/@external/<import-path>.
+// <app-id>/@external/<import-path>/<Type>/<Member> (or .../<Name> for a
+// package-level function). sig is the callee signature without the import-path
+// prefix ("Client.Zone"); its dots become path segments, matching the in-project
+// form. It is language-neutral. An empty sig (an import-level ghost, no symbol)
+// yields <app-id>/@external/<import-path>.
 func ExternalID(appID, importPath, sig string) string {
 	if sig == "" {
 		return appID + idSep + "@external" + idSep + importPath
 	}
-	return appID + idSep + "@external" + idSep + importPath + idSep + sig
+	return appID + idSep + "@external" + idSep + importPath + idSep + strings.ReplaceAll(sig, ".", idSep)
+}
+
+// DisambiguateExternalIDs gives every external callee a distinct id. plain maps a
+// callee's full signature to its ExternalID. The dot-to-segment rule is not
+// injective: a method Box.Put in package example.com/dep and a function Put in
+// package example.com/dep/Box both give example.com/dep/Box/Put. A callee whose
+// plain id is unique keeps it, so every id that was already emitted is unchanged.
+// Callees that share a plain id each get ":" plus the first 16 hex digits of the
+// SHA-256 of their own full signature. That suffix depends only on the callee, not
+// on which other callees are present or in what order, so an id is stable while
+// the collision lasts and no callee overwrites another.
+func DisambiguateExternalIDs(plain map[string]string) map[string]string {
+	count := make(map[string]int, len(plain))
+	for _, id := range plain {
+		count[id]++
+	}
+	out := make(map[string]string, len(plain))
+	for fullSig, id := range plain {
+		if count[id] > 1 {
+			sum := sha256.Sum256([]byte(fullSig))
+			id += ":" + hex.EncodeToString(sum[:8])
+		}
+		out[fullSig] = id
+	}
+	return out
+}
+
+// memberName is the member segment a symbol contributes under its parent: the
+// part of its signature after the last dot. The package import path is always
+// before that dot and Go identifiers contain no dots, so this strips the path
+// and keeps the bare name (a function or type name, a method name, or a closure
+// name such as closure_1). Precedent: codeanalyzer-typescript idFromSig and
+// codeanalyzer-python child_id.
+func memberName(sig string) string {
+	if i := strings.LastIndex(sig, "."); i >= 0 {
+		return sig[i+1:]
+	}
+	return sig
 }
 
 // GlobalOrdinal joins a callable id and a local ordinal: callableID + local
@@ -110,17 +161,18 @@ func GlobalOrdinal(callableID, local string) string {
 	return callableID + ordinalSep + local
 }
 
-// TypeID builds a type id under its module. sig is the type's signatureOf()
-// output — the last (and only) segment the type contributes.
+// TypeID builds a type id under its module: <module>/<Type>. sig is the type's
+// signatureOf() output; the package path is dropped (see memberName).
 func TypeID(moduleID, sig string) string {
-	return moduleID + idSep + sig
+	return moduleID + idSep + memberName(sig)
 }
 
-// CallableID builds a callable id under its parent. For a method the parent is
-// its receiver Type id; for a module-level function the parent is the Module
-// id. sig is the callable's signatureOf() output — the last path segment.
+// CallableID builds a callable id under its parent: <Type>/<Method> for a
+// method (parent is the receiver Type id), <module>/<Name> for a package-level
+// function (parent is the Module id), <enclosing>/closure_N for a closure. sig is
+// the callable's signatureOf() output; the package path is dropped (see memberName).
 func CallableID(parentID, sig string) string {
-	return parentID + idSep + sig
+	return parentID + idSep + memberName(sig)
 }
 
 // OrdinalID addresses a real body node (statement / call) within its callable

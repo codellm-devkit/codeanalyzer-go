@@ -81,8 +81,11 @@ type AnalyzerTag struct {
 
 // Application is the root node of the containment tree.
 type Application struct {
-	IdentityVersion   int    `json:"identity_version"`
-	ApplicationName   string `json:"application_name"`
+	IdentityVersion int    `json:"identity_version"`
+	ApplicationName string `json:"application_name"`
+	// Name is the application's name: the same value as ApplicationName (additive,
+	// spec v2-application-name-field). ApplicationName is kept unchanged.
+	Name              string `json:"name"`
 	IdentityNamespace string `json:"identity_namespace"`
 	// ID is `can://<namespace>/<app>` — the app segment is outermost, so a polyglot
 	// app shares one prefix across languages. <app> is the --app-name value (default: input dir base name).
@@ -97,6 +100,12 @@ type Application struct {
 	// reaches, keyed by their `can://<namespace>/<app>/@external/<import-path>/<sig>` id.
 	// Absent when the analysis saw no library call.
 	ExternalSymbols map[string]ExternalSymbol `json:"external_symbols,omitempty"`
+	// Artifacts holds every non-.go project file, keyed by its repo-relative path
+	// (spec v2-artifacts). Level-independent; absent when the project has no files.
+	Artifacts map[string]Artifact `json:"artifacts,omitempty"`
+	// Dependencies holds the go.mod requires, sorted by module path. Absent when
+	// the project has no root go.mod.
+	Dependencies []Dependency `json:"dependencies,omitempty"`
 	// ParamIn and ParamOut are the L4 interprocedural parameter edges between
 	// global body-node ids. Absent below -a 4.
 	ParamIn  []ParamEdge `json:"param_in,omitempty"`
@@ -148,6 +157,9 @@ type Module struct {
 	ID   string `json:"id"`
 	Kind string `json:"kind"` // always "module"
 	Span Span   `json:"span"`
+	// StartLine and EndLine equal span.start[0] and span.end[0] (the whole file).
+	StartLine int `json:"start_line"`
+	EndLine   int `json:"end_line"`
 	// Package is the Go package the file belongs to.
 	Package string `json:"package"`
 	// Source is the WHOLE file's text, stored once. Every node's text slices
@@ -165,10 +177,12 @@ type Module struct {
 
 // Import is a single import declaration.
 type Import struct {
-	Name  string `json:"name"`            // imported package name
-	Path  string `json:"path"`            // import path, e.g. "hash/fnv"
-	Alias string `json:"alias,omitempty"` // present only when aliased
-	Span  Span   `json:"span"`
+	Name      string `json:"name"`            // imported package name
+	Path      string `json:"path"`            // import path, e.g. "hash/fnv"
+	Alias     string `json:"alias,omitempty"` // present only when aliased
+	Span      Span   `json:"span"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
 }
 
 // ─── type ─────────────────────────────────────────────────────────────────────
@@ -176,9 +190,14 @@ type Import struct {
 // Type is a named Go type. Kind is the specific type-declaration shape, not a
 // pile of is_* booleans.
 type Type struct {
-	ID   string `json:"id"`
-	Kind string `json:"kind"` // struct | interface | alias | defined
-	Span Span   `json:"span"`
+	ID        string `json:"id"`
+	Kind      string `json:"kind"` // struct | interface | alias | defined
+	Span      Span   `json:"span"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
+	// Signature is the type's full import-qualified name (one signatureOf()). The
+	// id carries only the bare type name, so this is where the package path lives.
+	Signature string `json:"signature"`
 	// BaseTypes are embedded type ids (struct/interface embedding — the explicit
 	// spine).
 	BaseTypes []string `json:"base_types,omitempty"`
@@ -194,10 +213,12 @@ type Type struct {
 
 // Field is a struct field.
 type Field struct {
-	ID   string `json:"id"`
-	Kind string `json:"kind"` // always "field"
-	Type string `json:"type"`
-	Span Span   `json:"span"`
+	ID        string `json:"id"`
+	Kind      string `json:"kind"` // always "field"
+	Type      string `json:"type"`
+	Span      Span   `json:"span"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
 }
 
 // ─── callable ─────────────────────────────────────────────────────────────────
@@ -205,10 +226,13 @@ type Field struct {
 // Callable is a function, method, or closure. span.bytes → get_method_body =
 // module.source[bytes].
 type Callable struct {
-	ID   string `json:"id"`
-	Kind string `json:"kind"` // function | method | lambda
-	Span Span   `json:"span"`
-	// Signature is the human-readable last path segment of ID (one signatureOf()).
+	ID        string `json:"id"`
+	Kind      string `json:"kind"` // function | method | lambda
+	Span      Span   `json:"span"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
+	// Signature is the full import-qualified name (one signatureOf()). The id
+	// carries only the bare member name, so this field is where the package path lives.
 	Signature string `json:"signature"`
 	// SourceFile names the callable's declaring file (a symbol_table key) when it
 	// differs from the module this callable is nested under — the Go case where a
@@ -248,6 +272,8 @@ type Parameter struct {
 	Name       string `json:"name"`
 	Type       string `json:"type"`
 	Span       Span   `json:"span"`
+	StartLine  int    `json:"start_line"`
+	EndLine    int    `json:"end_line"`
 	IsVariadic bool   `json:"is_variadic,omitempty"`
 }
 
@@ -266,6 +292,9 @@ type BodyNode struct {
 	// Span is the node's source range. Absent (zero) only on the synthetic
 	// entry/exit nodes, which have no source.
 	Span Span `json:"span,omitzero"`
+	// StartLine and EndLine equal span.start[0] and span.end[0]; absent with the span.
+	StartLine int `json:"start_line,omitempty"`
+	EndLine   int `json:"end_line,omitempty"`
 	// Parent is, at L3+, the local key of the statement a satellite call
 	// node is nested in (the sanctioned parent refinement). Absent on CFG
 	// nodes.
@@ -340,4 +369,32 @@ type Edge struct {
 	Prov []string `json:"prov,omitempty"`
 	// Weight accumulates when merging edges from multiple backends.
 	Weight int `json:"weight,omitempty"`
+}
+
+// Artifact is one non-.go project file. Its id is can://<namespace>/<app>/artifact/<path>.
+// Source is the whole file text only under --artifact-text; otherwise absent.
+type Artifact struct {
+	ID         string   `json:"id"`
+	Kind       string   `json:"kind"` // always "artifact"
+	Path       string   `json:"path"`
+	Format     string   `json:"format"`
+	Roles      []string `json:"roles,omitempty"`
+	SizeBytes  int64    `json:"size_bytes"`
+	SHA256     string   `json:"sha256"`
+	Source     string   `json:"source,omitempty"`
+	Extraction string   `json:"extraction"` // none | full
+}
+
+// Dependency is one declared module requirement from go.mod. Its package is
+// pkg:<ecosystem>/<name>, version-less; the version lives on the record.
+type Dependency struct {
+	Name            string   `json:"name"`
+	Ecosystem       string   `json:"ecosystem"` // always "golang"
+	Spec            string   `json:"spec"`      // version required by go.mod
+	Kind            string   `json:"kind"`      // always "runtime" (go.mod has no dev/optional split)
+	Direct          bool     `json:"direct"`    // false for `// indirect`
+	LockedVersion   string   `json:"locked_version,omitempty"`
+	DeclaredIn      string   `json:"declared_in"` // the go.mod artifact id
+	ProvidesImports []string `json:"provides_imports,omitempty"`
+	Prov            []string `json:"prov"` // declared | lockfile
 }
