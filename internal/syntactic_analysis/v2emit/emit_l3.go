@@ -70,6 +70,7 @@ func l3BodyNode(n dataflow.Node, li *lineIndex) v2.BodyNode {
 	bn := v2.BodyNode{Kind: string(n.Kind), Parent: n.Parent}
 	if n.Kind != dataflow.KindEntry && n.Kind != dataflow.KindExit {
 		bn.Span = colSpan(li, n.StartLC[0], n.StartLC[1], n.EndLC[0], n.EndLC[1])
+		bn.StartLine, bn.EndLine = bn.Span.Start[0], bn.Span.End[0]
 	}
 	return bn
 }
