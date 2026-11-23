@@ -2,6 +2,7 @@ package neo4j
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 
 	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
@@ -33,6 +34,7 @@ func Project(a *v2.Analysis) GraphRows {
 		declared: collectDeclaredIDs(a),
 	}
 	p.projectApplication()
+	p.projectRepository()
 	for _, mod := range a.Application.SymbolTable {
 		p.projectModule(mod)
 	}
@@ -56,7 +58,7 @@ func (p *projector) projectApplication() {
 		[]string{LabelApplication, MarkerLabel},
 		"id", a.Application.ID,
 		Props{
-			"identity_version": a.IdentityVersion, "application_name": a.Application.ApplicationName, "identity_namespace": a.Application.IdentityNamespace, "schema_version": a.SchemaVersion,
+			"identity_version": a.IdentityVersion, "application_name": a.Application.ApplicationName, "name": a.Application.Name, "identity_namespace": a.Application.IdentityNamespace, "schema_version": a.SchemaVersion,
 			"language":         a.Language,
 			"max_level":        a.MaxLevel,
 			"analyzer_name":    a.Analyzer.Name,
@@ -84,6 +86,48 @@ func (p *projector) appRef() NodeRef {
 	return NodeRef{Label: LabelApplication, KeyProp: "id", Value: p.analysis.Application.ID}
 }
 
+// ─── repository layer (spec v2-artifacts) ────────────────────────────────────
+
+// projectRepository writes the artifact and dependency rows. An artifact is an
+// app-scoped node (its id is a can:// id) hung off the application; a dependency
+// is a neutral :Package keyed by its version-less purl, declared by the go.mod
+// artifact and, when go.sum locks it, locked by the go.sum artifact.
+func (p *projector) projectRepository() {
+	arts := p.analysis.Application.Artifacts
+	paths := make([]string, 0, len(arts))
+	for path := range arts {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		art := arts[path]
+		ref := p.b.Node(
+			[]string{LabelArtifact, MarkerLabel},
+			"id", art.ID,
+			Props{"path": art.Path, "format": art.Format},
+			"", // an artifact belongs to no single module
+		)
+		p.b.Edge(RelHasArtifact, p.appRef(), ref, nil, "")
+	}
+
+	goSum, hasGoSum := arts["go.sum"]
+	for _, dep := range p.analysis.Application.Dependencies {
+		pkgRef := p.b.Node(
+			[]string{LabelPackage},
+			"id", "pkg:"+dep.Ecosystem+"/"+dep.Name,
+			Props{"ecosystem": dep.Ecosystem, "name": dep.Name},
+			"",
+		)
+		declaredBy := NodeRef{Label: LabelArtifact, KeyProp: "id", Value: dep.DeclaredIn}
+		p.b.Edge(RelDeclaresDependency, declaredBy, pkgRef,
+			Props{"spec": dep.Spec, "direct": dep.Direct, "prov": dep.Prov}, dep.Kind)
+		if dep.LockedVersion != "" && hasGoSum {
+			p.b.Edge(RelLocks, NodeRef{Label: LabelArtifact, KeyProp: "id", Value: goSum.ID}, pkgRef,
+				Props{"locked_version": dep.LockedVersion}, "")
+		}
+	}
+}
+
 // ─── module ──────────────────────────────────────────────────────────────────
 
 func (p *projector) projectModule(m v2.Module) {
@@ -95,6 +139,7 @@ func (p *projector) projectModule(m v2.Module) {
 			"source":       m.Source,
 			"content_hash": emptyToNil(m.ContentHash),
 			"span_json":    spanJSON(m.Span),
+			"start_line":   spanLine(m.Span, true), "end_line": spanLine(m.Span, false),
 		},
 		m.ID,
 	)
@@ -117,9 +162,10 @@ func (p *projector) projectType(modRef NodeRef, module string, t v2.Type) {
 		[]string{SymbolLabel, LabelType, MarkerLabel},
 		"id", t.ID,
 		Props{
-			"kind":      t.Kind, // struct|interface|alias|defined (decision T1)
-			"signature": lastSegment(t.ID),
-			"span_json": spanJSON(t.Span),
+			"kind":       t.Kind, // struct|interface|alias|defined (decision T1)
+			"signature":  t.Signature,
+			"span_json":  spanJSON(t.Span),
+			"start_line": spanLine(t.Span, true), "end_line": spanLine(t.Span, false),
 		},
 		module,
 	)
@@ -141,7 +187,7 @@ func (p *projector) projectType(modRef NodeRef, module string, t v2.Type) {
 		fRef := p.b.Node(
 			[]string{LabelField, MarkerLabel},
 			"id", f.ID,
-			Props{"kind": f.Kind, "type": f.Type, "span_json": spanJSON(f.Span)},
+			Props{"kind": f.Kind, "type": f.Type, "span_json": spanJSON(f.Span), "start_line": spanLine(f.Span, true), "end_line": spanLine(f.Span, false)},
 			module,
 		)
 		p.b.Edge(RelHasField, tRef, fRef, nil, "")
@@ -149,8 +195,23 @@ func (p *projector) projectType(modRef NodeRef, module string, t v2.Type) {
 
 	// Methods nest under their receiver type (containment-by-receiver).
 	for _, m := range t.Callables {
-		mRef := p.projectCallable(tRef, module, m)
+		// A method declared in another file is owned by that file's module: its text
+		// (span, body) lives there, and its id carries that file's prefix. Owning it
+		// by the receiver's module instead leaves a lazy push blind to edits in the
+		// declaring file, since only the receiver's content hash decides what is
+		// upserted. The node id is unchanged; only the row's owner moves.
+		owner := module
+		if m.SourceFile != "" {
+			owner = v2.ModuleID(p.analysis.Application.ID, m.SourceFile)
+		}
+		mRef := p.projectCallable(tRef, owner, m)
 		p.b.Edge(RelHasMethod, tRef, mRef, nil, "")
+		// A method declared in another file is also declared by that file's module,
+		// so "which file declares this method" is one query (spec v2-go-ids § Amendment).
+		if m.SourceFile != "" {
+			declaring := NodeRef{Label: LabelModule, KeyProp: "id", Value: owner}
+			p.b.Edge(RelDeclares, declaring, mRef, nil, "")
+		}
 	}
 }
 
@@ -170,7 +231,8 @@ func (p *projector) projectCallable(parentRef NodeRef, module string, c v2.Calla
 			"error_channel": stringsOrNil(c.ErrorChannel),
 			"source_file":   emptyToNil(c.SourceFile), // only when ≠ nesting module (D8)
 			"span_json":     spanJSON(c.Span),
-			"metrics_json":  metricsJSON(c.Metrics),
+			"start_line":    spanLine(c.Span, true), "end_line": spanLine(c.Span, false),
+			"metrics_json": metricsJSON(c.Metrics),
 		},
 		module,
 	)
@@ -213,7 +275,8 @@ func (p *projector) projectBodyNode(callableRef NodeRef, module, callableID, loc
 			"is_goroutine": boolOrNil(bn.IsGoroutine),
 			"is_deferred":  boolOrNil(bn.IsDeferred),
 			"span_json":    bodySpanJSON(bn.Span),
-			"call_node":    callNode,
+			"start_line":   spanLine(bn.Span, true), "end_line": spanLine(bn.Span, false),
+			"call_node": callNode,
 			// var is JSON `of`: set on L4 vertices only (pruned when empty).
 			"var": emptyToNil(bn.Of),
 		},
@@ -387,6 +450,18 @@ func collectDeclaredIDs(a *v2.Analysis) map[string]bool {
 }
 
 // ─── flattening helpers ──────────────────────────────────────────────────────
+
+// spanLine is a span's start or end line as a node property, nil (pruned) for the
+// span-less synthetic nodes. Lines are 1-based, so a zero span is the absent one.
+func spanLine(s v2.Span, start bool) Value {
+	if s.Start[0] == 0 && s.End[0] == 0 {
+		return nil
+	}
+	if start {
+		return s.Start[0]
+	}
+	return s.End[0]
+}
 
 // spanJSON flattens a span to a compact JSON string property. (A span is a
 // nested map, which Neo4j cannot store as a property, so it rides as *_json —
