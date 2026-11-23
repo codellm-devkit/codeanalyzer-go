@@ -578,7 +578,6 @@ func TestGateL1_BodyNodeIDs(t *testing.T) {
 func TestGateL2_GoStatementArgumentCalls(t *testing.T) {
 	out := buildDataflowL2V2(t)
 	fn := functionByName(t, mustModule(t, out, "flow/flow.go"), "GoArgs")
-	const pkg = "example.com/dataflow/flow."
 	for _, w := range []struct {
 		key, callee string
 		goroutine   bool
@@ -599,7 +598,7 @@ func TestGateL2_GoStatementArgumentCalls(t *testing.T) {
 		if w.callee == "" {
 			continue
 		}
-		want := "can://dataflow/dataflow/go/flow/flow.go/" + pkg + w.callee
+		want := "can://dataflow/dataflow/go/flow/flow.go/" + w.callee
 		if n.Callee == nil || *n.Callee != want {
 			t.Errorf("GoArgs %s callee = %v, want %s", w.key, n.Callee, want)
 		}

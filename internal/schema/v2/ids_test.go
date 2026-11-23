@@ -97,7 +97,7 @@ func TestIDs_AppOutermost(t *testing.T) {
 	cases := []struct{ got, want string }{
 		{app, "can://shop/shop"},
 		{ModuleID(app, "pkg/a.go"), "can://shop/shop/go/pkg/a.go"},
-		{ExternalID(app, "database/sql", "DB.Query"), "can://shop/shop/@external/database/sql/DB.Query"},
+		{ExternalID(app, "database/sql", "DB.Query"), "can://shop/shop/@external/database/sql/DB/Query"},
 		{GlobalOrdinal("X/F", "@entry"), "X/F@entry"},
 		{GlobalOrdinal("X/F", "12:3"), "X/F@12:3"},
 	}

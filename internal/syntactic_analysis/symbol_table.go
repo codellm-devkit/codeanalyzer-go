@@ -270,6 +270,7 @@ func (b *SymbolTableBuilder) buildGoFile(
 					methods = append(methods, pendingMethod{typeName, callable})
 				}
 			} else {
+				callable.Signature = uniqueFuncSignature(gf.Functions, callable.Signature)
 				gf.Functions[callable.Signature] = *callable
 			}
 		}
@@ -284,6 +285,25 @@ func (b *SymbolTableBuilder) buildGoFile(
 	}
 
 	return gf
+}
+
+// uniqueFuncSignature returns sig for the first package-level function of that
+// signature in a file, and sig:N (N = 2, 3, ...) for each later one. Go permits
+// any number of func init() per file, and every one of them has the signature
+// "<pkgpath>.init". Without the suffix they collapse into one map entry, and
+// their call-graph edges (keyed on Source = Signature) merge too. The suffix is
+// safe: a colon cannot appear in a Go identifier, and no call site can name an
+// init, so no edge ever needs to resolve to a suffixed signature.
+func uniqueFuncSignature(fns map[string]schema.GoCallable, sig string) string {
+	if _, taken := fns[sig]; !taken {
+		return sig
+	}
+	for n := 2; ; n++ {
+		candidate := fmt.Sprintf("%s:%d", sig, n)
+		if _, taken := fns[candidate]; !taken {
+			return candidate
+		}
+	}
 }
 
 // ─── Imports ──────────────────────────────────────────────────────────────────

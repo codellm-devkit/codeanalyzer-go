@@ -18,17 +18,17 @@ import (
 //
 // Signatures are ALMOST globally unique (a method signature embeds its receiver
 // type), with one exception: package-level `func init()`. Go permits many init
-// functions per package (one per file), and they all share the signature
-// "<pkgpath>.init". They are nonetheless distinct callables with distinct
-// can:// ids — the id embeds the declaring file via its parent module — so a
-// flat signature→id map collapses them, and since it is populated by ranging a
-// Go map (random order) the surviving id is nondeterministic run to run. That
-// nondeterminism propagated into the call_graph edge set.
+// functions per file, and they all share the signature "<pkgpath>.init". The
+// symbol table gives the second and later ones a ":N" suffix (see
+// uniqueFuncSignature), so each init has its own signature and therefore its
+// own can:// id, call-graph endpoint and map key. A signature is then unique
+// per declaring file, and the flat map below is unambiguous except across files
+// that each declare an init.
 //
-// The index therefore keeps two maps: a flat signature→id (deterministic on
-// collision — smallest id wins) for the unique common case, and a
-// (signature,path)→id map that disambiguates the init collision by the source
-// callable's declaring file. See idFor / idForWithPath.
+// The index keeps two maps: a flat signature→id (deterministic on collision —
+// smallest id wins) for the unique common case, and a (signature,path)→id map
+// that resolves a signature declared in a specific file. See idFor /
+// idForWithPath.
 type sigIndex struct {
 	bySig     map[string]string
 	bySigPath map[sigPathKey]string
@@ -55,13 +55,26 @@ func buildSigIndex(appID string, symbolTable map[string]schema.GoFile) sigIndex 
 			idx.addCallable(modID, relPath, fn)
 		}
 		for _, t := range file.Types {
-			typeID := v2.TypeID(modID, t.Signature)
 			for _, m := range t.Methods {
-				idx.addCallable(typeID, relPath, m)
+				idx.addCallable(methodParentID(appID, relPath, t, m), relPath, m)
 			}
 		}
 	}
 	return idx
+}
+
+// methodParentID is the id a method nests under. A method declared in its
+// receiver type's file nests under that type's id. A method declared in another
+// file nests under the same type in the DECLARING file's module, so its id names
+// where the method is written (spec v2-go-ids § Amendment). The JSON node itself
+// stays in the receiver type's callables{}; only its id moves. modRel is the
+// receiver's module (the file the type lives in).
+func methodParentID(appID, modRel string, t schema.GoType, c schema.GoCallable) string {
+	mod := modRel
+	if c.Path != "" {
+		mod = c.Path
+	}
+	return v2.TypeID(v2.ModuleID(appID, mod), t.Signature)
 }
 
 // addCallable records one callable and recurses into its closures, matching the
@@ -80,7 +93,7 @@ func (idx sigIndex) addCallable(parentID, relPath string, c schema.GoCallable) {
 	}
 
 	// Precise entry: a callable's declaring file plus its signature is unique
-	// even for init, because at most one init exists per file. Call-graph
+	// (inits within one file carry distinct :N suffixes). Call-graph
 	// edges carry the declaring file (c.Path), which differs from relPath for
 	// a method declared apart from its receiver type, and for the closures in
 	// one; index both so either resolves.
