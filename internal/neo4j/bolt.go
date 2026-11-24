@@ -60,6 +60,11 @@ type BoltConfig struct {
 	FullRun bool
 }
 
+// boltBatchSize is the most rows one UNWIND write transaction carries (#59).
+// A whole group in one transaction can exceed the Neo4j transaction memory
+// limit on a large app. The driver also encodes each message in client memory.
+const boltBatchSize = 5000
+
 // WriteBolt pushes rows into the live DB per BoltConfig. appID scopes every
 // destructive statement; it must be the application root id.
 func WriteBolt(ctx context.Context, rows GraphRows, appID string, cfg BoltConfig) error {
@@ -377,12 +382,10 @@ func (w *boltWriter) upsertNodes(nodes []NodeRow) error {
 		}
 		q := fmt.Sprintf("UNWIND $rows AS row MERGE (n:%s {%s: row.k}) SET n += row.p%s",
 			mergeLabel, keyProp, setLabels)
-		params := map[string]any{"rows": nodeParams(g)}
-		if err := w.write(func(tx neo4j.ManagedTransaction) error {
-			_, err := tx.Run(w.ctx, q, params)
-			return err
-		}); err != nil {
-			return err
+		for _, chunk := range chunkNodes(g, boltBatchSize) {
+			if err := w.runBatch(q, nodeParams(chunk)); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -408,15 +411,22 @@ func (w *boltWriter) upsertEdges(edges []EdgeRow) error {
 		}
 		q := fmt.Sprintf("UNWIND $rows AS row MATCH (a:%s {%s: row.a}) MATCH (b:%s {%s: row.b}) %s SET r += row.p",
 			e0.From.Label, e0.From.KeyProp, e0.To.Label, e0.To.KeyProp, mergeClause)
-		params := map[string]any{"rows": edgeParams(g, keyed)}
-		if err := w.write(func(tx neo4j.ManagedTransaction) error {
-			_, err := tx.Run(w.ctx, q, params)
-			return err
-		}); err != nil {
-			return err
+		for _, chunk := range chunkEdges(g, boltBatchSize) {
+			if err := w.runBatch(q, edgeParams(chunk, keyed)); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+// runBatch runs one UNWIND statement over rows in its own write transaction.
+func (w *boltWriter) runBatch(q string, rows []map[string]any) error {
+	params := map[string]any{"rows": rows}
+	return w.write(func(tx neo4j.ManagedTransaction) error {
+		_, err := tx.Run(w.ctx, q, params)
+		return err
+	})
 }
 
 // ─── tx helpers ───────────────────────────────────────────────────────────────

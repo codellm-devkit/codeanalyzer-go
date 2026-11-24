@@ -2,6 +2,7 @@ package neo4j
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"reflect"
 	"strings"
@@ -95,6 +96,7 @@ type fakeDB struct {
 	rawNamespace     any
 	rawLevel         any
 	writes           []fakeStmt
+	txs              int // ExecuteWrite calls (explicit write transactions)
 }
 
 type fakeStmt struct {
@@ -113,6 +115,7 @@ func (s *fakeDB) Run(_ context.Context, q string, params map[string]any, _ ...fu
 }
 
 func (s *fakeDB) ExecuteWrite(ctx context.Context, work neo4j.ManagedTransactionWork, _ ...func(*neo4j.TransactionConfig)) (any, error) {
+	s.txs++
 	return work(fakeTx{db: s})
 }
 
@@ -532,5 +535,41 @@ func TestStoredOwnerAllowsFreshAndMatchingAnchor(t *testing.T) {
 		if len(db.writes) != 0 {
 			t.Fatal("identity probe mutated graph")
 		}
+	}
+}
+
+// TestBolt_UpsertsAreBatched (#59): a node or edge group larger than one batch
+// must be split over several write transactions of at most boltBatchSize rows.
+// One UNWIND of a whole group (millions of L4 rows on a large app) exceeds
+// Neo4j's dbms.memory.transaction.total.max and the client's memory.
+func TestBolt_UpsertsAreBatched(t *testing.T) {
+	const n = 2*boltBatchSize + 1
+	nodes := make([]NodeRow, n)
+	edges := make([]EdgeRow, n)
+	for i := range nodes {
+		id := fmt.Sprintf("can://team/app/go/f.go/fn%d", i)
+		nodes[i] = NodeRow{Labels: []string{LabelCallable, SymbolLabel, MarkerLabel}, KeyProp: "id", Value: id, Props: Props{"name": id}}
+		ref := NodeRef{Label: LabelCallable, KeyProp: "id", Value: id}
+		edges[i] = EdgeRow{Type: RelCalls, From: ref, To: ref, Props: Props{"weight": 1}}
+	}
+	db := &fakeDB{}
+	w := &boltWriter{ctx: context.Background(), session: db}
+	if err := w.upsertNodes(nodes); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.upsertEdges(edges); err != nil {
+		t.Fatal(err)
+	}
+	for _, st := range db.writes {
+		if rows, _ := st.params["rows"].([]map[string]any); len(rows) > boltBatchSize {
+			t.Errorf("one statement carries %d rows, want at most %d", len(rows), boltBatchSize)
+		}
+	}
+	if want := 2 * 3; db.txs != want || len(db.writes) != want {
+		t.Errorf("%d transactions, %d statements; want %d of each (3 node + 3 edge batches)", db.txs, len(db.writes), want)
+	}
+	gotNodes, gotEdges := db.pushed()
+	if len(gotNodes) != n || gotEdges[RelCalls] != n {
+		t.Errorf("pushed %d nodes, %d edges; want %d of each", len(gotNodes), gotEdges[RelCalls], n)
 	}
 }
