@@ -60,3 +60,28 @@ func TestL4Overlay_DuplicateKeyKeepsSmallerID(t *testing.T) {
 		}
 	}
 }
+
+// TestL4Overlay_QuietSecondWalk: after setQuiet, a second apply of the same callables warns nothing.
+func TestL4Overlay_QuietSecondWalk(t *testing.T) {
+	key := dataflow.L3Key{Path: "a.go", Signature: "example.com/a.F"}
+	ids := []string{"can://app/app/go/a.go/example.com/a.F", "can://app/app/go/b.go/example.com/a.F"}
+	var warned []string
+	prev := warnf
+	warnf = func(format string, args ...any) { warned = append(warned, fmt.Sprintf(format, args...)) }
+	defer func() { warnf = prev }()
+	o := newL4Overlay(4, &sdg.Result{}, sigIndex{})
+	walk := func() {
+		for _, id := range ids {
+			o.apply(&v2.Callable{ID: id, Body: map[string]v2.BodyNode{}}, key)
+		}
+	}
+	walk()
+	if len(warned) != 1 {
+		t.Fatalf("walk 1: %d warnings, want 1", len(warned))
+	}
+	o.setQuiet()
+	walk()
+	if len(warned) != 1 {
+		t.Errorf("walk 2: %d warnings in total, want 1", len(warned))
+	}
+}
