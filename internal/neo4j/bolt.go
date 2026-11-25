@@ -15,33 +15,33 @@ import (
 // CGO_ENABLED=0 static build still links; it is only exercised when EmitNeo4j
 // runs with a --neo4j-uri, never on the JSON path.
 //
-// Algorithm:
-//  1. ensure constraints + indexes;
-//  2. stored-application gate: read :GoApplication.schema_version and
+// The writer is a stager (stream.go); its stages run in push order (spec §5.3):
+//  1. begin: stored-application gate — read :GoApplication.schema_version and
 //     max_level scoped to this app's id; a version mismatch, or a stored level
 //     below this push's, forces a full re-UPSERT (never a delete — that is
-//     --eager's job);
-//  3. partition nodes by owning module (NodeRow.module); shared nodes (externals,
-//     neutral repo nodes) have none and are MERGE-only, always upserted; L4
-//     vertex nodes (a callable's or a stand-in's formal/actual vertices) are
-//     their own group;
-//  4. --eager? scoped purge of everything under the app prefix, then rebuild;
-//  5. diff each module's content_hash against the DB → the changed set;
-//  6. per changed module: on --eager, purge its owned edges + stale decls, then
-//     upsert its nodes; WITHOUT --eager the push only adds/updates;
-//  7. upsert every L4 vertex node, changed module or not (D5, below);
-//  8. upsert every edge (an unchanged edge's MERGE is a no-op);
-//  9. on a full --eager run, orphan-prune modules whose source vanished.
+//     --eager's job); ensure constraints + indexes; --eager? scoped purge of
+//     everything under the app prefix, then rebuild;
+//  2. shared: upsert the module-less repository nodes (MERGE-only, always);
+//  3. module, per module: diff its content_hash against the DB; when changed,
+//     on --eager purge its owned edges + stale decls, then upsert its L1–L3
+//     nodes (WITHOUT --eager the push only adds/updates); upsert its L4 vertex
+//     nodes, changed module or not (D5, below);
+//  4. late: upsert the ghosts, stand-in vertices and application row, and
+//     flush every node buffer;
+//  5. edges: upsert every edge (an unchanged edge's MERGE is a no-op);
+//  6. end: flush the edges; on a full --eager run, orphan-prune modules whose
+//     source vanished.
 //
 // D5 (spec §4.11): L4 facts are not module-local — editing a callee changes
 // its callers' summary edges, actual vertices and even formal_in indices —
 // so the content_hash diff gates the L1–L3 rows only. A lazy push upserts
-// every L4 row on every push: the vertex nodes (step 7), the stand-in
+// every L4 row on every push: the vertex nodes (steps 3–4), the stand-in
 // bodies among them, and the GO_PARAM_IN / GO_PARAM_OUT / GO_SUMMARY rows
-// and the port GO_DDG rows (prov ≠ ssa) with every other edge (step 8). It
+// and the port GO_DDG rows (prov ≠ ssa) with every other edge (step 5). It
 // is additive: a stale L4 row stays until an --eager push.
 //
-// A push NEVER deletes by default (#171): steps 4/6/8 run under --eager only.
+// A push NEVER deletes by default (#171): the purges and the prune run under
+// --eager only.
 // Every destructive statement is scoped on the can://<namespace>/<app>/ id prefix (#173),
 // anchored on :GoCanNode so it seeks an index.
 
@@ -65,12 +65,36 @@ type BoltConfig struct {
 // limit on a large app. The driver also encodes each message in client memory.
 const boltBatchSize = 5000
 
-// WriteBolt pushes rows into the live DB per BoltConfig. appID scopes every
-// destructive statement; it must be the application root id.
+// WriteBolt pushes ready rows into the live DB per BoltConfig. appID scopes
+// every destructive statement; it must be the application root id. Tests and
+// small graphs use it.
 func WriteBolt(ctx context.Context, rows GraphRows, appID string, cfg BoltConfig) error {
 	if err := validateIdentity(rows, appID); err != nil {
 		return err
 	}
+	return withSession(ctx, cfg, func(s neo4j.SessionWithContext) error {
+		_, _, err := replayRows(rows, newBoltWriter(ctx, s, appID, cfg))
+		return err
+	})
+}
+
+// PushBolt streams src into the DB in the two-pass order (spec §5.3). It
+// returns the row counts.
+func PushBolt(ctx context.Context, src Source, cfg BoltConfig) (nodes, edges int, err error) {
+	env := src.Envelope()
+	appID := env.Application.ID
+	if err = validateIdentity(GraphRows{Nodes: []NodeRow{appRow(env)}}, appID); err != nil {
+		return
+	}
+	err = withSession(ctx, cfg, func(s neo4j.SessionWithContext) error {
+		nodes, edges, err = streamGraph(src, newBoltWriter(ctx, s, appID, cfg))
+		return err
+	})
+	return
+}
+
+// withSession opens a driver and a session per cfg, runs fn, and closes both.
+func withSession(ctx context.Context, cfg BoltConfig, fn func(neo4j.SessionWithContext) error) error {
 	driver, err := neo4j.NewDriverWithContext(cfg.URI, neo4j.BasicAuth(cfg.User, cfg.Password, ""))
 	if err != nil {
 		return fmt.Errorf("neo4j driver: %w", err)
@@ -82,92 +106,121 @@ func WriteBolt(ctx context.Context, rows GraphRows, appID string, cfg BoltConfig
 
 	session := driver.NewSession(ctx, neo4j.SessionConfig{DatabaseName: cfg.Database})
 	defer func() { _ = session.Close(ctx) }()
-
-	w := &boltWriter{ctx: ctx, session: session, rows: rows, appID: appID, cfg: cfg}
-	return w.run()
+	return fn(session)
 }
 
+// boltWriter is the Bolt stager. Node rows are buffered per MERGE group and a
+// group runs once it holds boltBatchSize rows; every node buffer is flushed by
+// late, before the first edge statement, so no edge MATCH misses its endpoint.
 type boltWriter struct {
 	ctx     context.Context
 	session neo4j.SessionWithContext
-	rows    GraphRows
 	appID   string
 	cfg     BoltConfig
+	level   int  // max_level of the begin row
+	forced  bool // forceFull || cfg.Eager: every module counts as changed
+	scoped  bool
+	nodeBuf map[string][]NodeRow
+	edgeBuf map[string][]EdgeRow
 }
 
-func (w *boltWriter) run() error {
+func newBoltWriter(ctx context.Context, s neo4j.SessionWithContext, appID string, cfg BoltConfig) *boltWriter {
+	return &boltWriter{ctx: ctx, session: s, appID: appID, cfg: cfg,
+		nodeBuf: map[string][]NodeRow{}, edgeBuf: map[string][]EdgeRow{}}
+}
 
-	// Stored-application gate: a producer/consumer version mismatch, or a
-	// graph pushed at a lower level, forces a full re-upsert (it never
-	// deletes). The upsert path below is already a full MERGE of every
-	// current node, so it simply means we don't trust the per-module
-	// content_hash diff and upsert everything.
+// begin runs the stored-application gate, the DDL and the eager purge. A
+// producer/consumer version mismatch, or a graph pushed at a lower level,
+// forces a full re-upsert (it never deletes): the per-module content_hash
+// diff is not trusted and every module is upserted.
+func (w *boltWriter) begin(app NodeRow) error {
+	w.level, _ = app.Props["max_level"].(int)
 	forceFull, err := w.storedAppStale()
 	if err != nil {
 		return err
 	}
-
 	if err := w.ensureDDL(); err != nil {
 		return err
 	}
 	root, scoped := applicationPrefix(w.appID)
+	w.scoped = scoped
 	if w.shouldEagerPurge(scoped) {
 		if err := w.eagerPurge(root); err != nil {
 			return err
 		}
 	}
+	w.forced = forceFull || w.cfg.Eager
+	return nil
+}
 
-	// Partition nodes by owning module; shared nodes (module == "") and L4
-	// vertex nodes are always upserted.
-	byModule, shared, l4 := partitionNodes(w.rows.Nodes)
+// shared upserts the module-less nodes (MERGE-only, every run).
+func (w *boltWriter) shared(nodes []NodeRow) error {
+	if err := w.bufferNodes(nodes); err != nil {
+		return err
+	}
+	return w.flushNodes()
+}
 
-	// Diff content_hash per module unless a mismatch/eager forces everything.
-	changed := map[string]bool{}
-	if forceFull || w.cfg.Eager {
-		for m := range byModule {
-			changed[m] = true
+// module buffers one module's L1–L3 nodes when it changed (on --eager, after
+// purging its owned edges and stale decls), and its L4 vertex nodes always,
+// after the purge so it cannot delete them (D5).
+func (w *boltWriter) module(id string, nodes []NodeRow) error {
+	var core, l4 []NodeRow
+	for _, n := range nodes {
+		if isL4Node(n) {
+			l4 = append(l4, n)
+		} else {
+			core = append(core, n)
 		}
-	} else {
-		changed, err = w.changedModules(byModule)
-		if err != nil {
+	}
+	changed := w.forced
+	if !changed {
+		var err error
+		if changed, err = w.moduleChanged(id, moduleHash(core)); err != nil {
 			return err
 		}
 	}
-
-	// Upsert shared nodes (MERGE-only, every run) then changed-module nodes.
-	if err := w.upsertNodes(shared); err != nil {
-		return err
-	}
-	for _, m := range sortedModuleKeys(byModule) {
-		if !changed[m] {
-			continue
-		}
-		if w.cfg.Eager && scoped {
-			if err := w.purgeModule(m); err != nil {
+	if changed {
+		if w.cfg.Eager && w.scoped {
+			// Flushed first so the DB order matches the statement order;
+			// the purge only matches ids under this module's prefix.
+			if err := w.flushNodes(); err != nil {
+				return err
+			}
+			if err := w.purgeModule(id); err != nil {
 				return err
 			}
 		}
-		if err := w.upsertNodes(byModule[m]); err != nil {
+		if err := w.bufferNodes(core); err != nil {
 			return err
 		}
 	}
-	// L4 vertex nodes, after the module purges so an --eager purge of a
-	// changed module cannot delete them (D5).
-	if err := w.upsertNodes(l4); err != nil {
+	return w.bufferNodes(l4)
+}
+
+// late upserts the ghosts, the stand-in vertices and the application row,
+// and flushes every node buffer before the first edge statement.
+func (w *boltWriter) late(nodes []NodeRow) error {
+	if err := w.bufferNodes(nodes); err != nil {
 		return err
 	}
+	return w.flushNodes()
+}
 
-	// Upsert every edge: the L4 rows must be (D5), and for the L1–L3 rows
-	// the precise owner (the source node's module) buys nothing — a
-	// MERGE-upsert of an unchanged edge is a harmless no-op.
-	if err := w.upsertEdges(w.rows.Edges); err != nil {
+// edges buffers every edge: the L4 rows must be upserted (D5), and for the
+// L1–L3 rows the precise owner buys nothing — a MERGE-upsert of an unchanged
+// edge is a harmless no-op.
+func (w *boltWriter) edges(edges []EdgeRow) error {
+	return w.bufferEdges(edges)
+}
+
+// end flushes the edges and, on a full --eager run, prunes vanished modules.
+func (w *boltWriter) end(moduleIDs []string) error {
+	if err := w.flushEdges(); err != nil {
 		return err
 	}
-
-	if w.cfg.Eager && w.cfg.FullRun && scoped {
-		if err := w.pruneVanishedModules(byModule); err != nil {
-			return err
-		}
+	if w.cfg.Eager && w.cfg.FullRun && w.scoped {
+		return w.pruneVanishedModules(moduleIDs)
 	}
 	return nil
 }
@@ -250,20 +303,7 @@ func (w *boltWriter) storedAppStale() (bool, error) {
 	if stored != "" && stored != SchemaVersion || badLevel {
 		return true, nil
 	}
-	return haveLevel && storedLevel < int64(w.pushLevel()), nil
-}
-
-// pushLevel is the max_level of the application row this push carries (0
-// when it carries none).
-func (w *boltWriter) pushLevel() int {
-	for _, n := range w.rows.Nodes {
-		if n.Labels[0] == LabelApplication && n.Value == w.appID {
-			if l, ok := n.Props["max_level"].(int); ok {
-				return l
-			}
-		}
-	}
-	return 0
+	return haveLevel && storedLevel < int64(w.level), nil
 }
 
 // ─── destructive steps (--eager only) ─────────────────────────────────────────
@@ -311,11 +351,7 @@ func purgeModuleQuery(moduleID string) (string, map[string]any) {
 
 // pruneVanishedModules removes modules under the app prefix that this run no
 // longer emits (their source file vanished). Full + eager only.
-func (w *boltWriter) pruneVanishedModules(byModule map[string][]NodeRow) error {
-	present := make([]string, 0, len(byModule))
-	for m := range byModule {
-		present = append(present, m)
-	}
+func (w *boltWriter) pruneVanishedModules(present []string) error {
 	root, _ := applicationPrefix(w.appID)
 	desc := descendantPrefix(root)
 	return w.write(func(tx neo4j.ManagedTransaction) error {
@@ -329,95 +365,139 @@ func (w *boltWriter) pruneVanishedModules(byModule map[string][]NodeRow) error {
 
 // ─── diff ─────────────────────────────────────────────────────────────────────
 
-// changedModules compares each module's content_hash in rows against the DB.
-func (w *boltWriter) changedModules(byModule map[string][]NodeRow) (map[string]bool, error) {
-	changed := map[string]bool{}
-	for _, m := range sortedModuleKeys(byModule) {
-		localHash := moduleHash(byModule[m])
-		var dbHash string
-		err := w.read(func(tx neo4j.ManagedTransaction) error {
-			res, err := tx.Run(w.ctx,
-				"MATCH (m:GoModule {id: $id}) RETURN m.content_hash AS h",
-				map[string]any{"id": m})
-			if err != nil {
-				return err
-			}
-			if res.Next(w.ctx) {
-				if h, ok := res.Record().Get("h"); ok && h != nil {
-					dbHash, _ = h.(string)
-				}
-			}
-			return res.Err()
-		})
+// moduleChanged compares a module's local content_hash against the DB's.
+func (w *boltWriter) moduleChanged(id, localHash string) (bool, error) {
+	var dbHash string
+	err := w.read(func(tx neo4j.ManagedTransaction) error {
+		res, err := tx.Run(w.ctx,
+			"MATCH (m:GoModule {id: $id}) RETURN m.content_hash AS h",
+			map[string]any{"id": id})
 		if err != nil {
-			return nil, err
+			return err
 		}
-		// Changed when the hash differs or the module is new, or when either side
-		// has no hash (can't prove unchanged → upsert).
-		if localHash == "" || dbHash == "" || localHash != dbHash {
-			changed[m] = true
+		if res.Next(w.ctx) {
+			if h, ok := res.Record().Get("h"); ok && h != nil {
+				dbHash, _ = h.(string)
+			}
 		}
+		return res.Err()
+	})
+	if err != nil {
+		return false, err
 	}
-	return changed, nil
+	// Changed when the hash differs or the module is new, or when either side
+	// has no hash (can't prove unchanged → upsert).
+	return localHash == "" || dbHash == "" || localHash != dbHash, nil
 }
 
 // ─── upserts ──────────────────────────────────────────────────────────────────
 
+// upsertNodes and upsertEdges write a ready slice: buffer, then flush.
 func (w *boltWriter) upsertNodes(nodes []NodeRow) error {
-	if len(nodes) == 0 {
-		return nil
+	if err := w.bufferNodes(nodes); err != nil {
+		return err
 	}
-	groups := map[string][]NodeRow{}
+	return w.flushNodes()
+}
+
+func (w *boltWriter) upsertEdges(edges []EdgeRow) error {
+	if err := w.bufferEdges(edges); err != nil {
+		return err
+	}
+	return w.flushEdges()
+}
+
+// bufferNodes appends each node to its MERGE group and runs a group as soon
+// as it holds boltBatchSize rows.
+func (w *boltWriter) bufferNodes(nodes []NodeRow) error {
+	if w.nodeBuf == nil {
+		w.nodeBuf = map[string][]NodeRow{}
+	}
 	for _, n := range nodes {
-		groups[nodeGroupKey(n)] = append(groups[nodeGroupKey(n)], n)
-	}
-	for _, gk := range sortedKeys(groups) {
-		g := groups[gk]
-		mergeLabel := g[0].Labels[0]
-		keyProp := g[0].KeyProp
-		extra := g[0].Labels[1:]
-		setLabels := ""
-		for _, l := range extra {
-			setLabels += " SET n:" + l
-		}
-		q := fmt.Sprintf("UNWIND $rows AS row MERGE (n:%s {%s: row.k}) SET n += row.p%s",
-			mergeLabel, keyProp, setLabels)
-		for _, chunk := range chunkNodes(g, boltBatchSize) {
-			if err := w.runBatch(q, nodeParams(chunk)); err != nil {
+		gk := nodeGroupKey(n)
+		g := append(w.nodeBuf[gk], n)
+		if len(g) == boltBatchSize {
+			if err := w.runNodes(g); err != nil {
 				return err
 			}
+			g = g[:0]
 		}
+		w.nodeBuf[gk] = g
 	}
 	return nil
 }
 
-func (w *boltWriter) upsertEdges(edges []EdgeRow) error {
-	if len(edges) == 0 {
-		return nil
-	}
-	groups := map[string][]EdgeRow{}
-	for _, e := range edges {
-		groups[edgeGroupKey(e)] = append(groups[edgeGroupKey(e)], e)
-	}
-	for _, gk := range sortedEdgeKeys(groups) {
-		g := groups[gk]
-		e0 := g[0]
-		keyed := e0.Key != ""
-		var mergeClause string
-		if keyed {
-			mergeClause = fmt.Sprintf("MERGE (a)-[r:%s {_k: row.k, %s: row.f}]->(b)", e0.Type, RelationshipFactProperty)
-		} else {
-			mergeClause = fmt.Sprintf("MERGE (a)-[r:%s {%s: row.f}]->(b)", e0.Type, RelationshipFactProperty)
-		}
-		q := fmt.Sprintf("UNWIND $rows AS row MATCH (a:%s {%s: row.a}) MATCH (b:%s {%s: row.b}) %s SET r += row.p",
-			e0.From.Label, e0.From.KeyProp, e0.To.Label, e0.To.KeyProp, mergeClause)
-		for _, chunk := range chunkEdges(g, boltBatchSize) {
-			if err := w.runBatch(q, edgeParams(chunk, keyed)); err != nil {
+// flushNodes runs every buffered node group in key order and clears the buffer.
+func (w *boltWriter) flushNodes() error {
+	for _, gk := range sortedKeys(w.nodeBuf) {
+		if g := w.nodeBuf[gk]; len(g) > 0 {
+			if err := w.runNodes(g); err != nil {
 				return err
 			}
 		}
 	}
+	clear(w.nodeBuf)
 	return nil
+}
+
+// runNodes upserts one chunk of a node group (same labels and key property).
+func (w *boltWriter) runNodes(g []NodeRow) error {
+	setLabels := ""
+	for _, l := range g[0].Labels[1:] {
+		setLabels += " SET n:" + l
+	}
+	q := fmt.Sprintf("UNWIND $rows AS row MERGE (n:%s {%s: row.k}) SET n += row.p%s",
+		g[0].Labels[0], g[0].KeyProp, setLabels)
+	return w.runBatch(q, nodeParams(g))
+}
+
+// bufferEdges appends each edge to its MERGE group and runs a group as soon
+// as it holds boltBatchSize rows.
+func (w *boltWriter) bufferEdges(edges []EdgeRow) error {
+	if w.edgeBuf == nil {
+		w.edgeBuf = map[string][]EdgeRow{}
+	}
+	for _, e := range edges {
+		gk := edgeGroupKey(e)
+		g := append(w.edgeBuf[gk], e)
+		if len(g) == boltBatchSize {
+			if err := w.runEdges(g); err != nil {
+				return err
+			}
+			g = g[:0]
+		}
+		w.edgeBuf[gk] = g
+	}
+	return nil
+}
+
+// flushEdges runs every buffered edge group in key order and clears the buffer.
+func (w *boltWriter) flushEdges() error {
+	for _, gk := range sortedEdgeKeys(w.edgeBuf) {
+		if g := w.edgeBuf[gk]; len(g) > 0 {
+			if err := w.runEdges(g); err != nil {
+				return err
+			}
+		}
+	}
+	clear(w.edgeBuf)
+	return nil
+}
+
+// runEdges upserts one chunk of an edge group (same type, endpoint labels and
+// keyedness).
+func (w *boltWriter) runEdges(g []EdgeRow) error {
+	e0 := g[0]
+	keyed := e0.Key != ""
+	var mergeClause string
+	if keyed {
+		mergeClause = fmt.Sprintf("MERGE (a)-[r:%s {_k: row.k, %s: row.f}]->(b)", e0.Type, RelationshipFactProperty)
+	} else {
+		mergeClause = fmt.Sprintf("MERGE (a)-[r:%s {%s: row.f}]->(b)", e0.Type, RelationshipFactProperty)
+	}
+	q := fmt.Sprintf("UNWIND $rows AS row MATCH (a:%s {%s: row.a}) MATCH (b:%s {%s: row.b}) %s SET r += row.p",
+		e0.From.Label, e0.From.KeyProp, e0.To.Label, e0.To.KeyProp, mergeClause)
+	return w.runBatch(q, edgeParams(g, keyed))
 }
 
 // runBatch runs one UNWIND statement over rows in its own write transaction.

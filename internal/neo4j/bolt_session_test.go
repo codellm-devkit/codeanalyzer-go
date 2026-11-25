@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 )
 
@@ -208,6 +209,29 @@ func (s *fakeDB) pushed() (nodes map[string]bool, edges map[string]int) {
 	return nodes, edges
 }
 
+// pushRows replays rows through a fresh writer on db.
+func pushRows(t *testing.T, db *fakeDB, rows GraphRows, appID string, cfg BoltConfig) {
+	t.Helper()
+	if _, _, err := replayRows(rows, newBoltWriter(context.Background(), db, appID, cfg)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// pushPaths runs body once with a replay of Project(a) and once, in a
+// "stream" subtest, with a streamGraph push of a's tree.
+func pushPaths(t *testing.T, a *v2.Analysis, body func(t *testing.T, push func(*fakeDB, BoltConfig))) {
+	rows := Project(a)
+	body(t, func(db *fakeDB, cfg BoltConfig) { pushRows(t, db, rows, a.Application.ID, cfg) })
+	t.Run("stream", func(t *testing.T) {
+		body(t, func(db *fakeDB, cfg BoltConfig) {
+			t.Helper()
+			if _, _, err := streamGraph(treeSource(a), newBoltWriter(context.Background(), db, a.Application.ID, cfg)); err != nil {
+				t.Fatal(err)
+			}
+		})
+	})
+}
+
 // TestBolt_LazyPushUpsertsL4RowsOfUnchangedModules (D5): on a lazy push
 // where every module's content_hash matches the DB, the L1–L3 nodes of the
 // (unchanged) modules are skipped, but every L4 row is upserted — each param
@@ -225,74 +249,70 @@ func TestBolt_LazyPushUpsertsL4RowsOfUnchangedModules(t *testing.T) {
 			t.Fatalf("module %s has no content_hash", m)
 		}
 	}
-	db := &fakeDB{hashes: hashes}
-	w := &boltWriter{ctx: context.Background(), session: db, rows: rows, appID: a.Application.ID}
-	if err := w.run(); err != nil {
-		t.Fatal(err)
-	}
-	nodes, edges := db.pushed()
+	pushPaths(t, a, func(t *testing.T, push func(*fakeDB, BoltConfig)) {
+		db := &fakeDB{hashes: hashes}
+		push(db, BoltConfig{})
+		nodes, edges := db.pushed()
 
-	var vertices, l3Skipped int
-	for _, n := range rows.Nodes {
-		if n.Labels[0] != LabelBodyNode {
-			continue
+		var vertices, l3Skipped int
+		for _, n := range rows.Nodes {
+			if n.Labels[0] != LabelBodyNode {
+				continue
+			}
+			kind, _ := n.Props["kind"].(string)
+			switch {
+			case isVertex(kind):
+				vertices++
+				if !nodes[n.Value] {
+					t.Errorf("L4 vertex %s of an unchanged module not upserted", n.Value)
+				}
+			case n.Module != "":
+				if nodes[n.Value] {
+					t.Errorf("L3 body node %s of an unchanged module upserted on a lazy push", n.Value)
+				}
+				l3Skipped++
+			}
 		}
-		kind, _ := n.Props["kind"].(string)
-		switch {
-		case isVertex(kind):
-			vertices++
+		if vertices == 0 || l3Skipped == 0 {
+			t.Fatalf("fixture: %d vertices, %d L3 body nodes", vertices, l3Skipped)
+		}
+		standIns := 0
+		for _, ext := range a.Application.ExternalSymbols {
+			for _, n := range ext.Body {
+				standIns++
+				if !nodes[n.ID] {
+					t.Errorf("stand-in vertex %s not upserted", n.ID)
+				}
+			}
+		}
+		if standIns == 0 {
+			t.Fatal("fixture has no stand-in body")
+		}
+		portRows := 0
+		for _, e := range rows.Edges {
+			if p, _ := e.Props["prov"].([]string); e.Type == RelDDG && strings.Join(p, ",") != "ssa" {
+				portRows++
+			}
+		}
+		for _, rel := range []string{RelParamIn, RelParamOut, RelSummary, RelDDG} {
+			if want := countEdges(rows, rel); want == 0 || edges[rel] != want {
+				t.Errorf("%s: pushed %d rows, projected %d", rel, edges[rel], want)
+			}
+		}
+		if portRows == 0 {
+			t.Error("fixture has no port GO_DDG row")
+		}
+
+		// Eager: every node of every module is upserted.
+		db = &fakeDB{hashes: hashes}
+		push(db, BoltConfig{Eager: true, FullRun: true})
+		nodes, _ = db.pushed()
+		for _, n := range rows.Nodes {
 			if !nodes[n.Value] {
-				t.Errorf("L4 vertex %s of an unchanged module not upserted", n.Value)
-			}
-		case n.Module != "":
-			if nodes[n.Value] {
-				t.Errorf("L3 body node %s of an unchanged module upserted on a lazy push", n.Value)
-			}
-			l3Skipped++
-		}
-	}
-	if vertices == 0 || l3Skipped == 0 {
-		t.Fatalf("fixture: %d vertices, %d L3 body nodes", vertices, l3Skipped)
-	}
-	standIns := 0
-	for _, ext := range a.Application.ExternalSymbols {
-		for _, n := range ext.Body {
-			standIns++
-			if !nodes[n.ID] {
-				t.Errorf("stand-in vertex %s not upserted", n.ID)
+				t.Fatalf("eager push skipped %s", n.Value)
 			}
 		}
-	}
-	if standIns == 0 {
-		t.Fatal("fixture has no stand-in body")
-	}
-	portRows := 0
-	for _, e := range rows.Edges {
-		if p, _ := e.Props["prov"].([]string); e.Type == RelDDG && strings.Join(p, ",") != "ssa" {
-			portRows++
-		}
-	}
-	for _, rel := range []string{RelParamIn, RelParamOut, RelSummary, RelDDG} {
-		if want := countEdges(rows, rel); want == 0 || edges[rel] != want {
-			t.Errorf("%s: pushed %d rows, projected %d", rel, edges[rel], want)
-		}
-	}
-	if portRows == 0 {
-		t.Error("fixture has no port GO_DDG row")
-	}
-
-	// Eager: every node of every module is upserted.
-	db = &fakeDB{hashes: hashes}
-	w = &boltWriter{ctx: context.Background(), session: db, rows: rows, appID: a.Application.ID, cfg: BoltConfig{Eager: true, FullRun: true}}
-	if err := w.run(); err != nil {
-		t.Fatal(err)
-	}
-	nodes, _ = db.pushed()
-	for _, n := range rows.Nodes {
-		if !nodes[n.Value] {
-			t.Fatalf("eager push skipped %s", n.Value)
-		}
-	}
+	})
 }
 
 // TestBolt_LazyPushForcesFullOnLowerStoredLevel: a graph first pushed at a
@@ -312,42 +332,41 @@ func TestBolt_LazyPushForcesFullOnLowerStoredLevel(t *testing.T) {
 	for m, ns := range byModule {
 		hashes[m] = moduleHash(ns)
 	}
-	push := func(stored int64) map[string]bool {
-		db := &fakeDB{hashes: hashes, level: stored}
-		w := &boltWriter{ctx: context.Background(), session: db, rows: rows, appID: a.Application.ID}
-		if err := w.run(); err != nil {
-			t.Fatal(err)
+	pushPaths(t, a, func(t *testing.T, pushWith func(*fakeDB, BoltConfig)) {
+		push := func(stored int64) map[string]bool {
+			db := &fakeDB{hashes: hashes, level: stored}
+			pushWith(db, BoltConfig{})
+			nodes, _ := db.pushed()
+			return nodes
 		}
-		nodes, _ := db.pushed()
-		return nodes
-	}
-	moduleNodes := 0
-	for _, ns := range byModule {
-		moduleNodes += len(ns)
-	}
-	if moduleNodes == 0 {
-		t.Fatal("fixture has no module-owned nodes")
-	}
-	for _, stored := range []int64{1, 3} {
-		nodes := push(stored)
-		for m, ns := range byModule {
-			for _, n := range ns {
-				if !nodes[n.Value] {
-					t.Fatalf("stored level %d: module %s node %s not upserted", stored, m, n.Value)
-				}
-			}
-		}
-	}
-	for _, stored := range []int64{4, 5} {
-		nodes := push(stored)
+		moduleNodes := 0
 		for _, ns := range byModule {
-			for _, n := range ns {
-				if nodes[n.Value] {
-					t.Fatalf("stored level %d: unchanged module node %s upserted", stored, n.Value)
+			moduleNodes += len(ns)
+		}
+		if moduleNodes == 0 {
+			t.Fatal("fixture has no module-owned nodes")
+		}
+		for _, stored := range []int64{1, 3} {
+			nodes := push(stored)
+			for m, ns := range byModule {
+				for _, n := range ns {
+					if !nodes[n.Value] {
+						t.Fatalf("stored level %d: module %s node %s not upserted", stored, m, n.Value)
+					}
 				}
 			}
 		}
-	}
+		for _, stored := range []int64{4, 5} {
+			nodes := push(stored)
+			for _, ns := range byModule {
+				for _, n := range ns {
+					if nodes[n.Value] {
+						t.Fatalf("stored level %d: unchanged module node %s upserted", stored, n.Value)
+					}
+				}
+			}
+		}
+	})
 }
 
 // TestBolt_LazyPushForcesFullOnUnreadableStoredLevel: a stored max_level
@@ -362,21 +381,20 @@ func TestBolt_LazyPushForcesFullOnUnreadableStoredLevel(t *testing.T) {
 	for m, ns := range byModule {
 		hashes[m] = moduleHash(ns)
 	}
-	for _, raw := range []any{float64(4), "4", true} {
-		db := &fakeDB{hashes: hashes, rawLevel: raw}
-		w := &boltWriter{ctx: context.Background(), session: db, rows: rows, appID: a.Application.ID}
-		if err := w.run(); err != nil {
-			t.Fatal(err)
-		}
-		nodes, _ := db.pushed()
-		for m, ns := range byModule {
-			for _, n := range ns {
-				if !nodes[n.Value] {
-					t.Fatalf("stored max_level %T(%v): module %s node %s not upserted", raw, raw, m, n.Value)
+	pushPaths(t, a, func(t *testing.T, push func(*fakeDB, BoltConfig)) {
+		for _, raw := range []any{float64(4), "4", true} {
+			db := &fakeDB{hashes: hashes, rawLevel: raw}
+			push(db, BoltConfig{})
+			nodes, _ := db.pushed()
+			for m, ns := range byModule {
+				for _, n := range ns {
+					if !nodes[n.Value] {
+						t.Fatalf("stored max_level %T(%v): module %s node %s not upserted", raw, raw, m, n.Value)
+					}
 				}
 			}
 		}
-	}
+	})
 }
 
 // TestBolt_CleanPushClearsDegradedJSON (F6): the projector prunes a nil
@@ -391,13 +409,8 @@ func TestBolt_CleanPushClearsDegradedJSON(t *testing.T) {
 	if len(a.Degraded) != 0 {
 		t.Fatalf("fixture degraded: %+v", a.Degraded)
 	}
-	appProps := func(rows GraphRows) map[string]any {
+	appPropsOf := func(t *testing.T, db *fakeDB) map[string]any {
 		t.Helper()
-		db := &fakeDB{level: 4}
-		w := &boltWriter{ctx: context.Background(), session: db, rows: rows, appID: a.Application.ID}
-		if err := w.run(); err != nil {
-			t.Fatal(err)
-		}
 		for _, st := range db.writes {
 			if !strings.Contains(st.q, "MERGE (n:"+LabelApplication+" ") {
 				continue
@@ -411,10 +424,26 @@ func TestBolt_CleanPushClearsDegradedJSON(t *testing.T) {
 		t.Fatal("no :GoApplication upsert")
 		return nil
 	}
-	p := appProps(Project(a))
-	if v, has := p["degraded_json"]; !has || v != nil {
-		t.Errorf("clean push: degraded_json = %v (present %v), want an explicit null", v, has)
+	appProps := func(rows GraphRows) map[string]any {
+		t.Helper()
+		db := &fakeDB{level: 4}
+		pushRows(t, db, rows, a.Application.ID, BoltConfig{})
+		return appPropsOf(t, db)
 	}
+	clean := func(t *testing.T, p map[string]any) {
+		t.Helper()
+		if v, has := p["degraded_json"]; !has || v != nil {
+			t.Errorf("clean push: degraded_json = %v (present %v), want an explicit null", v, has)
+		}
+	}
+	clean(t, appProps(Project(a)))
+	t.Run("stream", func(t *testing.T) {
+		db := &fakeDB{level: 4}
+		if _, _, err := streamGraph(treeSource(a), newBoltWriter(context.Background(), db, a.Application.ID, BoltConfig{})); err != nil {
+			t.Fatal(err)
+		}
+		clean(t, appPropsOf(t, db))
+	})
 	rows := Project(a)
 	for i, n := range rows.Nodes {
 		if n.Labels[0] == LabelApplication {
@@ -429,8 +458,8 @@ func TestBolt_CleanPushClearsDegradedJSON(t *testing.T) {
 func TestIncompatibleIdentityReadOnly(t *testing.T) {
 	for _, iv := range []any{int64(1), "2", float64(2), true} {
 		db := &fakeDB{rawIdentity: iv}
-		w := &boltWriter{ctx: context.Background(), session: db, appID: "can://team/app"}
-		if err := w.run(); err == nil {
+		w := newBoltWriter(context.Background(), db, "can://team/app", BoltConfig{})
+		if err := w.begin(NodeRow{}); err == nil {
 			t.Errorf("accepted %v", iv)
 		}
 		if len(db.writes) != 0 {
@@ -441,8 +470,8 @@ func TestIncompatibleIdentityReadOnly(t *testing.T) {
 
 func TestMissingStoredIdentityReadOnly(t *testing.T) {
 	db := &fakeDB{missingIdentity: true}
-	w := &boltWriter{ctx: context.Background(), session: db, appID: "can://team/app"}
-	if err := w.run(); err == nil {
+	w := newBoltWriter(context.Background(), db, "can://team/app", BoltConfig{})
+	if err := w.begin(NodeRow{}); err == nil {
 		t.Fatal("accepted legacy anchor")
 	}
 	if len(db.writes) != 0 {
@@ -516,8 +545,8 @@ func TestWritersPreserveDistinctEdgeFacts(t *testing.T) {
 
 func TestStoredOwnerMismatchReadOnly(t *testing.T) {
 	for _, db := range []*fakeDB{{missingName: true}, {missingNamespace: true}, {rawName: "other"}, {rawNamespace: "other"}, {rawName: 42}, {rawNamespace: 42}} {
-		w := &boltWriter{ctx: context.Background(), session: db, appID: "can://team/app"}
-		if err := w.run(); err == nil {
+		w := newBoltWriter(context.Background(), db, "can://team/app", BoltConfig{})
+		if err := w.begin(NodeRow{}); err == nil {
 			t.Fatal("accepted contradictory stored owner")
 		}
 		if len(db.writes) != 0 {
@@ -528,7 +557,7 @@ func TestStoredOwnerMismatchReadOnly(t *testing.T) {
 
 func TestStoredOwnerAllowsFreshAndMatchingAnchor(t *testing.T) {
 	for _, db := range []*fakeDB{{missingAnchor: true}, {}} {
-		w := &boltWriter{ctx: context.Background(), session: db, appID: "can://team/app"}
+		w := newBoltWriter(context.Background(), db, "can://team/app", BoltConfig{})
 		if _, err := w.storedAppStale(); err != nil {
 			t.Fatal(err)
 		}
@@ -571,5 +600,47 @@ func TestBolt_UpsertsAreBatched(t *testing.T) {
 	gotNodes, gotEdges := db.pushed()
 	if len(gotNodes) != n || gotEdges[RelCalls] != n {
 		t.Errorf("pushed %d nodes, %d edges; want %d of each", len(gotNodes), gotEdges[RelCalls], n)
+	}
+}
+
+// TestBolt_StreamPushOrder (spec §6): no edge statement runs before the last node statement,
+// and an eager push purges each module before it writes that module's nodes.
+func TestBolt_StreamPushOrder(t *testing.T) {
+	a := buildDataflowL4(t)
+	db := &fakeDB{}
+	w := newBoltWriter(context.Background(), db, a.Application.ID, BoltConfig{Eager: true, FullRun: true})
+	if _, _, err := streamGraph(treeSource(a), w); err != nil {
+		t.Fatal(err)
+	}
+	lastNode, firstEdge := -1, len(db.writes)
+	purgedAt := map[string]int{}   // module id -> statement index of its purge
+	firstWrite := map[string]int{} // node id -> statement index of its first MERGE
+	for i, st := range db.writes {
+		switch {
+		case strings.Contains(st.q, "MERGE (n:"):
+			lastNode = i
+			for _, r := range st.params["rows"].([]map[string]any) {
+				if _, seen := firstWrite[r["k"].(string)]; !seen {
+					firstWrite[r["k"].(string)] = i
+				}
+			}
+		case strings.Contains(st.q, "MERGE (a)-[r:"):
+			firstEdge = min(firstEdge, i)
+		case strings.Contains(st.q, "DETACH DELETE n") && st.params["m"] != nil:
+			purgedAt[st.params["m"].(string)] = i
+		}
+	}
+	if lastNode > firstEdge {
+		t.Errorf("node statement %d runs after edge statement %d", lastNode, firstEdge)
+	}
+	if len(purgedAt) != len(a.Application.SymbolTable) {
+		t.Errorf("%d module purges, want %d", len(purgedAt), len(a.Application.SymbolTable))
+	}
+	for id, at := range firstWrite {
+		for m, p := range purgedAt {
+			if (id == m || strings.HasPrefix(id, m+"/")) && at < p {
+				t.Errorf("node %s written at %d, before the purge of %s at %d", id, at, m, p)
+			}
+		}
 	}
 }
