@@ -30,6 +30,8 @@ import (
 const (
 	neo4jImage = "neo4j:5.26-community"
 	neo4jPass  = "memtest-pass"
+	// runTimeout bounds one cango run (analysis and push).
+	runTimeout = 5 * time.Hour
 )
 
 func TestPushWithinMemoryLimit(t *testing.T) {
@@ -116,7 +118,10 @@ func runCango(t *testing.T, ctx context.Context, nw *testcontainers.DockerNetwor
 		}),
 		// ForExit returns nil as soon as the container is not running, whatever its exit code,
 		// so a non-zero exit reaches Decide below, not this error path.
-		testcontainers.WithWaitStrategy(wait.ForExit().WithExitTimeout(5*time.Hour)),
+		// The wait is the readiness ("started") hook of Run. WithWaitStrategy would wrap it in
+		// wait.ForAll with a 60 s deadline that caps the whole run, whatever the exit timeout:
+		// the ForAll deadline must be the run bound too.
+		testcontainers.WithWaitStrategyAndDeadline(runTimeout, wait.ForExit().WithExitTimeout(runTimeout)),
 	)
 	testcontainers.CleanupContainer(t, c)
 	if err != nil {
