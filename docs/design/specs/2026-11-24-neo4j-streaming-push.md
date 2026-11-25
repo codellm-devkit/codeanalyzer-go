@@ -186,27 +186,17 @@ The peak memory shows the margin under the limit.
 
 Both apps pass at 16 GB when this branch is complete.
 nats-server needs only the streaming push (§5).
-gitea also needs the analysis-memory work (§8).
+gitea was expected to need the analysis-memory work too, but it passed with the streaming push alone, with about 0.2 GiB of margin (§8).
 
-## 8. Analysis memory (#62, in this branch)
+## 8. Analysis memory (#62, split out)
 
-The user moved #62 into this branch, so #59 closes only when both apps pass at 16 GB.
-Gitea is about 4 times as large as nats-server.
-At that ratio its analysis heap is about 40 GB, so the streaming push alone is not sufficient.
+The user first moved #62 into this branch, then split it back out on 2026-11-25, after the streaming push passed on both apps.
+#59 closes on the streaming push alone.
 
-This part has no design yet, because I did not profile `Analyze` on gitea.
-The order of work is as follows:
-
-1. Ship the streaming push (§5) and the harness (§7).
-2. Run the harness on nats-server at 16 GB.
-3. Profile `Analyze` on gitea, stage by stage, with the probe from §2.
-4. Write the analysis-memory design as an addendum to this spec, and get approval before any code changes.
-
-The nats-server profile gives the first candidates for step 4:
-
-- `sdg.(*sdgBuilder).fill` holds 10.1 GB (cumulative).
-- `sdg.sortedPortEdges` holds 3.3 GB, and `sdg.(*ports).vertices` holds 1.9 GB.
-- Step 4 also checks whether the analyzer can drop the SSA program before emission.
+Result at 16 GB, no swap: nats-server peaks at 7.8 GiB and gitea at 15.8 GiB; both pass.
+Gitea also peaks at 15.8 GiB under a 24 GB limit, so its margin at 16 GB is about 0.2 GiB.
+Widening that margin is #62's job.
+Its draft design, with the gitea profile, is `docs/design/specs/2026-11-25-analysis-memory.md`.
 
 ## 9. Decision: the `graph.cypher` snapshot (no `--neo4j-uri`)
 
