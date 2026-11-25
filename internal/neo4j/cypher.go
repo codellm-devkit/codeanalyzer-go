@@ -39,8 +39,12 @@ const batchSize = 500
 type scriptWriter interface {
 	io.Writer
 	io.StringWriter
-	io.ByteWriter
 }
+
+// put writes s to b and drops the error: a strings.Builder never fails, and a
+// bufio.Writer keeps its first error and returns it from Flush (WriteCypher
+// checks it there).
+func put(b scriptWriter, s string) { _, _ = b.WriteString(s) }
 
 // RenderCypher renders the full snapshot script. appID is the application root
 // id used to scope the wipe; it is normally rows' application node value.
@@ -95,7 +99,7 @@ func renderCypher(rows GraphRows, appID string) string {
 }
 
 func writeDDL(b scriptWriter) {
-	b.WriteString("// ─── constraints & indexes ───\n")
+	put(b, "// ─── constraints & indexes ───\n")
 	for _, c := range UniquenessConstraints() {
 		fmt.Fprintf(b, "CREATE CONSTRAINT %s IF NOT EXISTS FOR (n:%s) REQUIRE n.%s IS UNIQUE;\n",
 			c.Name, c.Label, c.Property)
@@ -104,7 +108,7 @@ func writeDDL(b scriptWriter) {
 		fmt.Fprintf(b, "CREATE INDEX %s IF NOT EXISTS FOR (n:%s) ON (n.%s);\n",
 			idx.Name, idx.Label, idx.Property)
 	}
-	b.WriteByte('\n')
+	put(b, "\n")
 }
 
 // writeScopedWipe emits the DETACH DELETE scoped to this app. It refuses to emit
@@ -115,18 +119,18 @@ func writeDDL(b scriptWriter) {
 func writeScopedWipe(b scriptWriter, appID string) {
 	root, ok := applicationPrefix(appID)
 	if !ok {
-		b.WriteString("// ─── scoped wipe SKIPPED: no bare application root id ───\n\n")
+		put(b, "// ─── scoped wipe SKIPPED: no bare application root id ───\n\n")
 		return
 	}
 	desc := descendantPrefix(root)
-	b.WriteString("// ─── scoped wipe (this application only) ───\n")
+	put(b, "// ─── scoped wipe (this application only) ───\n")
 	// Descendants: everything under can://<namespace>/<app>/.
 	fmt.Fprintf(b, "MATCH (n:%s) WHERE n.id STARTS WITH %s DETACH DELETE n;\n",
 		MarkerLabel, cypherString(desc))
 	// The root itself is outside its own descendant prefix.
 	fmt.Fprintf(b, "MATCH (n:%s) WHERE n.id = %s DETACH DELETE n;\n",
 		MarkerLabel, cypherString(root))
-	b.WriteByte('\n')
+	put(b, "\n")
 }
 
 // ─── node batches ─────────────────────────────────────────────────────────────
@@ -135,7 +139,7 @@ func writeNodeBatches(b scriptWriter, nodes []NodeRow) {
 	if len(nodes) == 0 {
 		return
 	}
-	b.WriteString(nodesHeader)
+	put(b, nodesHeader)
 	// Group by (full label set + key prop) so one UNWIND handles a homogeneous
 	// batch. Keys sorted for deterministic output.
 	groups := map[string][]NodeRow{}
@@ -147,7 +151,7 @@ func writeNodeBatches(b scriptWriter, nodes []NodeRow) {
 			writeNodeChunk(b, chunk)
 		}
 	}
-	b.WriteByte('\n')
+	put(b, "\n")
 }
 
 const (
@@ -161,7 +165,7 @@ func writeNodeChunk(b scriptWriter, chunk []NodeRow) {
 	mergeLabel := chunk[0].Labels[0]
 	keyProp := chunk[0].KeyProp
 	extraLabels := chunk[0].Labels[1:]
-	b.WriteString("UNWIND [\n")
+	put(b, "UNWIND [\n")
 	for i, n := range chunk {
 		sep := ","
 		if i == len(chunk)-1 {
@@ -169,13 +173,13 @@ func writeNodeChunk(b scriptWriter, chunk []NodeRow) {
 		}
 		fmt.Fprintf(b, "  {k: %s, p: %s}%s\n", cypherString(n.Value), cypherMap(n.Props), sep)
 	}
-	b.WriteString("] AS row\n")
+	put(b, "] AS row\n")
 	fmt.Fprintf(b, "MERGE (n:%s {%s: row.k})\n", mergeLabel, keyProp)
-	b.WriteString("SET n += row.p")
+	put(b, "SET n += row.p")
 	for _, l := range extraLabels {
 		fmt.Fprintf(b, "\nSET n:%s", l)
 	}
-	b.WriteString(";\n")
+	put(b, ";\n")
 }
 
 // ─── edge batches ─────────────────────────────────────────────────────────────
@@ -184,7 +188,7 @@ func writeEdgeBatches(b scriptWriter, edges []EdgeRow) {
 	if len(edges) == 0 {
 		return
 	}
-	b.WriteString(edgesHeader)
+	put(b, edgesHeader)
 	groups := map[string][]EdgeRow{}
 	for _, e := range edges {
 		groups[edgeGroupKey(e)] = append(groups[edgeGroupKey(e)], e)
@@ -194,7 +198,7 @@ func writeEdgeBatches(b scriptWriter, edges []EdgeRow) {
 			writeEdgeChunk(b, chunk)
 		}
 	}
-	b.WriteByte('\n')
+	put(b, "\n")
 }
 
 // writeEdgeChunk writes one UNWIND … MERGE statement for a non-empty chunk of
@@ -202,7 +206,7 @@ func writeEdgeBatches(b scriptWriter, edges []EdgeRow) {
 func writeEdgeChunk(b scriptWriter, chunk []EdgeRow) {
 	e0 := chunk[0]
 	keyed := e0.Key != ""
-	b.WriteString("UNWIND [\n")
+	put(b, "UNWIND [\n")
 	for i, e := range chunk {
 		sep := ","
 		if i == len(chunk)-1 {
@@ -216,7 +220,7 @@ func writeEdgeChunk(b scriptWriter, chunk []EdgeRow) {
 				cypherString(e.From.Value), cypherString(e.To.Value), cypherString(edgeFactID(e)), cypherMap(e.Props), sep)
 		}
 	}
-	b.WriteString("] AS row\n")
+	put(b, "] AS row\n")
 	fmt.Fprintf(b, "MATCH (a:%s {%s: row.a})\n", e0.From.Label, e0.From.KeyProp)
 	fmt.Fprintf(b, "MATCH (b:%s {%s: row.b})\n", e0.To.Label, e0.To.KeyProp)
 	if keyed {
@@ -224,7 +228,7 @@ func writeEdgeChunk(b scriptWriter, chunk []EdgeRow) {
 	} else {
 		fmt.Fprintf(b, "MERGE (a)-[r:%s {%s: row.f}]->(b)\n", e0.Type, RelationshipFactProperty)
 	}
-	b.WriteString("SET r += row.p;\n")
+	put(b, "SET r += row.p;\n")
 }
 
 // ─── streamed snapshot (#59, spec §5.4) ───────────────────────────────────────
@@ -251,7 +255,7 @@ func newCypherWriter(w *bufio.Writer, appID string) *cypherWriter {
 func (c *cypherWriter) begin(NodeRow) error {
 	writeDDL(c.w)
 	writeScopedWipe(c.w, c.appID)
-	c.w.WriteString(nodesHeader)
+	put(c.w, nodesHeader)
 	return nil
 }
 
@@ -277,8 +281,8 @@ func (c *cypherWriter) edges(edges []EdgeRow) error {
 		return nil
 	}
 	if !c.inEdges {
-		c.w.WriteByte('\n')
-		c.w.WriteString(edgesHeader)
+		put(c.w, "\n")
+		put(c.w, edgesHeader)
 		c.inEdges = true
 	}
 	for _, e := range edges {
@@ -301,7 +305,7 @@ func (c *cypherWriter) end([]string) error {
 		}
 	}
 	clear(c.edgeBuf)
-	c.w.WriteByte('\n')
+	put(c.w, "\n")
 	return nil
 }
 
