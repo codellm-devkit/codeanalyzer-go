@@ -41,6 +41,8 @@ type l4Overlay struct {
 	ids map[sdg.Target]string
 	// unresolved records the targets already warned about.
 	unresolved map[sdg.Target]bool
+	// quiet silences apply's warnings (a repeated module walk).
+	quiet bool
 }
 
 func newL4Overlay(maxLevel int, res *sdg.Result, idx sigIndex) *l4Overlay {
@@ -58,6 +60,19 @@ func newL4Overlay(maxLevel int, res *sdg.Result, idx sigIndex) *l4Overlay {
 	return o
 }
 
+// setQuiet stops the overlay warnings. A second module walk repeats the first walk's facts.
+func (o *l4Overlay) setQuiet() {
+	if o != nil {
+		o.quiet = true
+	}
+}
+
+func (o *l4Overlay) warn(format string, args ...any) {
+	if !o.quiet {
+		warnf(format, args...)
+	}
+}
+
 // apply records c's id under its target key (the callable's declaring file
 // and signature, the key the L3 overlay uses) and adds its L4 overlay: the
 // vertices to its body, the port edges to its ddg (re-sorted by (src, dst,
@@ -72,7 +87,7 @@ func (o *l4Overlay) apply(c *v2.Callable, key dataflow.L3Key) {
 	t := sdg.Target{Callable: key}
 	prev, dup := o.ids[t]
 	if dup && prev != c.ID {
-		warnf("L4 emit: %s and %s share the target key %s %s", prev, c.ID, key.Path, key.Signature)
+		o.warn("L4 emit: %s and %s share the target key %s %s", prev, c.ID, key.Path, key.Signature)
 	}
 	if !dup || c.ID < prev {
 		o.ids[t] = c.ID
@@ -83,7 +98,7 @@ func (o *l4Overlay) apply(c *v2.Callable, key dataflow.L3Key) {
 	}
 	for _, v := range r.Vertices {
 		if _, clash := c.Body[v.Key]; clash {
-			warnf("L4 emit: vertex %s of %s collides with a body node; dropped", v.Key, c.ID)
+			o.warn("L4 emit: vertex %s of %s collides with a body node; dropped", v.Key, c.ID)
 			continue
 		}
 		c.Body[v.Key] = vertexNode(c.ID, v)

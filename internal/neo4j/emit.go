@@ -6,40 +6,34 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-
-	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
 )
 
 // Facade between the CLI and the Neo4j backend: EmitSchema (static contract,
-// needs no project) and EmitNeo4j (project the v2 tree, then write — graph.cypher
-// snapshot when no URI, live Bolt push when a URI is set).
+// needs no project) and EmitNeo4j (stream the v2 payload into a graph.cypher
+// snapshot when no URI is set, or into a live Bolt push when one is).
 
 // GraphFileName is the snapshot script written when no --neo4j-uri is given.
 const GraphFileName = "graph.cypher"
 
-// EmitNeo4j projects the v2 Analysis into GraphRows and writes it. The projection
-// is pure and shared; only the write target differs. When cfg.URI is set it
-// pushes over Bolt (incremental, additive unless cfg.Eager); otherwise it writes
-// a self-contained graph.cypher snapshot into outputDir (default: current dir).
-// It returns a short human-readable description of what was written.
-func EmitNeo4j(ctx context.Context, a *v2.Analysis, outputDir string, cfg BoltConfig) (string, error) {
-	if a == nil || a.IdentityVersion != 2 || a.Application.IdentityVersion != 2 {
+// EmitNeo4j streams src, one module at a time, into the write target. When
+// cfg.URI is set it pushes over Bolt (incremental, additive unless cfg.Eager);
+// otherwise it writes a self-contained graph.cypher snapshot into outputDir
+// (default: current dir). Neither target holds the whole tree or every row
+// (#59). It returns a short human-readable description of what was written.
+// The counts are rows sent: a duplicate edge row across modules counts twice.
+func EmitNeo4j(ctx context.Context, src Source, outputDir string, cfg BoltConfig) (string, error) {
+	env := src.Envelope()
+	if env == nil || env.IdentityVersion != 2 || env.Application.IdentityVersion != 2 {
 		return "", fmt.Errorf("incompatible identity_version")
 	}
-	rows := Project(a)
-	appID := a.Application.ID
-
 	if cfg.URI != "" {
-		if err := WriteBolt(ctx, rows, appID, cfg); err != nil {
+		nodes, edges, err := PushBolt(ctx, src, cfg)
+		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("pushed %d nodes, %d relationships to %s", len(rows.Nodes), len(rows.Edges), cfg.URI), nil
+		return fmt.Sprintf("pushed %d nodes, %d relationships to %s", nodes, edges, cfg.URI), nil
 	}
 
-	script, err := RenderCypher(rows, appID)
-	if err != nil {
-		return "", err
-	}
 	if outputDir == "" {
 		outputDir = "."
 	}
@@ -47,8 +41,8 @@ func EmitNeo4j(ctx context.Context, a *v2.Analysis, outputDir string, cfg BoltCo
 		return "", fmt.Errorf("create output dir %q: %w", outputDir, err)
 	}
 	path := filepath.Join(outputDir, GraphFileName)
-	if err := os.WriteFile(path, []byte(script), 0o644); err != nil {
-		return "", fmt.Errorf("write %s: %w", path, err)
+	if _, _, err := WriteCypher(src, path); err != nil {
+		return "", err
 	}
 	return "wrote " + path, nil
 }

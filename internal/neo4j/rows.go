@@ -79,6 +79,7 @@ type RowBuilder struct {
 	nodes     []NodeRow
 	edges     []EdgeRow
 	deferred  []EdgeRow
+	noEdges   bool // noEdges makes a node-only builder (pass 1).
 }
 
 // NewRowBuilder returns an empty builder.
@@ -126,6 +127,9 @@ func (b *RowBuilder) Node(labels []string, keyProp, value string, props Props, m
 // Edge appends a relationship whose endpoints are known to exist this run.
 // Exact duplicate facts are collapsed at Finish.
 func (b *RowBuilder) Edge(relType string, from, to NodeRef, props Props, key string) {
+	if b.noEdges {
+		return
+	}
 	b.edges = append(b.edges, EdgeRow{Type: relType, From: from, To: to, Props: prune(props), Key: key})
 }
 
@@ -135,6 +139,9 @@ func (b *RowBuilder) Edge(relType string, from, to NodeRef, props Props, key str
 // SATISFIES/RESOLVES_TO never dangle. targetLabel is the MERGE label the target
 // would carry if present (e.g. SymbolLabel).
 func (b *RowBuilder) EdgeToSymbol(relType string, from NodeRef, targetLabel, targetKey, targetValue string, props Props, key string) {
+	if b.noEdges {
+		return
+	}
 	b.deferred = append(b.deferred, EdgeRow{
 		Type:  relType,
 		From:  from,
@@ -144,9 +151,7 @@ func (b *RowBuilder) EdgeToSymbol(relType string, from NodeRef, targetLabel, tar
 	})
 }
 
-// Finish resolves deferred edges (keeping only those whose target was emitted),
-// sorts nodes and edges by a stable key, and returns the GraphRows. Determinism
-// matters: identical input must yield byte-identical output downstream.
+// Finish resolves deferred edges against the nodes of this builder, then sorts.
 func (b *RowBuilder) Finish() GraphRows {
 	emitted := make(map[string]bool, len(b.nodes))
 	for _, n := range b.nodes {
@@ -154,8 +159,21 @@ func (b *RowBuilder) Finish() GraphRows {
 			emitted[label+"\x00"+n.Value] = true
 		}
 	}
+	return b.finish(func(e EdgeRow) bool { return emitted[e.To.Label+"\x00"+e.To.Value] })
+}
+
+// finishWith resolves deferred edges against symbols, the ids of every :GoSymbol node.
+// Every deferred edge targets SymbolLabel, so the id alone decides.
+func (b *RowBuilder) finishWith(symbols map[string]bool) GraphRows {
+	return b.finish(func(e EdgeRow) bool { return e.To.Label == SymbolLabel && symbols[e.To.Value] })
+}
+
+// finish keeps the deferred edges that pass keep, removes duplicates, and sorts
+// nodes and edges by a stable key. Determinism matters: identical input must
+// yield byte-identical output downstream.
+func (b *RowBuilder) finish(keep func(EdgeRow) bool) GraphRows {
 	for _, e := range b.deferred {
-		if emitted[e.To.Label+"\x00"+e.To.Value] {
+		if keep(e) {
 			b.edges = append(b.edges, e)
 		}
 	}

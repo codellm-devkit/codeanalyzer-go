@@ -1,11 +1,15 @@
 package neo4j
 
 import (
+	"bytes"
 	"context"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
 )
 
 // M4 gate: the snapshot writer. The DDL + scoped wipe + batched node/edge MERGE
@@ -123,11 +127,133 @@ func TestEmitNeo4jInvalidIdentityLeavesOutput(t *testing.T) {
 	if err := os.WriteFile(path, []byte("original"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := EmitNeo4j(context.Background(), a, dir, BoltConfig{}); err == nil {
+	if _, err := EmitNeo4j(context.Background(), TreeSource(a), dir, BoltConfig{}); err == nil {
 		t.Fatal("accepted mismatched app marker")
 	}
 	b, err := os.ReadFile(path)
 	if err != nil || string(b) != "original" {
 		t.Fatalf("output changed: %s %v", b, err)
+	}
+}
+
+// TestCypher_StreamedScriptHasTheSameRows (S1): the streamed script holds the same row lines as
+// RenderCypher(Project(a)), with the same header, and every node line comes before every edge line.
+// A hand-built fixture with no identity metadata is refused by both.
+func TestCypher_StreamedScriptHasTheSameRows(t *testing.T) {
+	for name, a := range parityFixtures(t) {
+		path := filepath.Join(t.TempDir(), GraphFileName)
+		want, err := RenderCypher(Project(a), a.Application.ID)
+		if err != nil {
+			if _, _, werr := WriteCypher(treeSource(a), path); werr == nil {
+				t.Errorf("%s: RenderCypher refuses (%v), WriteCypher accepts", name, err)
+			}
+			continue
+		}
+		if _, _, err := WriteCypher(treeSource(a), path); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		got := string(b)
+		head := want[:strings.Index(want, "UNWIND")]
+		if !strings.HasPrefix(got, head) {
+			t.Errorf("%s: header differs", name)
+		}
+		if w, g := rowLines(want), rowLines(got); len(w) == 0 || !maps.Equal(w, g) {
+			t.Errorf("%s: %d distinct row lines, want %d", name, len(g), len(w))
+		}
+		if strings.LastIndex(got, "MERGE (n:") > strings.Index(got, "MERGE (a)-[r:") {
+			t.Errorf("%s: a node statement follows an edge statement", name)
+		}
+	}
+}
+
+// rowLines is the multiset of UNWIND row lines, the lines that start with
+// "  {", each keyed by the statement it feeds (the lines after "] AS row" up
+// to the closing ";") and counted.
+func rowLines(script string) map[string]int {
+	out := map[string]int{}
+	var rows []string
+	stmt := ""
+	inStmt := false
+	for _, l := range strings.Split(script, "\n") {
+		switch {
+		case strings.HasPrefix(l, "  {"):
+			rows = append(rows, strings.TrimSuffix(l, ","))
+		case l == "] AS row":
+			inStmt, stmt = true, ""
+		case inStmt:
+			stmt += l + "\n"
+			if strings.HasSuffix(l, ";") {
+				for _, r := range rows {
+					out[stmt+r]++
+				}
+				rows, inStmt = rows[:0], false
+			}
+		}
+	}
+	return out
+}
+
+// TestWriteCypher_FailureLeavesOutput: a run that fails, before the temporary
+// file (identity) or after it (rename onto a directory), leaves an earlier
+// graph.cypher as it was and no temporary file behind.
+func TestWriteCypher_FailureLeavesOutput(t *testing.T) {
+	a := buildMultipackageL2(t)
+	bad := *a
+	bad.Application.IdentityVersion = 1
+	dir := t.TempDir()
+	path := filepath.Join(dir, GraphFileName)
+	if err := os.WriteFile(path, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := WriteCypher(TreeSource(&bad), path); err == nil {
+		t.Fatal("accepted mismatched app marker")
+	}
+	if b, err := os.ReadFile(path); err != nil || string(b) != "original" {
+		t.Fatalf("output changed: %s %v", b, err)
+	}
+	// The rename fails: the target is a non-empty directory.
+	target := filepath.Join(dir, "occupied")
+	if err := os.MkdirAll(filepath.Join(target, "x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := WriteCypher(TreeSource(a), target)
+	if err == nil || !strings.Contains(err.Error(), target) {
+		t.Fatalf("err = %v, want a write error naming %s", err, target)
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".graph-") {
+			t.Errorf("temporary file %s left behind", e.Name())
+		}
+	}
+}
+
+// TestWriteCypher_Deterministic: writing the snapshot twice for the same input
+// gives byte-identical files (module key order plus each builder's sort).
+func TestWriteCypher_Deterministic(t *testing.T) {
+	for name, a := range map[string]*v2.Analysis{
+		"multipackage L2": buildMultipackageL2(t),
+		"dataflow L4":     buildDataflowL4(t),
+		"chi L4":          buildFixtureL4(t, "chi"),
+	} {
+		var out [2][]byte
+		for i := range out {
+			path := filepath.Join(t.TempDir(), GraphFileName)
+			if _, _, err := WriteCypher(treeSource(a), path); err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			b, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			out[i] = b
+		}
+		if len(out[0]) == 0 || !bytes.Equal(out[0], out[1]) {
+			t.Errorf("%s: two writes differ (%d and %d bytes)", name, len(out[0]), len(out[1]))
+		}
 	}
 }

@@ -32,6 +32,7 @@ type l4Fixture struct {
 	l3, l4 *v2.Analysis
 	res    map[dataflow.L3Key]dataflow.Result
 	sdg    *sdg.Result
+	app    *schema.GoApplication
 	dir    string
 }
 
@@ -82,6 +83,7 @@ func buildL4Identity(t *testing.T, name string, identity *v2.Identity) *l4Fixtur
 		Units: units, L3: res, K: 3, Jobs: 4,
 	})
 	l4.ApplyTo(app)
+	fx.app = app
 	fx.sdg = &l4
 	fx.l4 = Emit(app, resolved, dir, 4, "gate-test", 3, res, &l4)
 	l4Cache[key] = fx

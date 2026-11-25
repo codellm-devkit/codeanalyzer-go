@@ -173,6 +173,7 @@ Flags:
   -f, --format string           Output format: json|msgpack (default "json")
       --graph-field-depth int   Field-path depth bound for L3 dataflow nodes (k limit; applies at -a 3 and -a 4) (default 3)
   -h, --help                    help for cango
+      --artifact-text           Capture each text artifact's whole source in analysis.json (default: metadata only)
   -i, --input string            Project root to analyze (required)
   -j, --jobs int                Worker parallelism (default: CPU cores)
       --library-models string   JSON file of library stand-in flows overriding the all-to-all default (-a 4 and --emit neo4j only)

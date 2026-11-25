@@ -546,49 +546,79 @@ func TestProject_CallNodeResolvesWithinOwner(t *testing.T) {
 
 // ─── L4 overlay ──────────────────────────────────────────────────────────────
 
+// l4Inputs are the arguments v2emit.Emit and v2emit.Open take for a fixture at -a 4.
+type l4Inputs struct {
+	app      *schema.GoApplication
+	identity v2.Identity
+	dir      string
+	l3       map[dataflow.L3Key]dataflow.Result
+	l4       *sdg.Result
+}
+
 var (
-	l4Once     sync.Once
-	l4Analysis *v2.Analysis
+	l4Mu       sync.Mutex
+	l4InCache  = map[string]*l4Inputs{}
+	l4OutCache = map[string]*v2.Analysis{}
 )
 
-// buildDataflowL4 builds testdata/dataflow through the real -a 4 wiring
-// (symbol table, resolver, dataflow, sdg.Run merged into the application)
-// and emits the v2 L4 analysis. Built once: the projection never mutates it.
+// buildL4Inputs builds testdata/<name> through the real -a 4 wiring (symbol
+// table, resolver, dataflow, sdg.Run merged into the application) and returns
+// the emitter inputs. Built once per name: Emit and Open never mutate them.
+func buildL4Inputs(t *testing.T, name string) *l4Inputs {
+	t.Helper()
+	l4Mu.Lock()
+	defer l4Mu.Unlock()
+	if in, ok := l4InCache[name]; ok {
+		return in
+	}
+	_, thisFile, _, _ := runtime.Caller(0)
+	dir, err := filepath.Abs(filepath.Join(filepath.Dir(thisFile), "..", "..", "testdata", name))
+	if err != nil {
+		t.Fatalf("resolving fixture dir: %v", err)
+	}
+	b := syntactic_analysis.NewSymbolTableBuilder(dir)
+	st, err := b.Build(nil, true)
+	if err != nil {
+		t.Fatalf("%s: symbol table build failed: %v", name, err)
+	}
+	cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
+	edges := cg.Build(st)
+	app := &schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}
+	units := b.L3Units(st)
+	res := dataflow.RunWithSideTables(b.Fset(), units, 3, 4)
+	l4 := sdg.Run(sdg.Input{
+		Fset: b.Fset(), Pkgs: b.Pkgs(), ProjectDir: dir, SymbolTable: st,
+		Externals: app.Externals, CallGraph: app.CallGraph, Units: units, L3: res, K: 3, Jobs: 4,
+	})
+	l4.ApplyTo(app)
+	identity, err := v2.ResolveIdentity(name, nil)
+	if err != nil {
+		t.Fatalf("%s: identity: %v", name, err)
+	}
+	in := &l4Inputs{app: app, identity: identity, dir: dir, l3: res, l4: &l4}
+	l4InCache[name] = in
+	return in
+}
+
+// buildFixtureL4 emits testdata/<name> at -a 4. Built once per name: the
+// projection never mutates it.
+func buildFixtureL4(t *testing.T, name string) *v2.Analysis {
+	t.Helper()
+	in := buildL4Inputs(t, name)
+	l4Mu.Lock()
+	defer l4Mu.Unlock()
+	if a, ok := l4OutCache[name]; ok {
+		return a
+	}
+	a := v2emit.Emit(in.app, in.identity, in.dir, 4, "neo4j-gate", 3, in.l3, in.l4)
+	l4OutCache[name] = a
+	return a
+}
+
+// buildDataflowL4 is buildFixtureL4 over testdata/dataflow.
 func buildDataflowL4(t *testing.T) *v2.Analysis {
 	t.Helper()
-	l4Once.Do(func() {
-		_, thisFile, _, _ := runtime.Caller(0)
-		dir, err := filepath.Abs(filepath.Join(filepath.Dir(thisFile), "..", "..", "testdata", "dataflow"))
-		if err != nil {
-			t.Fatalf("resolving fixture dir: %v", err)
-		}
-		b := syntactic_analysis.NewSymbolTableBuilder(dir)
-		st, err := b.Build(nil, true)
-		if err != nil {
-			t.Fatalf("symbol table build failed: %v", err)
-		}
-		cg := semantic_analysis.NewCallGraphBuilder(dir, b.Fset(), b.Pkgs())
-		edges := cg.Build(st)
-		app := &schema.GoApplication{SymbolTable: st, CallGraph: edges, Externals: cg.Externals()}
-		units := b.L3Units(st)
-		res := dataflow.RunWithSideTables(b.Fset(), units, 3, 4)
-		l4 := sdg.Run(sdg.Input{
-			Fset: b.Fset(), Pkgs: b.Pkgs(), ProjectDir: dir, SymbolTable: st,
-			Externals: app.Externals, CallGraph: app.CallGraph, Units: units, L3: res, K: 3, Jobs: 4,
-		})
-		l4.ApplyTo(app)
-		l4Analysis = v2emit.Emit(app, func() v2.Identity {
-			i, e := v2.ResolveIdentity("dataflow", nil)
-			if e != nil {
-				panic(e)
-			}
-			return i
-		}(), dir, 4, "neo4j-gate", 3, res, &l4)
-	})
-	if l4Analysis == nil {
-		t.Fatal("L4 fixture build failed")
-	}
-	return l4Analysis
+	return buildFixtureL4(t, "dataflow")
 }
 
 func isVertex(kind string) bool {

@@ -254,6 +254,7 @@ func (e *emitter) envelope(app *schema.GoApplication, maxLevel int, analyzerVers
 		},
 	}
 	out.Application.ExternalSymbols = emitExternalSymbols(e.appID, app.Externals, e.sdg.standIns())
+	out.Application.Artifacts, out.Application.Dependencies = emitRepository(e.appID, app.Repository)
 	if e.flow.on {
 		out.KLimit = kLimit
 	}

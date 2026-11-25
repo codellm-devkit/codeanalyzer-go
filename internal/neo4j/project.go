@@ -2,6 +2,8 @@ package neo4j
 
 import (
 	"encoding/json"
+	"iter"
+	"sort"
 	"strings"
 
 	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
@@ -25,32 +27,37 @@ import (
 // Project is the pure (tree) → GraphRows function. appID is analysis.Application.ID
 // (the can://<namespace>/<app> root); it is read from the envelope, never recomposed.
 func Project(a *v2.Analysis) GraphRows {
+	src := treeSource(a)
 	p := &projector{
 		b:        NewRowBuilder(),
-		analysis: a,
+		analysis: src.Envelope(),
+		modules:  keySet(src.ModuleKeys()),
 		// Index of every emitted callable/type id, so call_graph endpoints and
 		// body callees can tell a declared target from an external one.
 		declared: collectDeclaredIDs(a),
 	}
-	p.projectApplication()
-	for _, mod := range a.Application.SymbolTable {
-		p.projectModule(mod)
+	p.projectApplication(src.Degraded())
+	p.projectRepository()
+	for _, m := range src.Modules() {
+		p.projectModule(m)
 	}
 	p.projectCallGraph()
 	p.projectStandIns()
-	p.projectParamEdges()
+	p.projectParamEdges(src.ParamIn(), src.ParamOut())
 	return p.b.Finish()
 }
 
 type projector struct {
-	b        *RowBuilder
-	analysis *v2.Analysis
-	declared map[string]bool
+	b         *RowBuilder
+	analysis  *v2.Analysis    // the envelope: id, externals, call graph, repository
+	modules   map[string]bool // symbol_table keys, for the in-project import check
+	declared  map[string]bool // declared type and callable ids
+	calleeIDs map[string]bool // pass 1 only: @external body callees, which get a ghost later
 }
 
 // ─── application ─────────────────────────────────────────────────────────────
 
-func (p *projector) projectApplication() {
+func (p *projector) projectApplication(degraded []v2.Degraded) {
 	a := p.analysis
 	p.b.Node(
 		[]string{LabelApplication, MarkerLabel},
@@ -61,7 +68,7 @@ func (p *projector) projectApplication() {
 			"max_level":        a.MaxLevel,
 			"analyzer_name":    a.Analyzer.Name,
 			"analyzer_version": a.Analyzer.Version,
-			"degraded_json":    degradedJSON(a.Degraded),
+			"degraded_json":    degradedJSON(degraded),
 		},
 		"", // the application root belongs to no single module
 	)
@@ -82,6 +89,48 @@ func degradedJSON(d []v2.Degraded) Value {
 
 func (p *projector) appRef() NodeRef {
 	return NodeRef{Label: LabelApplication, KeyProp: "id", Value: p.analysis.Application.ID}
+}
+
+// ─── repository layer (spec v2-artifacts) ────────────────────────────────────
+
+// projectRepository writes the artifact and dependency rows. An artifact is an
+// app-scoped node (its id is a can:// id) hung off the application; a dependency
+// is a neutral :Package keyed by its version-less purl, declared by the go.mod
+// artifact and, when go.sum locks it, locked by the go.sum artifact.
+func (p *projector) projectRepository() {
+	arts := p.analysis.Application.Artifacts
+	paths := make([]string, 0, len(arts))
+	for path := range arts {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		art := arts[path]
+		ref := p.b.Node(
+			[]string{LabelArtifact, MarkerLabel},
+			"id", art.ID,
+			Props{"path": art.Path, "format": art.Format},
+			"", // an artifact belongs to no single module
+		)
+		p.b.Edge(RelHasArtifact, p.appRef(), ref, nil, "")
+	}
+
+	goSum, hasGoSum := arts["go.sum"]
+	for _, dep := range p.analysis.Application.Dependencies {
+		pkgRef := p.b.Node(
+			[]string{LabelPackage},
+			"id", "pkg:"+dep.Ecosystem+"/"+dep.Name,
+			Props{"ecosystem": dep.Ecosystem, "name": dep.Name},
+			"",
+		)
+		declaredBy := NodeRef{Label: LabelArtifact, KeyProp: "id", Value: dep.DeclaredIn}
+		p.b.Edge(RelDeclaresDependency, declaredBy, pkgRef,
+			Props{"spec": dep.Spec, "direct": dep.Direct, "prov": dep.Prov}, dep.Kind)
+		if dep.LockedVersion != "" && hasGoSum {
+			p.b.Edge(RelLocks, NodeRef{Label: LabelArtifact, KeyProp: "id", Value: goSum.ID}, pkgRef,
+				Props{"locked_version": dep.LockedVersion}, "")
+		}
+	}
 }
 
 // ─── module ──────────────────────────────────────────────────────────────────
@@ -226,6 +275,14 @@ func (p *projector) projectBodyNode(callableRef NodeRef, module, callableID, loc
 	// @external id, which routes to its ghost via callEndpoint.
 	if bn.Callee != nil {
 		_, external := p.analysis.Application.ExternalSymbols[*bn.Callee]
+		if p.b.noEdges {
+			// Pass 1: declared is not complete yet, so the ghost waits until
+			// after the module walk. An @external id is never a declared id.
+			if external {
+				p.calleeIDs[*bn.Callee] = true
+			}
+			return
+		}
 		if p.declared[*bn.Callee] || external {
 			p.b.Edge(RelResolvesTo, bRef, p.callEndpoint(*bn.Callee), nil, "")
 		}
@@ -278,16 +335,23 @@ func (p *projector) projectStandIns() {
 }
 
 // projectParamEdges emits GO_PARAM_IN / GO_PARAM_OUT {var}, one row per JSON
-// param_in / param_out edge. Endpoints are body node ids already (the
-// emitter minted them), addressed as :GoBodyNode.
-func (p *projector) projectParamEdges() {
+// param_in / param_out edge.
+func (p *projector) projectParamEdges(in, out iter.Seq[v2.ParamEdge]) {
+	for e := range in {
+		r := paramEdgeRow(RelParamIn, e)
+		p.b.Edge(r.Type, r.From, r.To, r.Props, r.Key)
+	}
+	for e := range out {
+		r := paramEdgeRow(RelParamOut, e)
+		p.b.Edge(r.Type, r.From, r.To, r.Props, r.Key)
+	}
+}
+
+// paramEdgeRow is the row of one param edge. Endpoints are body node ids
+// already (the emitter minted them), addressed as :GoBodyNode.
+func paramEdgeRow(rel string, e v2.ParamEdge) EdgeRow {
 	ref := func(id string) NodeRef { return NodeRef{Label: LabelBodyNode, KeyProp: "id", Value: id} }
-	for _, e := range p.analysis.Application.ParamIn {
-		p.b.Edge(RelParamIn, ref(e.Src), ref(e.Dst), Props{"var": e.Var}, "")
-	}
-	for _, e := range p.analysis.Application.ParamOut {
-		p.b.Edge(RelParamOut, ref(e.Src), ref(e.Dst), Props{"var": e.Var}, "")
-	}
+	return EdgeRow{Type: rel, From: ref(e.Src), To: ref(e.Dst), Props: Props{"var": e.Var}}
 }
 
 // ─── imports ──────────────────────────────────────────────────────────────────
@@ -303,7 +367,7 @@ func (p *projector) projectImports(modRef NodeRef, m v2.Module) {
 		// relative file path; Go imports name a package path, not a file — so an
 		// in-project hit is rare and handled conservatively via the id space.)
 		targetModuleID := v2.ModuleID(appID, imp.Path)
-		if _, ok := p.analysis.Application.SymbolTable[imp.Path]; ok {
+		if p.modules[imp.Path] {
 			p.b.Edge(RelImports, modRef,
 				NodeRef{Label: LabelModule, KeyProp: "id", Value: targetModuleID},
 				Props{"alias": emptyToNil(imp.Alias)}, imp.Path)
@@ -365,25 +429,30 @@ func (p *projector) callEndpoint(id string) NodeRef {
 // external one without emitting it twice.
 func collectDeclaredIDs(a *v2.Analysis) map[string]bool {
 	ids := make(map[string]bool)
+	for _, m := range a.Application.SymbolTable {
+		moduleDeclared(m, ids)
+	}
+	return ids
+}
+
+// moduleDeclared adds the type and callable ids that module m declares to into.
+func moduleDeclared(m v2.Module, into map[string]bool) {
 	var walkCallable func(c v2.Callable)
 	walkCallable = func(c v2.Callable) {
-		ids[c.ID] = true
+		into[c.ID] = true
 		for _, inner := range c.Callables {
 			walkCallable(inner)
 		}
 	}
-	for _, m := range a.Application.SymbolTable {
-		for _, t := range m.Types {
-			ids[t.ID] = true
-			for _, meth := range t.Callables {
-				walkCallable(meth)
-			}
-		}
-		for _, fn := range m.Functions {
-			walkCallable(fn)
+	for _, t := range m.Types {
+		into[t.ID] = true
+		for _, meth := range t.Callables {
+			walkCallable(meth)
 		}
 	}
-	return ids
+	for _, fn := range m.Functions {
+		walkCallable(fn)
+	}
 }
 
 // ─── flattening helpers ──────────────────────────────────────────────────────

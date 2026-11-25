@@ -129,6 +129,17 @@ Reuses Group A ids/spans and the L3 vocabulary unchanged; every L4 fact is an ad
 - A Go-specific `select` cfg kind was not added (`select` is a `switch` with `switch_case`
   edges).
 
+### Repository-artifact decisions (spec `docs/design/specs/v2-artifacts.md`, branch `feat/artifacts`)
+Made with the user in the 2026-11-19 design loop, anchored on `codeanalyzer-python`'s `PyArtifact` / `PyDependency`.
+- **Placement:** `application.artifacts{<path>: artifact}` (map); `application.dependencies[]` (list).
+- **Scope:** all non-`.go` project files [user, 2026-11-19]. Binaries are metadata only (`source:""`) [user].
+- **Artifact id:** `can://<app>/artifact/<path>`, app-scoped (Python parity) [user]. The Go projector's `:Artifact` flips to `CanNode=true`.
+- **Package id:** version-less `pkg:golang/<module-path>` [user]; version lives on the dependency edge.
+- **Source text:** only with `--artifact-text`, default off [user]. `config_keys` deferred [user].
+- **Dependencies:** every `go.mod` require; `direct=false` on `// indirect`; `kind:"runtime"`; `go.sum` supplies `locked_version` only, `go.sum`-only entries excluded [user].
+- **`provides_imports`:** longest-prefix match against `go.mod` module paths [user].
+- **Level:** L1, every level, not gated [user].
+
 ## Neo4j-projection decisions
 
 The graph projection (`--emit neo4j`) is a **second projection of the same v2 envelope**,
