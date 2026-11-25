@@ -1,0 +1,15 @@
+# Two-stage image for the memory-limit test (spec §7).
+# cango needs a Go toolchain at run time, because go/packages runs `go list`.
+FROM golang:1.26 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o /out/cango ./cmd/codeanalyzer
+
+FROM ubuntu:24.04
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git gcc libc6-dev && rm -rf /var/lib/apt/lists/*
+COPY --from=build /usr/local/go /usr/local/go
+COPY --from=build /out/cango /usr/local/bin/cango
+ENV PATH=/usr/local/go/bin:$PATH GOTOOLCHAIN=auto GOFLAGS=-mod=mod
+ENTRYPOINT ["/bin/sh", "-c"]

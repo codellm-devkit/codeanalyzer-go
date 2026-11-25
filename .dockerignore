@@ -1,0 +1,10 @@
+# Build context of scripts/memtest/Dockerfile.cango (the repository root).
+# testcontainers-go tars the context itself and reads only this root file;
+# it does not use BuildKit, so a per-Dockerfile ignore file would be ignored.
+/cango
+.git
+.envrc
+.claude
+.superpowers
+internal/zz_memprobe
+**/*.test
