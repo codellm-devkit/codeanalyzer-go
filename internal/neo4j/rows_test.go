@@ -2,6 +2,7 @@ package neo4j
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -228,5 +229,48 @@ func TestCanonicalEdgeFactOrder(t *testing.T) {
 	}
 	if !reflect.DeepEqual(build([]string{"a", "b"}), build([]string{"b", "a"})) {
 		t.Fatal("site order changes canonical graph")
+	}
+}
+
+// TestTreeSource_WalksTheTree: treeSource gives back the tree, in sorted key order.
+func TestTreeSource_WalksTheTree(t *testing.T) {
+	a := buildDataflowL4(t)
+	s := treeSource(a)
+	if s.Envelope().Application.SymbolTable != nil || s.Envelope().Application.ParamIn != nil {
+		t.Fatal("envelope must not carry symbol_table or param_in")
+	}
+	var keys []string
+	for k := range s.Modules() {
+		keys = append(keys, k)
+	}
+	if !slices.IsSorted(keys) || len(keys) != len(a.Application.SymbolTable) {
+		t.Errorf("module keys %v: want every key, sorted", keys)
+	}
+	if n := len(slices.Collect(s.ParamIn())); n != len(a.Application.ParamIn) {
+		t.Errorf("ParamIn: %d edges, want %d", n, len(a.Application.ParamIn))
+	}
+}
+
+// TestRowBuilder_FinishWithResolvesAgainstSymbols: a deferred edge resolves against the given set.
+func TestRowBuilder_FinishWithResolvesAgainstSymbols(t *testing.T) {
+	b := NewRowBuilder()
+	from := b.Node([]string{SymbolLabel, LabelType, MarkerLabel}, "id", "can://a/a/go/x.go/T", nil, "m")
+	b.EdgeToSymbol(RelEmbeds, from, SymbolLabel, "id", "can://a/a/go/y.go/U", nil, "")
+	b.EdgeToSymbol(RelEmbeds, from, SymbolLabel, "id", "can://a/a/go/y.go/V", nil, "")
+	rows := b.finishWith(map[string]bool{"can://a/a/go/y.go/U": true})
+	if len(rows.Edges) != 1 || rows.Edges[0].To.Value != "can://a/a/go/y.go/U" {
+		t.Errorf("edges %+v: want only the edge to U", rows.Edges)
+	}
+}
+
+// TestRowBuilder_NoEdgesDropsEdges: a node-only builder keeps no edge.
+func TestRowBuilder_NoEdgesDropsEdges(t *testing.T) {
+	b := NewRowBuilder()
+	b.noEdges = true
+	r := b.Node([]string{LabelModule, MarkerLabel}, "id", "can://a/a/go/x.go", nil, "m")
+	b.Edge(RelHasModule, r, r, nil, "")
+	b.EdgeToSymbol(RelEmbeds, r, SymbolLabel, "id", "can://a/a/go/x.go", nil, "")
+	if rows := b.Finish(); len(rows.Edges) != 0 || len(rows.Nodes) != 1 {
+		t.Errorf("rows %+v: want one node and no edge", rows)
 	}
 }
