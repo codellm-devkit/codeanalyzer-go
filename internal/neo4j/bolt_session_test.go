@@ -162,7 +162,7 @@ func (tx fakeTx) Run(_ context.Context, q string, params map[string]any) (neo4j.
 			rawNamespace = tx.db.rawNamespace
 		}
 		return &fakeResult{rec: &neo4j.Record{Keys: []string{"v", "l", "iv", "an", "ns"}, Values: []any{SchemaVersion, lvl, identity, rawName, rawNamespace}}}, nil
-	case strings.Contains(q, "m.content_hash"):
+	case strings.Contains(q, "RETURN m.content_hash"):
 		h, ok := tx.db.hashes[params["id"].(string)]
 		if !ok {
 			return &fakeResult{}, nil
@@ -217,11 +217,15 @@ func pushRows(t *testing.T, db *fakeDB, rows GraphRows, appID string, cfg BoltCo
 	}
 }
 
-// pushPaths runs body once with a replay of Project(a) and once, in a
-// "stream" subtest, with a streamGraph push of a's tree.
+// pushPaths runs body once, in a "replay" subtest, with a replay of
+// Project(a) and once, in a "stream" subtest, with a streamGraph push of a's
+// tree.
 func pushPaths(t *testing.T, a *v2.Analysis, body func(t *testing.T, push func(*fakeDB, BoltConfig))) {
+	t.Helper()
 	rows := Project(a)
-	body(t, func(db *fakeDB, cfg BoltConfig) { pushRows(t, db, rows, a.Application.ID, cfg) })
+	t.Run("replay", func(t *testing.T) {
+		body(t, func(db *fakeDB, cfg BoltConfig) { pushRows(t, db, rows, a.Application.ID, cfg) })
+	})
 	t.Run("stream", func(t *testing.T) {
 		body(t, func(db *fakeDB, cfg BoltConfig) {
 			t.Helper()
@@ -603,12 +607,18 @@ func TestBolt_UpsertsAreBatched(t *testing.T) {
 	}
 }
 
-// TestBolt_StreamPushOrder (spec §6): no edge statement runs before the last node statement,
-// and an eager push purges each module before it writes that module's nodes.
+// TestBolt_StreamPushOrder (spec §6): no edge statement runs before the last
+// node statement, on an eager and on a lazy push, and an eager push purges
+// each module before it writes that module's nodes.
 func TestBolt_StreamPushOrder(t *testing.T) {
 	a := buildDataflowL4(t)
+	t.Run("eager", func(t *testing.T) { streamPushOrder(t, a, BoltConfig{Eager: true, FullRun: true}) })
+	t.Run("lazy", func(t *testing.T) { streamPushOrder(t, a, BoltConfig{}) })
+}
+
+func streamPushOrder(t *testing.T, a *v2.Analysis, cfg BoltConfig) {
 	db := &fakeDB{}
-	w := newBoltWriter(context.Background(), db, a.Application.ID, BoltConfig{Eager: true, FullRun: true})
+	w := newBoltWriter(context.Background(), db, a.Application.ID, cfg)
 	if _, _, err := streamGraph(treeSource(a), w); err != nil {
 		t.Fatal(err)
 	}
@@ -630,8 +640,17 @@ func TestBolt_StreamPushOrder(t *testing.T) {
 			purgedAt[st.params["m"].(string)] = i
 		}
 	}
+	if lastNode < 0 || firstEdge == len(db.writes) {
+		t.Fatalf("no node (%d) or no edge (%d) statement", lastNode, firstEdge)
+	}
 	if lastNode > firstEdge {
 		t.Errorf("node statement %d runs after edge statement %d", lastNode, firstEdge)
+	}
+	if !cfg.Eager {
+		if len(purgedAt) != 0 {
+			t.Errorf("lazy push purged %d modules", len(purgedAt))
+		}
+		return
 	}
 	if len(purgedAt) != len(a.Application.SymbolTable) {
 		t.Errorf("%d module purges, want %d", len(purgedAt), len(a.Application.SymbolTable))
@@ -643,4 +662,62 @@ func TestBolt_StreamPushOrder(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestBolt_ContentHashStampedAfterAllNodes (#59): a :GoModule row is written
+// without its content_hash, and every hash is stamped only after the last
+// node-upsert statement. Otherwise a push that dies between a :GoModule batch
+// and the rest of that module's nodes would leave a matching hash, and the
+// next lazy push would skip the module and drop the edges into its missing
+// nodes. After the push every upserted module carries its hash.
+func TestBolt_ContentHashStampedAfterAllNodes(t *testing.T) {
+	a := buildDataflowL4(t)
+	byModule, _, _ := partitionNodes(Project(a).Nodes)
+	want := map[string]string{}
+	for m, ns := range byModule {
+		if want[m] = moduleHash(ns); want[m] == "" {
+			t.Fatalf("module %s has no content_hash", m)
+		}
+	}
+	pushPaths(t, a, func(t *testing.T, push func(*fakeDB, BoltConfig)) {
+		for _, cfg := range []BoltConfig{{}, {Eager: true, FullRun: true}} {
+			db := &fakeDB{}
+			push(db, cfg)
+			lastNode, firstStamp := -1, -1
+			got := map[string]string{}
+			for i, st := range db.writes {
+				rows, _ := st.params["rows"].([]map[string]any)
+				switch {
+				case strings.Contains(st.q, "MERGE (n:"):
+					lastNode = i
+					for _, r := range rows {
+						if h, has := r["p"].(map[string]any)["content_hash"]; has && h != nil {
+							t.Errorf("eager=%v: node %v upserted with content_hash %v", cfg.Eager, r["k"], h)
+						}
+					}
+				case strings.Contains(st.q, "content_hash"):
+					if firstStamp < 0 {
+						firstStamp = i
+					}
+					for _, r := range rows {
+						got[r["id"].(string)] = r["h"].(string)
+					}
+				}
+			}
+			if firstStamp < 0 || firstStamp < lastNode {
+				t.Errorf("eager=%v: first content_hash statement %d, last node statement %d", cfg.Eager, firstStamp, lastNode)
+			}
+			if fmt.Sprint(got) != fmt.Sprint(want) {
+				t.Errorf("eager=%v: stamped %v, want %v", cfg.Eager, got, want)
+			}
+		}
+		// A lazy push whose modules are all unchanged stamps nothing.
+		db := &fakeDB{hashes: want, level: 4}
+		push(db, BoltConfig{})
+		for _, st := range db.writes {
+			if strings.Contains(st.q, "content_hash") {
+				t.Errorf("unchanged modules: content_hash statement %q", st.q)
+			}
+		}
+	})
 }

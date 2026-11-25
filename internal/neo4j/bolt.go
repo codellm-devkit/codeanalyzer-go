@@ -3,8 +3,11 @@ package neo4j
 import (
 	"context"
 	"fmt"
-	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
+	"maps"
+	"slices"
 	"sort"
+
+	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
 
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 )
@@ -15,29 +18,42 @@ import (
 // CGO_ENABLED=0 static build still links; it is only exercised when EmitNeo4j
 // runs with a --neo4j-uri, never on the JSON path.
 //
-// The writer is a stager (stream.go); its stages run in push order (spec §5.3):
-//  1. begin: stored-application gate — read :GoApplication.schema_version and
+// The writer is a stager (stream.go); its stages run in push order (spec §5.3),
+// numbered as the stager numbers them:
+//  0. begin: stored-application gate — read :GoApplication.schema_version and
 //     max_level scoped to this app's id; a version mismatch, or a stored level
 //     below this push's, forces a full re-UPSERT (never a delete — that is
 //     --eager's job); ensure constraints + indexes; --eager? scoped purge of
 //     everything under the app prefix, then rebuild;
-//  2. shared: upsert the module-less repository nodes (MERGE-only, always);
-//  3. module, per module: diff its content_hash against the DB; when changed,
+//  1. shared: upsert the module-less repository nodes (MERGE-only, always);
+//  2. module, per module: diff its content_hash against the DB; when changed,
 //     on --eager purge its owned edges + stale decls, then upsert its L1–L3
-//     nodes (WITHOUT --eager the push only adds/updates); upsert its L4 vertex
-//     nodes, changed module or not (D5, below);
-//  4. late: upsert the ghosts, stand-in vertices and application row, and
-//     flush every node buffer;
-//  5. edges: upsert every edge (an unchanged edge's MERGE is a no-op);
-//  6. end: flush the edges; on a full --eager run, orphan-prune modules whose
+//     nodes (WITHOUT --eager the push only adds/updates) with content_hash
+//     cleared; upsert its L4 vertex nodes, changed module or not (D5, below);
+//  3. late: upsert the ghosts, stand-in vertices and application row, flush
+//     every node buffer, then stamp the content_hash of every module upserted
+//     in step 2;
+//  4. edges: upsert every edge (an unchanged edge's MERGE is a no-op);
+//  5. end: flush the edges; on a full --eager run, orphan-prune modules whose
 //     source vanished.
+//
+// The content_hash is stamped only after every node row of every module has
+// landed. Node groups flush in group-key order and in boltBatchSize chunks, so
+// a :GoModule row can land before the rest of its module's nodes; a hash
+// written with it would survive a push that dies before those nodes land, the
+// next lazy push would skip the module as unchanged, and the edges into its
+// missing nodes would be dropped by MATCH. The :GoModule row is therefore
+// written with content_hash = null (clearing a stored hash) and the hash set
+// by batched UNWIND statements (boltBatchSize rows each) after the final node
+// flush. Edges need no such
+// guard: every push upserts every edge.
 //
 // D5 (spec §4.11): L4 facts are not module-local — editing a callee changes
 // its callers' summary edges, actual vertices and even formal_in indices —
 // so the content_hash diff gates the L1–L3 rows only. A lazy push upserts
-// every L4 row on every push: the vertex nodes (steps 3–4), the stand-in
+// every L4 row on every push: the vertex nodes (steps 2–3), the stand-in
 // bodies among them, and the GO_PARAM_IN / GO_PARAM_OUT / GO_SUMMARY rows
-// and the port GO_DDG rows (prov ≠ ssa) with every other edge (step 5). It
+// and the port GO_DDG rows (prov ≠ ssa) with every other edge (step 4). It
 // is additive: a stale L4 row stays until an --eager push.
 //
 // A push NEVER deletes by default (#171): the purges and the prune run under
@@ -122,7 +138,14 @@ type boltWriter struct {
 	scoped  bool
 	nodeBuf map[string][]NodeRow
 	edgeBuf map[string][]EdgeRow
+	// hashes are the content_hash values of the modules whose nodes were
+	// upserted, stamped by late after the final node flush. Only the
+	// (id, hash) pairs are kept, never the :GoModule rows (they carry source).
+	hashes []moduleHashRow
 }
+
+// moduleHashRow is one deferred content_hash stamp.
+type moduleHashRow struct{ id, hash string }
 
 func newBoltWriter(ctx context.Context, s neo4j.SessionWithContext, appID string, cfg BoltConfig) *boltWriter {
 	return &boltWriter{ctx: ctx, session: s, appID: appID, cfg: cfg,
@@ -191,20 +214,65 @@ func (w *boltWriter) module(id string, nodes []NodeRow) error {
 				return err
 			}
 		}
-		if err := w.bufferNodes(core); err != nil {
+		if err := w.bufferNodes(w.deferHashes(core)); err != nil {
 			return err
 		}
 	}
 	return w.bufferNodes(l4)
 }
 
+// deferHashes returns core with each :GoModule row's content_hash replaced by
+// an explicit null (SET += removes a stored hash) and records the hash for
+// stampHashes. The rows passed in are not modified: the caller may reuse them.
+func (w *boltWriter) deferHashes(core []NodeRow) []NodeRow {
+	var out []NodeRow
+	for i, n := range core {
+		h, ok := n.Props["content_hash"].(string)
+		if n.Labels[0] != LabelModule || !ok {
+			continue
+		}
+		if out == nil {
+			out = slices.Clone(core)
+		}
+		p := maps.Clone(n.Props)
+		p["content_hash"] = nil
+		out[i].Props = p
+		w.hashes = append(w.hashes, moduleHashRow{n.Value, h})
+	}
+	if out == nil {
+		return core
+	}
+	return out
+}
+
 // late upserts the ghosts, the stand-in vertices and the application row,
-// and flushes every node buffer before the first edge statement.
+// flushes every node buffer before the first edge statement, and then stamps
+// the deferred module content_hash values (see the package doc).
 func (w *boltWriter) late(nodes []NodeRow) error {
 	if err := w.bufferNodes(nodes); err != nil {
 		return err
 	}
-	return w.flushNodes()
+	if err := w.flushNodes(); err != nil {
+		return err
+	}
+	return w.stampHashes()
+}
+
+// stampHashes sets the content_hash of every module recorded by deferHashes,
+// in batches of boltBatchSize, once all node rows have landed.
+func (w *boltWriter) stampHashes() error {
+	const q = "UNWIND $rows AS r MATCH (m:GoModule {id: r.id}) SET m.content_hash = r.h"
+	for chunk := range slices.Chunk(w.hashes, boltBatchSize) {
+		rows := make([]map[string]any, len(chunk))
+		for i, h := range chunk {
+			rows[i] = map[string]any{"id": h.id, "h": h.hash}
+		}
+		if err := w.runBatch(q, rows); err != nil {
+			return err
+		}
+	}
+	w.hashes = nil
+	return nil
 }
 
 // edges buffers every edge: the L4 rows must be upserted (D5), and for the
@@ -392,7 +460,8 @@ func (w *boltWriter) moduleChanged(id, localHash string) (bool, error) {
 
 // ─── upserts ──────────────────────────────────────────────────────────────────
 
-// upsertNodes and upsertEdges write a ready slice: buffer, then flush.
+// upsertNodes and upsertEdges write a ready slice: buffer, then flush. They
+// are test seams: the push path goes through the stager stages.
 func (w *boltWriter) upsertNodes(nodes []NodeRow) error {
 	if err := w.bufferNodes(nodes); err != nil {
 		return err
@@ -590,7 +659,8 @@ func propsToAny(p Props) map[string]any {
 
 // partitionNodes splits nodes into the module-owned L1–L3 nodes (by owning
 // module), the shared nodes (no module), and the L4 vertex nodes, owned by
-// a module or by a stand-in, which a push always upserts (D5).
+// a module or by a stand-in, which a push always upserts (D5). It is a test
+// seam: the push path partitions through replayRows and the stager stages.
 func partitionNodes(nodes []NodeRow) (byModule map[string][]NodeRow, shared, l4 []NodeRow) {
 	byModule = map[string][]NodeRow{}
 	for _, n := range nodes {
