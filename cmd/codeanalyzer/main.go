@@ -191,11 +191,12 @@ via CLDK(language="go").analysis(project_path=...).`,
 				return err
 			}
 
-			// Neo4j projection: build the canonical v2 payload (the SAME tree the
-			// JSON path emits) and project it. --neo4j-uri set → live Bolt push;
+			// Neo4j projection: stream the canonical v2 payload (the SAME modules
+			// the JSON path emits) one module at a time into the projection, so
+			// the full tree is never held (#59). --neo4j-uri set → live Bolt push;
 			// absent → a graph.cypher snapshot in the output dir.
 			if emitTarget == options.EmitNeo4j {
-				payload := v2emit.Emit(app, identity, opts.InputPath, int(opts.Level), opts.AnalyzerVersion, core.KLimit(opts), analyzer.L3(), analyzer.L4())
+				src := v2emit.Open(app, identity, opts.InputPath, int(opts.Level), opts.AnalyzerVersion, core.KLimit(opts), analyzer.L3(), analyzer.L4())
 				boltCfg := neo4j.BoltConfig{
 					URI:      opts.Neo4jURI,
 					User:     opts.Neo4jUser,
@@ -204,7 +205,7 @@ via CLDK(language="go").analysis(project_path=...).`,
 					Eager:    opts.Eager,
 					FullRun:  len(opts.TargetFiles) == 0,
 				}
-				msg, err := neo4j.EmitNeo4j(cmd.Context(), payload, outputDir, boltCfg)
+				msg, err := neo4j.EmitNeo4j(cmd.Context(), src, outputDir, boltCfg)
 				if err != nil {
 					return err
 				}

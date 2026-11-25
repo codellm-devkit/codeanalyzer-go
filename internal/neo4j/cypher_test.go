@@ -2,6 +2,7 @@ package neo4j
 
 import (
 	"context"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -123,11 +124,88 @@ func TestEmitNeo4jInvalidIdentityLeavesOutput(t *testing.T) {
 	if err := os.WriteFile(path, []byte("original"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := EmitNeo4j(context.Background(), a, dir, BoltConfig{}); err == nil {
+	if _, err := EmitNeo4j(context.Background(), TreeSource(a), dir, BoltConfig{}); err == nil {
 		t.Fatal("accepted mismatched app marker")
 	}
 	b, err := os.ReadFile(path)
 	if err != nil || string(b) != "original" {
 		t.Fatalf("output changed: %s %v", b, err)
+	}
+}
+
+// TestCypher_StreamedScriptHasTheSameRows (S1): the streamed script holds the same row lines as
+// RenderCypher(Project(a)), with the same header, and every node line comes before every edge line.
+// A hand-built fixture with no identity metadata is refused by both.
+func TestCypher_StreamedScriptHasTheSameRows(t *testing.T) {
+	for name, a := range parityFixtures(t) {
+		path := filepath.Join(t.TempDir(), GraphFileName)
+		want, err := RenderCypher(Project(a), a.Application.ID)
+		if err != nil {
+			if _, _, werr := WriteCypher(treeSource(a), path); werr == nil {
+				t.Errorf("%s: RenderCypher refuses (%v), WriteCypher accepts", name, err)
+			}
+			continue
+		}
+		if _, _, err := WriteCypher(treeSource(a), path); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		b, _ := os.ReadFile(path)
+		got := string(b)
+		head := want[:strings.Index(want, "UNWIND")]
+		if !strings.HasPrefix(got, head) {
+			t.Errorf("%s: header differs", name)
+		}
+		if w, g := rowLines(want), rowLines(got); !maps.Equal(w, g) {
+			t.Errorf("%s: %d row lines, want %d", name, len(g), len(w))
+		}
+		if strings.LastIndex(got, "MERGE (n:") > strings.Index(got, "MERGE (a)-[r:") {
+			t.Errorf("%s: a node statement follows an edge statement", name)
+		}
+	}
+}
+
+// rowLines is the set of UNWIND row lines, the lines that start with "  {".
+func rowLines(script string) map[string]bool {
+	out := map[string]bool{}
+	for _, l := range strings.Split(script, "\n") {
+		if strings.HasPrefix(l, "  {") {
+			out[strings.TrimSuffix(l, ",")] = true
+		}
+	}
+	return out
+}
+
+// TestWriteCypher_FailureLeavesOutput: a run that fails, before the temporary
+// file (identity) or after it (rename onto a directory), leaves an earlier
+// graph.cypher as it was and no temporary file behind.
+func TestWriteCypher_FailureLeavesOutput(t *testing.T) {
+	a := buildMultipackageL2(t)
+	bad := *a
+	bad.Application.IdentityVersion = 1
+	dir := t.TempDir()
+	path := filepath.Join(dir, GraphFileName)
+	if err := os.WriteFile(path, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := WriteCypher(TreeSource(&bad), path); err == nil {
+		t.Fatal("accepted mismatched app marker")
+	}
+	if b, err := os.ReadFile(path); err != nil || string(b) != "original" {
+		t.Fatalf("output changed: %s %v", b, err)
+	}
+	// The rename fails: the target is a non-empty directory.
+	target := filepath.Join(dir, "occupied")
+	if err := os.MkdirAll(filepath.Join(target, "x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := WriteCypher(TreeSource(a), target)
+	if err == nil || !strings.Contains(err.Error(), target) {
+		t.Fatalf("err = %v, want a write error naming %s", err, target)
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".graph-") {
+			t.Errorf("temporary file %s left behind", e.Name())
+		}
 	}
 }
