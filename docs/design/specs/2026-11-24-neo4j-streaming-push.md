@@ -172,7 +172,7 @@ The test is therefore strict, and swap cannot hide a memory problem.
 
 ### 7.3 Inputs and caches
 
-- The test mounts each app directory read-only at `/app`. The test apps stay outside the repository.
+- The test mounts each app directory read-only at `/src-app` and copies it to `/app` inside the container, because `GOFLAGS=-mod=mod` lets `go list` rewrite `go.mod` or `go.sum`, and that must not touch the host checkout. The test apps stay outside the repository.
 - A named volume holds the Go module cache (`GOMODCACHE`). The first run downloads the modules of the app, and later runs reuse them.
 - Each run starts with an empty `cango` cache, so the analysis runs in full.
 

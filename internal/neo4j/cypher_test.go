@@ -1,12 +1,15 @@
 package neo4j
 
 import (
+	"bytes"
 	"context"
 	"maps"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	v2 "github.com/codellm-devkit/codeanalyzer-go/internal/schema/v2"
 )
 
 // M4 gate: the snapshot writer. The DDL + scoped wipe + batched node/edge MERGE
@@ -149,14 +152,17 @@ func TestCypher_StreamedScriptHasTheSameRows(t *testing.T) {
 		if _, _, err := WriteCypher(treeSource(a), path); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		b, _ := os.ReadFile(path)
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
 		got := string(b)
 		head := want[:strings.Index(want, "UNWIND")]
 		if !strings.HasPrefix(got, head) {
 			t.Errorf("%s: header differs", name)
 		}
-		if w, g := rowLines(want), rowLines(got); !maps.Equal(w, g) {
-			t.Errorf("%s: %d row lines, want %d", name, len(g), len(w))
+		if w, g := rowLines(want), rowLines(got); len(w) == 0 || !maps.Equal(w, g) {
+			t.Errorf("%s: %d distinct row lines, want %d", name, len(g), len(w))
 		}
 		if strings.LastIndex(got, "MERGE (n:") > strings.Index(got, "MERGE (a)-[r:") {
 			t.Errorf("%s: a node statement follows an edge statement", name)
@@ -164,12 +170,28 @@ func TestCypher_StreamedScriptHasTheSameRows(t *testing.T) {
 	}
 }
 
-// rowLines is the set of UNWIND row lines, the lines that start with "  {".
-func rowLines(script string) map[string]bool {
-	out := map[string]bool{}
+// rowLines is the multiset of UNWIND row lines, the lines that start with
+// "  {", each keyed by the statement it feeds (the lines after "] AS row" up
+// to the closing ";") and counted.
+func rowLines(script string) map[string]int {
+	out := map[string]int{}
+	var rows []string
+	stmt := ""
+	inStmt := false
 	for _, l := range strings.Split(script, "\n") {
-		if strings.HasPrefix(l, "  {") {
-			out[strings.TrimSuffix(l, ",")] = true
+		switch {
+		case strings.HasPrefix(l, "  {"):
+			rows = append(rows, strings.TrimSuffix(l, ","))
+		case l == "] AS row":
+			inStmt, stmt = true, ""
+		case inStmt:
+			stmt += l + "\n"
+			if strings.HasSuffix(l, ";") {
+				for _, r := range rows {
+					out[stmt+r]++
+				}
+				rows, inStmt = rows[:0], false
+			}
 		}
 	}
 	return out
@@ -206,6 +228,32 @@ func TestWriteCypher_FailureLeavesOutput(t *testing.T) {
 	for _, e := range entries {
 		if strings.HasPrefix(e.Name(), ".graph-") {
 			t.Errorf("temporary file %s left behind", e.Name())
+		}
+	}
+}
+
+// TestWriteCypher_Deterministic: writing the snapshot twice for the same input
+// gives byte-identical files (module key order plus each builder's sort).
+func TestWriteCypher_Deterministic(t *testing.T) {
+	for name, a := range map[string]*v2.Analysis{
+		"multipackage L2": buildMultipackageL2(t),
+		"dataflow L4":     buildDataflowL4(t),
+		"chi L4":          buildFixtureL4(t, "chi"),
+	} {
+		var out [2][]byte
+		for i := range out {
+			path := filepath.Join(t.TempDir(), GraphFileName)
+			if _, _, err := WriteCypher(treeSource(a), path); err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			b, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			out[i] = b
+		}
+		if len(out[0]) == 0 || !bytes.Equal(out[0], out[1]) {
+			t.Errorf("%s: two writes differ (%d and %d bytes)", name, len(out[0]), len(out[1]))
 		}
 	}
 }

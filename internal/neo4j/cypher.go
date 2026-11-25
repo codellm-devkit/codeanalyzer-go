@@ -27,8 +27,10 @@ import (
 //     keyed?).
 //
 // A static script has no view of the live DB, so it expresses the FULL truth;
-// incremental updates are the Bolt writer's job (M5). Determinism: identical
-// GraphRows → byte-identical script (RowBuilder.Finish already sorted the bag).
+// incremental updates are the Bolt writer's job (M5). Determinism: for
+// RenderCypher, identical GraphRows → byte-identical script (RowBuilder.Finish
+// already sorted the bag). WriteCypher (the CLI path) streams instead, and is
+// deterministic by the Source's module key order plus each RowBuilder's sort.
 
 // batchSize is the UNWIND batch size (parity with the siblings' 500).
 const batchSize = 500
@@ -316,7 +318,9 @@ func (c *cypherWriter) bufferNodes(nodes []NodeRow) {
 }
 
 // WriteCypher streams src into path. It writes a temporary file and renames it at the end,
-// so a failed run leaves an earlier graph.cypher unchanged.
+// so a failed run leaves an earlier graph.cypher unchanged. The temporary file is removed on
+// an error return only: a process killed mid-write (SIGKILL, the OOM killer) skips the
+// deferred cleanup and leaves a hidden .graph-*.cypher file next to path.
 func WriteCypher(src Source, path string) (nodes, edges int, err error) {
 	env := src.Envelope()
 	if env == nil || env.IdentityVersion != 2 || env.Application.IdentityVersion != 2 {

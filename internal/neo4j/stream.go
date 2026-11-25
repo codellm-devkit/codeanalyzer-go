@@ -26,7 +26,9 @@ type stager interface {
 // streamGraph projects src into st in two module walks. Pass 1 sends the node
 // rows of each module and collects the declared ids; the ghosts, stand-ins and
 // the application row follow once that set is complete. Pass 2 sends the edge
-// rows. No step holds more than one module's rows, or one chunk of param edges.
+// rows. No module step holds more than one module's rows, and the param edges
+// go in chunks; the late and tail builders are app-wide, though: they hold
+// every GO_CALLS row, call-graph and callee ghost, and stand-in.
 // Across modules a duplicate edge row may reach st; MERGE makes it a no-op.
 func streamGraph(src Source, st stager) (nodes, edges int, err error) {
 	env := src.Envelope()

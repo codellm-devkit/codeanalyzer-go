@@ -11,6 +11,7 @@ import (
 
 // Stream is the Emit payload as a module stream that a caller can walk more than one time.
 // Each Modules walk emits the modules again, so no walk holds the whole tree.
+// A Stream is not safe for concurrent use.
 type Stream struct {
 	app       *schema.GoApplication
 	e         *emitter

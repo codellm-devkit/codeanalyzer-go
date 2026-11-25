@@ -185,7 +185,7 @@ func TestStream_ParityWithProject(t *testing.T) {
 		want := Project(a)
 		c := &collectStager{}
 		if _, _, err := streamGraph(treeSource(a), c); err != nil {
-			t.Fatal(err)
+			t.Fatalf("%s: %v", name, err)
 		}
 		got := mergeRows(c.nodes, c.edgeRows)
 		if d := diffRows(want, got); d != "" {
@@ -202,7 +202,7 @@ func TestStream_ParityThroughEmitterStream(t *testing.T) {
 		c := &collectStager{}
 		src := v2emit.Open(in.app, in.identity, in.dir, 4, "neo4j-gate", 3, in.l3, in.l4)
 		if _, _, err := streamGraph(src, c); err != nil {
-			t.Fatal(err)
+			t.Fatalf("%s: %v", name, err)
 		}
 		if d := diffRows(want, mergeRows(c.nodes, c.edgeRows)); d != "" {
 			t.Errorf("%s: streamed rows differ from Project(Emit):\n%s", name, d)
